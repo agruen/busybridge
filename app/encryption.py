@@ -90,10 +90,33 @@ def key_from_base64(key_base64: str) -> bytes:
 
 # Global encryption manager instance (initialized after key is loaded)
 _encryption_manager: EncryptionManager | None = None
+_encryption_manager_lock = None  # Will be initialized as asyncio.Lock when needed
+
+
+def _get_lock():
+    """Get or create the encryption manager lock."""
+    global _encryption_manager_lock
+    if _encryption_manager_lock is None:
+        import asyncio
+        _encryption_manager_lock = asyncio.Lock()
+    return _encryption_manager_lock
+
+
+async def get_encryption_manager_async() -> EncryptionManager:
+    """Get the global encryption manager instance (async, thread-safe)."""
+    global _encryption_manager
+    if _encryption_manager is None:
+        async with _get_lock():
+            # Double-check after acquiring lock
+            if _encryption_manager is None:
+                from app.config import get_encryption_key
+                key = get_encryption_key()
+                _encryption_manager = EncryptionManager(key)
+    return _encryption_manager
 
 
 def get_encryption_manager() -> EncryptionManager:
-    """Get the global encryption manager instance."""
+    """Get the global encryption manager instance (sync version, for backward compatibility)."""
     global _encryption_manager
     if _encryption_manager is None:
         from app.config import get_encryption_key

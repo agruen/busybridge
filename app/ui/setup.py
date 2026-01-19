@@ -297,17 +297,24 @@ async def setup_step_5(request: Request):
     user_row = await cursor.fetchone()
     user_id = user_row["id"]
 
-    # Store admin's OAuth tokens
+    # Store admin's OAuth tokens with expiry
+    from datetime import datetime, timedelta
+    token_expiry = None
+    if _oobe_data.get("admin_token_expiry"):
+        expires_in_seconds = int(_oobe_data["admin_token_expiry"])
+        token_expiry = (datetime.utcnow() + timedelta(seconds=expires_in_seconds)).isoformat()
+
     await db.execute(
         """INSERT INTO oauth_tokens
            (user_id, account_type, google_account_email,
-            access_token_encrypted, refresh_token_encrypted)
-           VALUES (?, 'home', ?, ?, ?)""",
+            access_token_encrypted, refresh_token_encrypted, token_expiry)
+           VALUES (?, 'home', ?, ?, ?, ?)""",
         (
             user_id,
             _oobe_data["admin_email"],
             enc.encrypt(_oobe_data["admin_access_token"]),
             enc.encrypt(_oobe_data["admin_refresh_token"]),
+            token_expiry,
         )
     )
 

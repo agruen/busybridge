@@ -233,11 +233,13 @@ async def trigger_sync_for_main_calendar(user_id: int) -> None:
 
         # Fetch events
         sync_token = sync_state.get("sync_token") if sync_state else None
+        is_full_sync = sync_token is None
         result = main_client.list_events(main_calendar_id, sync_token=sync_token)
 
         if result.get("sync_token_expired"):
             logger.info(f"Main calendar sync token expired for user {user_id}, doing full sync")
             result = main_client.list_events(main_calendar_id)
+            is_full_sync = True
 
         events = result["events"]
         new_sync_token = result.get("next_sync_token")
@@ -262,13 +264,22 @@ async def trigger_sync_for_main_calendar(user_id: int) -> None:
 
         # Update sync state
         now = datetime.utcnow().isoformat()
-        await db.execute(
-            """UPDATE main_calendar_sync_state SET
-               sync_token = ?, last_incremental_sync = ?,
-               consecutive_failures = 0, last_error = NULL
-               WHERE user_id = ?""",
-            (new_sync_token, now, user_id)
-        )
+        if is_full_sync:
+            await db.execute(
+                """UPDATE main_calendar_sync_state SET
+                   sync_token = ?, last_full_sync = ?, last_incremental_sync = ?,
+                   consecutive_failures = 0, last_error = NULL
+                   WHERE user_id = ?""",
+                (new_sync_token, now, now, user_id)
+            )
+        else:
+            await db.execute(
+                """UPDATE main_calendar_sync_state SET
+                   sync_token = ?, last_incremental_sync = ?,
+                   consecutive_failures = 0, last_error = NULL
+                   WHERE user_id = ?""",
+                (new_sync_token, now, user_id)
+            )
         await db.commit()
 
         logger.info(f"Main calendar sync completed for user {user_id}")

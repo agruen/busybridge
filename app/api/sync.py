@@ -199,8 +199,11 @@ async def trigger_full_resync(user: User = Depends(get_current_user)):
 
     # Trigger sync
     from app.sync.engine import trigger_sync_for_user
-    import asyncio
-    asyncio.create_task(trigger_sync_for_user(user.id))
+    from app.utils.tasks import create_background_task
+    create_background_task(
+        trigger_sync_for_user(user.id),
+        f"full_resync_user_{user.id}"
+    )
 
     # Log the action
     await db.execute(

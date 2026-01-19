@@ -178,8 +178,11 @@ async def connect_client_calendar(
 
     # Trigger initial sync (in background)
     from app.sync.engine import trigger_sync_for_calendar
-    import asyncio
-    asyncio.create_task(trigger_sync_for_calendar(calendar_id))
+    from app.utils.tasks import create_background_task
+    create_background_task(
+        trigger_sync_for_calendar(calendar_id),
+        f"initial_sync_calendar_{calendar_id}"
+    )
 
     return ClientCalendarResponse(
         id=calendar_id,
@@ -261,8 +264,11 @@ async def trigger_calendar_sync(
 
     # Trigger sync
     from app.sync.engine import trigger_sync_for_calendar
-    import asyncio
-    asyncio.create_task(trigger_sync_for_calendar(calendar_id))
+    from app.utils.tasks import create_background_task
+    create_background_task(
+        trigger_sync_for_calendar(calendar_id),
+        f"manual_sync_calendar_{calendar_id}"
+    )
 
     return {"status": "ok", "message": "Sync triggered"}
 

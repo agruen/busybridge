@@ -7,6 +7,10 @@ from typing import Optional
 from pydantic_settings import BaseSettings
 
 
+# Temporary OOBE session secret (generated once per process)
+_oobe_session_secret: Optional[str] = None
+
+
 class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
 
@@ -68,7 +72,11 @@ def get_encryption_key() -> bytes:
         )
 
     with open(key_file, "rb") as f:
-        key = f.read().strip()
+        key = f.read()
+        # Only strip trailing newlines/carriage returns that might be added by text editors
+        # Don't use general .strip() as it can corrupt binary keys
+        while key and key[-1:] in (b'\n', b'\r'):
+            key = key[:-1]
 
     if len(key) < 32:
         raise RuntimeError("Invalid encryption key: must be at least 32 bytes")
@@ -88,5 +96,9 @@ def get_session_secret() -> str:
         return hashlib.sha256(key + b"session_secret").hexdigest()
     except RuntimeError:
         # During OOBE, no encryption key exists yet
-        # Use a temporary secret (sessions won't persist across restarts)
-        return "temporary_oobe_secret_not_for_production"
+        # Generate a random secret (per process, won't persist across restarts)
+        global _oobe_session_secret
+        if _oobe_session_secret is None:
+            import secrets
+            _oobe_session_secret = secrets.token_urlsafe(32)
+        return _oobe_session_secret
