@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full bg-gray-50">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Setup Complete - Calendar Sync</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+</head>
+<body class="h-full">
+    <div class="min-h-full flex flex-col justify-center py-12 sm:px-6 lg:px-8">
+        <div class="sm:mx-auto sm:w-full sm:max-w-lg">
+            <div class="text-center mb-8">
+                <div class="inline-flex items-center justify-center h-20 w-20 rounded-full bg-green-100 mb-6">
+                    <i class="fas fa-check text-green-600 text-4xl"></i>
+                </div>
+                <h1 class="text-3xl font-bold text-gray-900">Setup Complete!</h1>
+                <p class="mt-2 text-lg text-gray-600">Your Calendar Sync service is ready to use.</p>
+            </div>
+
+            <div class="bg-white py-8 px-6 shadow rounded-lg">
+                <h2 class="text-lg font-medium text-gray-900 mb-4">Quick Start Guide</h2>
+
+                <div class="space-y-4">
+                    <div class="flex items-start">
+                        <div class="flex-shrink-0 h-8 w-8 rounded-full bg-indigo-100 flex items-center justify-center">
+                            <span class="text-indigo-600 font-medium">1</span>
+                        </div>
+                        <div class="ml-4">
+                            <h3 class="text-sm font-medium text-gray-900">Select Your Main Calendar</h3>
+                            <p class="text-sm text-gray-500">Go to Settings and choose which calendar should receive all synced events.</p>
+                        </div>
+                    </div>
+
+                    <div class="flex items-start">
+                        <div class="flex-shrink-0 h-8 w-8 rounded-full bg-indigo-100 flex items-center justify-center">
+                            <span class="text-indigo-600 font-medium">2</span>
+                        </div>
+                        <div class="ml-4">
+                            <h3 class="text-sm font-medium text-gray-900">Connect Client Calendars</h3>
+                            <p class="text-sm text-gray-500">Add calendars from your client organizations to start syncing.</p>
+                        </div>
+                    </div>
+
+                    <div class="flex items-start">
+                        <div class="flex-shrink-0 h-8 w-8 rounded-full bg-indigo-100 flex items-center justify-center">
+                            <span class="text-indigo-600 font-medium">3</span>
+                        </div>
+                        <div class="ml-4">
+                            <h3 class="text-sm font-medium text-gray-900">Let It Sync</h3>
+                            <p class="text-sm text-gray-500">Events will automatically sync every 5 minutes. You can also trigger manual syncs.</p>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="mt-8">
+                    <a href="/app" class="w-full flex justify-center py-3 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700">
+                        Go to Dashboard
+                        <i class="fas fa-arrow-right ml-2"></i>
+                    </a>
+                </div>
+            </div>
+
+            <!-- Progress indicator -->
+            <div class="mt-8 flex justify-center">
+                <div class="flex space-x-2">
+                    <div class="h-2 w-8 rounded-full bg-indigo-600"></div>
+                    <div class="h-2 w-8 rounded-full bg-indigo-600"></div>
+                    <div class="h-2 w-8 rounded-full bg-indigo-600"></div>
+                    <div class="h-2 w-8 rounded-full bg-indigo-600"></div>
+                    <div class="h-2 w-8 rounded-full bg-indigo-600"></div>
+                    <div class="h-2 w-8 rounded-full bg-indigo-600"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+</body>
+</html>

@@ -1,0 +1,188 @@
+{% extends "base.html" %}
+
+{% block title %}{{ target_user['email'] }} - Admin - Calendar Sync{% endblock %}
+
+{% block content %}
+<div class="px-4 sm:px-0">
+    <div class="mb-6">
+        <a href="/admin/users" class="text-sm text-gray-500 hover:text-gray-700">
+            <i class="fas fa-arrow-left mr-1"></i> Back to Users
+        </a>
+    </div>
+
+    <!-- User Info -->
+    <div class="bg-white shadow rounded-lg mb-6">
+        <div class="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
+            <div class="flex items-center">
+                <div class="flex-shrink-0 h-16 w-16 rounded-full bg-indigo-100 flex items-center justify-center">
+                    <span class="text-indigo-600 font-bold text-2xl">{{ target_user['email'][0].upper() }}</span>
+                </div>
+                <div class="ml-4">
+                    <h1 class="text-xl font-bold text-gray-900">{{ target_user['display_name'] or target_user['email'] }}</h1>
+                    <p class="text-gray-500">{{ target_user['email'] }}</p>
+                </div>
+            </div>
+            <div class="flex items-center space-x-3">
+                {% if target_user['is_admin'] %}
+                <span class="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-purple-100 text-purple-800">
+                    Admin
+                </span>
+                {% endif %}
+            </div>
+        </div>
+        <div class="px-6 py-4">
+            <dl class="grid grid-cols-1 gap-4 sm:grid-cols-3">
+                <div>
+                    <dt class="text-sm font-medium text-gray-500">Main Calendar</dt>
+                    <dd class="mt-1 text-sm text-gray-900">{{ target_user['main_calendar_id'] or 'Not set' }}</dd>
+                </div>
+                <div>
+                    <dt class="text-sm font-medium text-gray-500">Last Login</dt>
+                    <dd class="mt-1 text-sm text-gray-900">{{ target_user['last_login_at'] or 'Never' }}</dd>
+                </div>
+                <div>
+                    <dt class="text-sm font-medium text-gray-500">Joined</dt>
+                    <dd class="mt-1 text-sm text-gray-900">{{ target_user['created_at'] }}</dd>
+                </div>
+            </dl>
+        </div>
+        <div class="px-6 py-4 bg-gray-50 border-t border-gray-200 flex flex-wrap gap-3">
+            <button
+                hx-post="/api/admin/users/{{ target_user['id'] }}/sync"
+                hx-swap="none"
+                class="inline-flex items-center px-3 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50"
+            >
+                <i class="fas fa-sync-alt mr-2"></i>Trigger Sync
+            </button>
+            <button
+                hx-post="/api/admin/users/{{ target_user['id'] }}/force-reauth"
+                hx-swap="none"
+                hx-confirm="Force this user to re-authenticate?"
+                class="inline-flex items-center px-3 py-2 border border-yellow-300 text-sm font-medium rounded-md text-yellow-700 bg-white hover:bg-yellow-50"
+            >
+                <i class="fas fa-key mr-2"></i>Force Re-auth
+            </button>
+            {% if not target_user['is_admin'] %}
+            <button
+                hx-put="/api/admin/users/{{ target_user['id'] }}/admin?is_admin=true"
+                hx-swap="none"
+                hx-confirm="Make this user an admin?"
+                class="inline-flex items-center px-3 py-2 border border-purple-300 text-sm font-medium rounded-md text-purple-700 bg-white hover:bg-purple-50"
+            >
+                <i class="fas fa-user-shield mr-2"></i>Make Admin
+            </button>
+            {% else %}
+            <button
+                hx-put="/api/admin/users/{{ target_user['id'] }}/admin?is_admin=false"
+                hx-swap="none"
+                hx-confirm="Remove admin privileges?"
+                class="inline-flex items-center px-3 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50"
+            >
+                <i class="fas fa-user mr-2"></i>Remove Admin
+            </button>
+            {% endif %}
+            {% if target_user['id'] != user.id %}
+            <button
+                hx-delete="/api/admin/users/{{ target_user['id'] }}"
+                hx-swap="none"
+                hx-confirm="DELETE this user and ALL their data? This cannot be undone!"
+                class="inline-flex items-center px-3 py-2 border border-red-300 text-sm font-medium rounded-md text-red-700 bg-white hover:bg-red-50"
+            >
+                <i class="fas fa-trash mr-2"></i>Delete User
+            </button>
+            {% endif %}
+        </div>
+    </div>
+
+    <!-- Connected Calendars -->
+    <div class="bg-white shadow rounded-lg mb-6">
+        <div class="px-6 py-4 border-b border-gray-200">
+            <h2 class="text-lg font-medium text-gray-900">Connected Calendars</h2>
+        </div>
+        {% if calendars %}
+        <ul class="divide-y divide-gray-200">
+            {% for cal in calendars %}
+            <li class="px-6 py-4 flex items-center justify-between">
+                <div class="flex items-center">
+                    <div class="flex-shrink-0">
+                        {% set failures = cal['consecutive_failures'] or 0 %}
+                        {% if failures >= 5 %}
+                        <span class="inline-flex items-center justify-center h-10 w-10 rounded-full bg-red-100">
+                            <i class="fas fa-times text-red-600"></i>
+                        </span>
+                        {% elif failures >= 1 %}
+                        <span class="inline-flex items-center justify-center h-10 w-10 rounded-full bg-yellow-100">
+                            <i class="fas fa-exclamation text-yellow-600"></i>
+                        </span>
+                        {% else %}
+                        <span class="inline-flex items-center justify-center h-10 w-10 rounded-full bg-green-100">
+                            <i class="fas fa-check text-green-600"></i>
+                        </span>
+                        {% endif %}
+                    </div>
+                    <div class="ml-4">
+                        <p class="text-sm font-medium text-gray-900">{{ cal['display_name'] or cal['google_calendar_id'] }}</p>
+                        <p class="text-sm text-gray-500">{{ cal['google_account_email'] }}</p>
+                        <p class="text-xs text-gray-400">
+                            Last sync: {{ cal['last_incremental_sync'] or 'Never' }}
+                            {% if cal['is_active'] %}
+                            <span class="text-green-600">Active</span>
+                            {% else %}
+                            <span class="text-red-600">Inactive</span>
+                            {% endif %}
+                        </p>
+                    </div>
+                </div>
+                <button
+                    hx-post="/api/admin/users/{{ target_user['id'] }}/calendars/{{ cal['id'] }}/disconnect"
+                    hx-swap="none"
+                    hx-confirm="Disconnect this calendar?"
+                    class="text-sm text-red-600 hover:text-red-500"
+                >
+                    Disconnect
+                </button>
+            </li>
+            {% endfor %}
+        </ul>
+        {% else %}
+        <div class="text-center py-8 text-gray-500">
+            No calendars connected
+        </div>
+        {% endif %}
+    </div>
+
+    <!-- Recent Sync Logs -->
+    <div class="bg-white shadow rounded-lg">
+        <div class="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
+            <h2 class="text-lg font-medium text-gray-900">Recent Activity</h2>
+            <a href="/admin/logs?user_id={{ target_user['id'] }}" class="text-sm text-indigo-600 hover:text-indigo-500">View All</a>
+        </div>
+        {% if logs %}
+        <ul class="divide-y divide-gray-200">
+            {% for log in logs %}
+            <li class="px-6 py-3">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <span class="text-sm font-medium text-gray-900">{{ log['action'] }}</span>
+                        {% if log['status'] == 'success' %}
+                        <span class="ml-2 inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-800">Success</span>
+                        {% elif log['status'] == 'failure' %}
+                        <span class="ml-2 inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-red-100 text-red-800">Failed</span>
+                        {% endif %}
+                    </div>
+                    <span class="text-xs text-gray-400">{{ log['created_at'] }}</span>
+                </div>
+                {% if log['details'] %}
+                <p class="text-xs text-gray-500 mt-1 truncate">{{ log['details'] }}</p>
+                {% endif %}
+            </li>
+            {% endfor %}
+        </ul>
+        {% else %}
+        <div class="text-center py-8 text-gray-500">
+            No activity yet
+        </div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

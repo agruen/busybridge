@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full bg-gray-50">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Encryption Key - Setup - Calendar Sync</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+</head>
+<body class="h-full">
+    <div class="min-h-full flex flex-col justify-center py-12 sm:px-6 lg:px-8">
+        <div class="sm:mx-auto sm:w-full sm:max-w-lg">
+            <div class="text-center mb-8">
+                <i class="fas fa-lock text-indigo-600 text-4xl mb-4"></i>
+                <h1 class="text-2xl font-bold text-gray-900">Encryption Key</h1>
+                <p class="mt-2 text-gray-600">Save this key securely - you'll need it to restore from backup.</p>
+            </div>
+
+            <div class="bg-white py-8 px-6 shadow rounded-lg">
+                {% if error %}
+                <div class="mb-4 rounded-md bg-red-50 p-4">
+                    <div class="flex">
+                        <i class="fas fa-exclamation-circle text-red-400 mt-0.5"></i>
+                        <p class="ml-3 text-sm text-red-700">{{ error }}</p>
+                    </div>
+                </div>
+                {% endif %}
+
+                <div class="rounded-md bg-yellow-50 border border-yellow-200 p-4 mb-6">
+                    <div class="flex">
+                        <i class="fas fa-exclamation-triangle text-yellow-400 text-xl"></i>
+                        <div class="ml-3">
+                            <h3 class="text-sm font-medium text-yellow-800">Important</h3>
+                            <p class="mt-1 text-sm text-yellow-700">
+                                This encryption key protects your OAuth tokens. You will need it to restore from a database backup. <strong>It will not be shown again.</strong>
+                            </p>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="mb-6">
+                    <label class="block text-sm font-medium text-gray-700 mb-2">Your Encryption Key</label>
+                    <div class="relative" x-data="{ copied: false }">
+                        <input type="text" readonly value="{{ encryption_key_b64 }}"
+                            id="encryption-key"
+                            class="block w-full rounded-md border-gray-300 bg-gray-50 py-3 px-4 font-mono text-sm pr-20 border">
+                        <button type="button"
+                            @click="navigator.clipboard.writeText(document.getElementById('encryption-key').value); copied = true; setTimeout(() => copied = false, 2000)"
+                            class="absolute inset-y-0 right-0 flex items-center px-4 text-gray-500 hover:text-gray-700">
+                            <span x-show="!copied"><i class="fas fa-copy"></i> Copy</span>
+                            <span x-show="copied" x-cloak class="text-green-600"><i class="fas fa-check"></i> Copied!</span>
+                        </button>
+                    </div>
+                </div>
+
+                <div class="mb-6 p-4 bg-gray-50 rounded-md">
+                    <h4 class="text-sm font-medium text-gray-900 mb-2">Where to save this key:</h4>
+                    <ul class="text-sm text-gray-600 space-y-1">
+                        <li><i class="fas fa-check text-green-500 mr-2"></i>Password manager (recommended)</li>
+                        <li><i class="fas fa-check text-green-500 mr-2"></i>Encrypted file in secure storage</li>
+                        <li><i class="fas fa-check text-green-500 mr-2"></i>Printed copy in a safe</li>
+                    </ul>
+                </div>
+
+                <form action="/setup/step/5" method="POST" class="space-y-6">
+                    <div class="flex items-center">
+                        <input type="checkbox" id="confirmed" name="confirmed" required
+                            class="h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500">
+                        <label for="confirmed" class="ml-3 text-sm font-medium text-gray-700">
+                            I have saved this encryption key securely
+                        </label>
+                    </div>
+
+                    <div class="flex items-center justify-between pt-4">
+                        <a href="/setup?step=4" class="text-sm text-gray-500 hover:text-gray-700">
+                            <i class="fas fa-arrow-left mr-1"></i> Back
+                        </a>
+                        <button type="submit" class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700">
+                            Complete Setup
+                            <i class="fas fa-check ml-2"></i>
+                        </button>
+                    </div>
+                </form>
+            </div>
+
+            <!-- Progress indicator -->
+            <div class="mt-8 flex justify-center">
+                <div class="flex space-x-2">
+                    <div class="h-2 w-8 rounded-full bg-indigo-600"></div>
+                    <div class="h-2 w-8 rounded-full bg-indigo-600"></div>
+                    <div class="h-2 w-8 rounded-full bg-indigo-600"></div>
+                    <div class="h-2 w-8 rounded-full bg-indigo-600"></div>
+                    <div class="h-2 w-8 rounded-full bg-indigo-600"></div>
+                    <div class="h-2 w-8 rounded-full bg-gray-300"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+</body>
+</html>

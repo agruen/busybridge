@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full bg-gray-50">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Calendar Sync{% endblock %}</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+    <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <style>
+        [x-cloak] { display: none !important; }
+    </style>
+</head>
+<body class="h-full">
+    {% block body %}
+    <div class="min-h-full">
+        {% if user %}
+        <nav class="bg-indigo-600">
+            <div class="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+                <div class="flex h-16 items-center justify-between">
+                    <div class="flex items-center">
+                        <div class="flex-shrink-0">
+                            <span class="text-white font-bold text-xl">
+                                <i class="fas fa-calendar-alt mr-2"></i>Calendar Sync
+                            </span>
+                        </div>
+                        <div class="hidden md:block">
+                            <div class="ml-10 flex items-baseline space-x-4">
+                                <a href="/app" class="{% if request.url.path == '/app' %}bg-indigo-700 text-white{% else %}text-indigo-100 hover:bg-indigo-500{% endif %} rounded-md px-3 py-2 text-sm font-medium">
+                                    Dashboard
+                                </a>
+                                <a href="/app/settings" class="{% if '/settings' in request.url.path %}bg-indigo-700 text-white{% else %}text-indigo-100 hover:bg-indigo-500{% endif %} rounded-md px-3 py-2 text-sm font-medium">
+                                    Settings
+                                </a>
+                                <a href="/app/logs" class="{% if '/logs' in request.url.path and '/admin' not in request.url.path %}bg-indigo-700 text-white{% else %}text-indigo-100 hover:bg-indigo-500{% endif %} rounded-md px-3 py-2 text-sm font-medium">
+                                    Logs
+                                </a>
+                                {% if user.is_admin %}
+                                <a href="/admin" class="{% if '/admin' in request.url.path %}bg-indigo-700 text-white{% else %}text-indigo-100 hover:bg-indigo-500{% endif %} rounded-md px-3 py-2 text-sm font-medium">
+                                    Admin
+                                </a>
+                                {% endif %}
+                            </div>
+                        </div>
+                    </div>
+                    <div class="hidden md:block">
+                        <div class="ml-4 flex items-center md:ml-6">
+                            <span class="text-indigo-100 text-sm mr-4">{{ user.email }}</span>
+                            <a href="/auth/logout" class="text-indigo-100 hover:text-white text-sm">
+                                <i class="fas fa-sign-out-alt mr-1"></i>Logout
+                            </a>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </nav>
+        {% endif %}
+
+        <main>
+            <div class="mx-auto max-w-7xl py-6 sm:px-6 lg:px-8">
+                {% block content %}{% endblock %}
+            </div>
+        </main>
+    </div>
+    {% endblock %}
+
+    {% block scripts %}{% endblock %}
+</body>
+</html>
