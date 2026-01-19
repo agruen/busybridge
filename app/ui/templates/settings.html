@@ -1,0 +1,115 @@
+{% extends "base.html" %}
+
+{% block title %}Settings - Calendar Sync{% endblock %}
+
+{% block content %}
+<div class="px-4 sm:px-0">
+    <h1 class="text-2xl font-bold text-gray-900 mb-6">Settings</h1>
+
+    <div class="space-y-6">
+        <!-- Main Calendar Selection -->
+        <div class="bg-white shadow rounded-lg">
+            <div class="px-6 py-4 border-b border-gray-200">
+                <h2 class="text-lg font-medium text-gray-900">Main Calendar</h2>
+                <p class="mt-1 text-sm text-gray-500">Select which calendar should be your main calendar. All client calendar events will sync here.</p>
+            </div>
+            <div class="px-6 py-4">
+                <form hx-put="/api/me/main-calendar" hx-swap="none" class="space-y-4">
+                    <div>
+                        <label for="calendar_id" class="block text-sm font-medium text-gray-700">Calendar</label>
+                        <select id="calendar_id" name="calendar_id" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm py-2 px-3 border">
+                            {% for cal in calendars %}
+                            <option value="{{ cal['id'] }}" {% if cal['id'] == user.main_calendar_id %}selected{% endif %}>
+                                {{ cal.get('summary', cal['id']) }}{% if cal.get('primary') %} (Primary){% endif %}
+                            </option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <button type="submit" class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700">
+                        Save
+                    </button>
+                </form>
+            </div>
+        </div>
+
+        <!-- Notification Preferences -->
+        <div class="bg-white shadow rounded-lg">
+            <div class="px-6 py-4 border-b border-gray-200">
+                <h2 class="text-lg font-medium text-gray-900">Email Notifications</h2>
+                <p class="mt-1 text-sm text-gray-500">Choose what email notifications you want to receive.</p>
+            </div>
+            <div class="px-6 py-4">
+                <form hx-put="/api/me/alert-preferences" hx-swap="none" class="space-y-4">
+                    <div class="flex items-start">
+                        <div class="flex items-center h-5">
+                            <input id="email_on_sync_failure" name="email_on_sync_failure" type="checkbox" checked class="h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500">
+                        </div>
+                        <div class="ml-3 text-sm">
+                            <label for="email_on_sync_failure" class="font-medium text-gray-700">Sync failure alerts</label>
+                            <p class="text-gray-500">Get notified when calendar sync fails multiple times.</p>
+                        </div>
+                    </div>
+                    <div class="flex items-start">
+                        <div class="flex items-center h-5">
+                            <input id="email_on_token_revoked" name="email_on_token_revoked" type="checkbox" checked class="h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500">
+                        </div>
+                        <div class="ml-3 text-sm">
+                            <label for="email_on_token_revoked" class="font-medium text-gray-700">Re-authentication required</label>
+                            <p class="text-gray-500">Get notified when you need to re-authenticate with Google.</p>
+                        </div>
+                    </div>
+                    <button type="submit" class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700">
+                        Save Preferences
+                    </button>
+                </form>
+            </div>
+        </div>
+
+        <!-- Sync Actions -->
+        <div class="bg-white shadow rounded-lg">
+            <div class="px-6 py-4 border-b border-gray-200">
+                <h2 class="text-lg font-medium text-gray-900">Sync Actions</h2>
+            </div>
+            <div class="px-6 py-4 space-y-4">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <h3 class="text-sm font-medium text-gray-900">Full Re-sync</h3>
+                        <p class="text-sm text-gray-500">Re-sync all calendars from scratch. Use this if you notice missing events.</p>
+                    </div>
+                    <button
+                        hx-post="/api/sync/full"
+                        hx-swap="none"
+                        hx-confirm="This will re-sync all your calendars. Continue?"
+                        class="inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50"
+                    >
+                        <i class="fas fa-sync-alt mr-2"></i>
+                        Full Re-sync
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Danger Zone -->
+        <div class="bg-white shadow rounded-lg border-2 border-red-200">
+            <div class="px-6 py-4 border-b border-gray-200 bg-red-50">
+                <h2 class="text-lg font-medium text-red-800">Danger Zone</h2>
+            </div>
+            <div class="px-6 py-4 space-y-4">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <h3 class="text-sm font-medium text-gray-900">Disconnect All Calendars</h3>
+                        <p class="text-sm text-gray-500">Remove all client calendar connections and synced events.</p>
+                    </div>
+                    <button
+                        onclick="if(confirm('Are you SURE you want to disconnect ALL calendars? This cannot be undone.')) { alert('Would disconnect all calendars'); }"
+                        class="inline-flex items-center px-4 py-2 border border-red-300 text-sm font-medium rounded-md text-red-700 bg-white hover:bg-red-50"
+                    >
+                        <i class="fas fa-unlink mr-2"></i>
+                        Disconnect All
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

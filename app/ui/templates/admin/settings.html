@@ -1,0 +1,139 @@
+{% extends "base.html" %}
+
+{% block title %}System Settings - Admin - Calendar Sync{% endblock %}
+
+{% block content %}
+<div class="px-4 sm:px-0">
+    <div class="mb-6">
+        <h1 class="text-2xl font-bold text-gray-900">System Settings</h1>
+        <p class="mt-1 text-sm text-gray-500">Configure system-wide settings.</p>
+    </div>
+
+    <div class="space-y-6">
+        <!-- SMTP Settings -->
+        <div class="bg-white shadow rounded-lg">
+            <div class="px-6 py-4 border-b border-gray-200">
+                <h2 class="text-lg font-medium text-gray-900">Email (SMTP) Settings</h2>
+            </div>
+            <form hx-put="/api/admin/settings" hx-swap="none" class="px-6 py-4 space-y-4">
+                <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                    <div>
+                        <label for="smtp_host" class="block text-sm font-medium text-gray-700">SMTP Host</label>
+                        <input type="text" id="smtp_host" name="smtp_host" value="{{ settings.get('smtp_host', '') }}"
+                            class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm py-2 px-3 border">
+                    </div>
+                    <div>
+                        <label for="smtp_port" class="block text-sm font-medium text-gray-700">SMTP Port</label>
+                        <input type="number" id="smtp_port" name="smtp_port" value="{{ settings.get('smtp_port', '587') }}"
+                            class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm py-2 px-3 border">
+                    </div>
+                </div>
+                <div>
+                    <label for="smtp_username" class="block text-sm font-medium text-gray-700">SMTP Username</label>
+                    <input type="text" id="smtp_username" name="smtp_username" value="{{ settings.get('smtp_username', '') }}"
+                        class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm py-2 px-3 border">
+                </div>
+                <div>
+                    <label for="smtp_password" class="block text-sm font-medium text-gray-700">SMTP Password</label>
+                    <input type="password" id="smtp_password" name="smtp_password" placeholder="Leave blank to keep existing"
+                        class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm py-2 px-3 border">
+                </div>
+                <div>
+                    <label for="smtp_from_address" class="block text-sm font-medium text-gray-700">From Address</label>
+                    <input type="email" id="smtp_from_address" name="smtp_from_address" value="{{ settings.get('smtp_from_address', '') }}"
+                        class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm py-2 px-3 border">
+                </div>
+                <div>
+                    <label for="alert_emails" class="block text-sm font-medium text-gray-700">Admin Alert Emails</label>
+                    <input type="text" id="alert_emails" name="alert_emails" value="{{ settings.get('alert_emails', '') }}"
+                        placeholder="admin1@example.com, admin2@example.com"
+                        class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm py-2 px-3 border">
+                </div>
+                <div class="flex items-center">
+                    <input type="checkbox" id="alerts_enabled" name="alerts_enabled" value="true"
+                        {% if settings.get('alerts_enabled') == 'true' %}checked{% endif %}
+                        class="h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500">
+                    <label for="alerts_enabled" class="ml-3 text-sm font-medium text-gray-700">Enable email alerts</label>
+                </div>
+                <div class="flex space-x-3 pt-4">
+                    <button type="submit" class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700">
+                        Save Settings
+                    </button>
+                    <button type="button"
+                        hx-post="/api/admin/settings/test-email"
+                        hx-swap="none"
+                        class="inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50">
+                        Send Test Email
+                    </button>
+                </div>
+            </form>
+        </div>
+
+        <!-- Sync Control -->
+        <div class="bg-white shadow rounded-lg">
+            <div class="px-6 py-4 border-b border-gray-200">
+                <h2 class="text-lg font-medium text-gray-900">Sync Control</h2>
+            </div>
+            <div class="px-6 py-4">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <p class="text-sm font-medium text-gray-900">Sync Status</p>
+                        <p class="text-sm text-gray-500">
+                            {% if settings.get('sync_paused') == 'true' %}
+                            <span class="text-red-600">Paused</span> - No sync operations are running
+                            {% else %}
+                            <span class="text-green-600">Active</span> - Sync operations are running normally
+                            {% endif %}
+                        </p>
+                    </div>
+                    {% if settings.get('sync_paused') == 'true' %}
+                    <button
+                        hx-post="/api/admin/sync/resume"
+                        hx-swap="none"
+                        class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-green-600 hover:bg-green-700"
+                    >
+                        <i class="fas fa-play mr-2"></i>Resume Sync
+                    </button>
+                    {% else %}
+                    <button
+                        hx-post="/api/admin/sync/pause"
+                        hx-swap="none"
+                        class="inline-flex items-center px-4 py-2 border border-yellow-300 text-sm font-medium rounded-md text-yellow-700 bg-white hover:bg-yellow-50"
+                    >
+                        <i class="fas fa-pause mr-2"></i>Pause Sync
+                    </button>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+
+        <!-- Danger Zone -->
+        <div class="bg-white shadow rounded-lg border-2 border-red-200">
+            <div class="px-6 py-4 border-b border-gray-200 bg-red-50">
+                <h2 class="text-lg font-medium text-red-800">Danger Zone</h2>
+            </div>
+            <div class="px-6 py-4 space-y-4">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <h3 class="text-sm font-medium text-gray-900">Factory Reset</h3>
+                        <p class="text-sm text-gray-500">Delete ALL data and return to setup wizard. This cannot be undone.</p>
+                    </div>
+                    <button
+                        onclick="if(prompt('Type RESET to confirm factory reset:') === 'RESET') { fetch('/api/admin/factory-reset', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({confirmation: 'RESET'})}).then(() => window.location.href = '/setup'); }"
+                        class="inline-flex items-center px-4 py-2 border border-red-300 text-sm font-medium rounded-md text-red-700 bg-white hover:bg-red-50"
+                    >
+                        <i class="fas fa-exclamation-triangle mr-2"></i>
+                        Factory Reset
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="mt-6">
+        <a href="/admin" class="text-sm text-gray-500 hover:text-gray-700">
+            <i class="fas fa-arrow-left mr-1"></i> Back to Admin Dashboard
+        </a>
+    </div>
+</div>
+{% endblock %}

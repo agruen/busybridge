@@ -1,0 +1,128 @@
+{% extends "base.html" %}
+
+{% block title %}Admin Dashboard - Calendar Sync{% endblock %}
+
+{% block content %}
+<div class="px-4 sm:px-0">
+    <div class="sm:flex sm:items-center sm:justify-between mb-6">
+        <h1 class="text-2xl font-bold text-gray-900">Admin Dashboard</h1>
+        <div class="mt-4 sm:mt-0 flex space-x-3">
+            <a href="/admin/users" class="inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50">
+                <i class="fas fa-users mr-2"></i>Users
+            </a>
+            <a href="/admin/logs" class="inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50">
+                <i class="fas fa-list mr-2"></i>Logs
+            </a>
+            <a href="/admin/settings" class="inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50">
+                <i class="fas fa-cog mr-2"></i>Settings
+            </a>
+        </div>
+    </div>
+
+    <!-- Stats Grid -->
+    <div class="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4 mb-8">
+        <div class="bg-white overflow-hidden shadow rounded-lg">
+            <div class="px-4 py-5 sm:p-6">
+                <dt class="text-sm font-medium text-gray-500 truncate">Total Users</dt>
+                <dd class="mt-1 text-3xl font-semibold text-gray-900">{{ total_users }}</dd>
+            </div>
+        </div>
+        <div class="bg-white overflow-hidden shadow rounded-lg">
+            <div class="px-4 py-5 sm:p-6">
+                <dt class="text-sm font-medium text-gray-500 truncate">Active Calendars</dt>
+                <dd class="mt-1 text-3xl font-semibold text-gray-900">{{ active_calendars }}</dd>
+            </div>
+        </div>
+        <div class="bg-white overflow-hidden shadow rounded-lg">
+            <div class="px-4 py-5 sm:p-6">
+                <dt class="text-sm font-medium text-gray-500 truncate">Events Synced</dt>
+                <dd class="mt-1 text-3xl font-semibold text-gray-900">{{ total_events }}</dd>
+            </div>
+        </div>
+        <div class="bg-white overflow-hidden shadow rounded-lg">
+            <div class="px-4 py-5 sm:p-6">
+                <dt class="text-sm font-medium text-gray-500 truncate">Errors (24h)</dt>
+                <dd class="mt-1 text-3xl font-semibold {% if errors_24h > 0 %}text-red-600{% else %}text-green-600{% endif %}">{{ errors_24h }}</dd>
+            </div>
+        </div>
+    </div>
+
+    <!-- Quick Actions -->
+    <div class="bg-white shadow rounded-lg mb-8">
+        <div class="px-6 py-4 border-b border-gray-200">
+            <h2 class="text-lg font-medium text-gray-900">Quick Actions</h2>
+        </div>
+        <div class="px-6 py-4 flex flex-wrap gap-3">
+            <button
+                hx-post="/api/admin/sync/pause"
+                hx-swap="none"
+                class="inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50"
+            >
+                <i class="fas fa-pause mr-2"></i>Pause Sync
+            </button>
+            <button
+                hx-post="/api/admin/sync/resume"
+                hx-swap="none"
+                class="inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50"
+            >
+                <i class="fas fa-play mr-2"></i>Resume Sync
+            </button>
+            <button
+                hx-post="/api/admin/cleanup"
+                hx-swap="none"
+                class="inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50"
+            >
+                <i class="fas fa-broom mr-2"></i>Run Cleanup
+            </button>
+            <a
+                href="/api/admin/export"
+                class="inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50"
+            >
+                <i class="fas fa-download mr-2"></i>Export Database
+            </a>
+        </div>
+    </div>
+
+    <!-- Recent Alerts -->
+    <div class="bg-white shadow rounded-lg">
+        <div class="px-6 py-4 border-b border-gray-200">
+            <h2 class="text-lg font-medium text-gray-900">Recent Alerts</h2>
+        </div>
+        {% if recent_alerts %}
+        <ul class="divide-y divide-gray-200">
+            {% for alert in recent_alerts %}
+            <li class="px-6 py-4">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <p class="text-sm font-medium text-gray-900">{{ alert['alert_type'] }}</p>
+                        <p class="text-sm text-gray-500">To: {{ alert['recipient_email'] }}</p>
+                        <p class="text-xs text-gray-400">{{ alert['created_at'] }}</p>
+                    </div>
+                    <div>
+                        {% if alert['sent_at'] %}
+                        <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
+                            Sent
+                        </span>
+                        {% elif alert['attempts'] >= 3 %}
+                        <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-800">
+                            Failed
+                        </span>
+                        {% else %}
+                        <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-yellow-100 text-yellow-800">
+                            Pending
+                        </span>
+                        {% endif %}
+                    </div>
+                </div>
+            </li>
+            {% endfor %}
+        </ul>
+        {% else %}
+        <div class="text-center py-12 text-gray-500">
+            <i class="fas fa-bell-slash text-4xl mb-4"></i>
+            <p>No recent alerts</p>
+        </div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

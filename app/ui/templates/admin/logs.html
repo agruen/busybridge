@@ -1,0 +1,115 @@
+{% extends "base.html" %}
+
+{% block title %}System Logs - Admin - Calendar Sync{% endblock %}
+
+{% block content %}
+<div class="px-4 sm:px-0">
+    <div class="sm:flex sm:items-center sm:justify-between mb-6">
+        <div>
+            <h1 class="text-2xl font-bold text-gray-900">System Logs</h1>
+            <p class="mt-1 text-sm text-gray-500">View all sync activity across the system.</p>
+        </div>
+        <div class="mt-4 sm:mt-0 flex space-x-3">
+            <select
+                onchange="window.location.href='/admin/logs?status_filter=' + this.value + '&user_id={{ user_id or '' }}'"
+                class="rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm py-2 px-3 border"
+            >
+                <option value="">All Statuses</option>
+                <option value="success" {% if status_filter == 'success' %}selected{% endif %}>Success</option>
+                <option value="failure" {% if status_filter == 'failure' %}selected{% endif %}>Failure</option>
+                <option value="warning" {% if status_filter == 'warning' %}selected{% endif %}>Warning</option>
+            </select>
+        </div>
+    </div>
+
+    <div class="bg-white shadow rounded-lg overflow-hidden">
+        {% if logs %}
+        <table class="min-w-full divide-y divide-gray-200">
+            <thead class="bg-gray-50">
+                <tr>
+                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Time</th>
+                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">User</th>
+                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Calendar</th>
+                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Action</th>
+                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Details</th>
+                </tr>
+            </thead>
+            <tbody class="bg-white divide-y divide-gray-200">
+                {% for log in logs %}
+                <tr>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{{ log['created_at'] }}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                        {% if log['user_email'] %}
+                        <a href="/admin/users/{{ log['user_id'] }}" class="text-indigo-600 hover:text-indigo-500">{{ log['user_email'] }}</a>
+                        {% else %}
+                        System
+                        {% endif %}
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{{ log['calendar_name'] or '-' }}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{{ log['action'] }}</td>
+                    <td class="px-6 py-4 whitespace-nowrap">
+                        {% if log['status'] == 'success' %}
+                        <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">Success</span>
+                        {% elif log['status'] == 'failure' %}
+                        <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-800">Failure</span>
+                        {% else %}
+                        <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-yellow-100 text-yellow-800">{{ log['status'] }}</span>
+                        {% endif %}
+                    </td>
+                    <td class="px-6 py-4 text-sm text-gray-500 max-w-md truncate">{{ log['details'] or '-' }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+
+        <!-- Pagination -->
+        {% if total_pages > 1 %}
+        <div class="bg-white px-4 py-3 flex items-center justify-between border-t border-gray-200 sm:px-6">
+            <div class="flex-1 flex justify-between sm:hidden">
+                {% if page > 1 %}
+                <a href="/admin/logs?page={{ page - 1 }}&user_id={{ user_id or '' }}&status_filter={{ status_filter or '' }}" class="relative inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50">Previous</a>
+                {% endif %}
+                {% if page < total_pages %}
+                <a href="/admin/logs?page={{ page + 1 }}&user_id={{ user_id or '' }}&status_filter={{ status_filter or '' }}" class="ml-3 relative inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50">Next</a>
+                {% endif %}
+            </div>
+            <div class="hidden sm:flex-1 sm:flex sm:items-center sm:justify-between">
+                <div>
+                    <p class="text-sm text-gray-700">
+                        Showing page <span class="font-medium">{{ page }}</span> of <span class="font-medium">{{ total_pages }}</span>
+                        (<span class="font-medium">{{ total }}</span> total entries)
+                    </p>
+                </div>
+                <div>
+                    <nav class="relative z-0 inline-flex rounded-md shadow-sm -space-x-px">
+                        {% if page > 1 %}
+                        <a href="/admin/logs?page={{ page - 1 }}&user_id={{ user_id or '' }}&status_filter={{ status_filter or '' }}" class="relative inline-flex items-center px-2 py-2 rounded-l-md border border-gray-300 bg-white text-sm font-medium text-gray-500 hover:bg-gray-50">
+                            <i class="fas fa-chevron-left"></i>
+                        </a>
+                        {% endif %}
+                        {% if page < total_pages %}
+                        <a href="/admin/logs?page={{ page + 1 }}&user_id={{ user_id or '' }}&status_filter={{ status_filter or '' }}" class="relative inline-flex items-center px-2 py-2 rounded-r-md border border-gray-300 bg-white text-sm font-medium text-gray-500 hover:bg-gray-50">
+                            <i class="fas fa-chevron-right"></i>
+                        </a>
+                        {% endif %}
+                    </nav>
+                </div>
+            </div>
+        </div>
+        {% endif %}
+        {% else %}
+        <div class="text-center py-12 text-gray-500">
+            <i class="fas fa-clipboard-list text-4xl mb-4"></i>
+            <p>No logs found</p>
+        </div>
+        {% endif %}
+    </div>
+
+    <div class="mt-4">
+        <a href="/admin" class="text-sm text-gray-500 hover:text-gray-700">
+            <i class="fas fa-arrow-left mr-1"></i> Back to Admin Dashboard
+        </a>
+    </div>
+</div>
+{% endblock %}

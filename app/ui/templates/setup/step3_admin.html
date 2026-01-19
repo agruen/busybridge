@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full bg-gray-50">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Admin Setup - Calendar Sync</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+</head>
+<body class="h-full">
+    <div class="min-h-full flex flex-col justify-center py-12 sm:px-6 lg:px-8">
+        <div class="sm:mx-auto sm:w-full sm:max-w-lg">
+            <div class="text-center mb-8">
+                <i class="fas fa-user-shield text-indigo-600 text-4xl mb-4"></i>
+                <h1 class="text-2xl font-bold text-gray-900">Admin Authentication</h1>
+                <p class="mt-2 text-gray-600">Sign in with your Google Workspace account to become the admin.</p>
+            </div>
+
+            <div class="bg-white py-8 px-6 shadow rounded-lg">
+                {% if oobe_data.get('admin_email') %}
+                <!-- Admin already authenticated -->
+                <div class="text-center mb-6">
+                    <div class="inline-flex items-center justify-center h-16 w-16 rounded-full bg-green-100 mb-4">
+                        <i class="fas fa-check text-green-600 text-2xl"></i>
+                    </div>
+                    <h2 class="text-lg font-medium text-gray-900">Signed in as</h2>
+                    <p class="text-xl font-semibold text-indigo-600 mt-1">{{ oobe_data['admin_email'] }}</p>
+                    {% if oobe_data.get('admin_name') %}
+                    <p class="text-gray-500">{{ oobe_data['admin_name'] }}</p>
+                    {% endif %}
+                </div>
+
+                <div class="rounded-md bg-blue-50 p-4 mb-6">
+                    <div class="flex">
+                        <i class="fas fa-info-circle text-blue-400 mt-0.5"></i>
+                        <div class="ml-3">
+                            <p class="text-sm text-blue-700">
+                                This will restrict the service to <strong>@{{ oobe_data['domain'] }}</strong> users only.
+                            </p>
+                        </div>
+                    </div>
+                </div>
+
+                <form action="/setup/step/3/confirm" method="POST" class="space-y-4">
+                    <div class="flex items-center justify-between">
+                        <a href="/setup?step=2" class="text-sm text-gray-500 hover:text-gray-700">
+                            <i class="fas fa-arrow-left mr-1"></i> Back
+                        </a>
+                        <button type="submit" class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700">
+                            Confirm & Continue
+                            <i class="fas fa-arrow-right ml-2"></i>
+                        </button>
+                    </div>
+                </form>
+
+                <div class="mt-4 text-center">
+                    <a href="/setup/step/3/auth" class="text-sm text-gray-500 hover:text-gray-700">
+                        Sign in with a different account
+                    </a>
+                </div>
+                {% else %}
+                <!-- Need to authenticate -->
+                <div class="text-center">
+                    <p class="text-gray-600 mb-6">
+                        The account you sign in with will become the first admin. Other users from the same Google Workspace domain will be able to use this service.
+                    </p>
+
+                    <a href="/setup/step/3/auth" class="w-full flex justify-center py-3 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700">
+                        <i class="fab fa-google mr-2"></i>
+                        Sign in with Google
+                    </a>
+
+                    <div class="mt-6 flex items-center justify-between">
+                        <a href="/setup?step=2" class="text-sm text-gray-500 hover:text-gray-700">
+                            <i class="fas fa-arrow-left mr-1"></i> Back
+                        </a>
+                    </div>
+                </div>
+                {% endif %}
+            </div>
+
+            <!-- Progress indicator -->
+            <div class="mt-8 flex justify-center">
+                <div class="flex space-x-2">
+                    <div class="h-2 w-8 rounded-full bg-indigo-600"></div>
+                    <div class="h-2 w-8 rounded-full bg-indigo-600"></div>
+                    <div class="h-2 w-8 rounded-full bg-indigo-600"></div>
+                    <div class="h-2 w-8 rounded-full bg-gray-300"></div>
+                    <div class="h-2 w-8 rounded-full bg-gray-300"></div>
+                    <div class="h-2 w-8 rounded-full bg-gray-300"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+</body>
+</html>

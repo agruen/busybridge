@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full bg-gray-50">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Email Alerts - Setup - Calendar Sync</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <style>[x-cloak] { display: none !important; }</style>
+</head>
+<body class="h-full">
+    <div class="min-h-full flex flex-col justify-center py-12 sm:px-6 lg:px-8">
+        <div class="sm:mx-auto sm:w-full sm:max-w-lg">
+            <div class="text-center mb-8">
+                <i class="fas fa-envelope text-indigo-600 text-4xl mb-4"></i>
+                <h1 class="text-2xl font-bold text-gray-900">Email Alerts</h1>
+                <p class="mt-2 text-gray-600">Configure email notifications for sync failures and issues.</p>
+            </div>
+
+            <div class="bg-white py-8 px-6 shadow rounded-lg">
+                <form action="/setup/step/4" method="POST" class="space-y-6" x-data="{ enabled: false }">
+                    <div class="flex items-center">
+                        <input type="checkbox" id="enabled" name="enabled" x-model="enabled"
+                            class="h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500">
+                        <label for="enabled" class="ml-3 text-sm font-medium text-gray-700">
+                            Enable email alerts for sync failures and issues
+                        </label>
+                    </div>
+
+                    <div x-show="enabled" x-cloak class="space-y-4 pt-4 border-t border-gray-200">
+                        <div class="grid grid-cols-2 gap-4">
+                            <div>
+                                <label for="smtp_host" class="block text-sm font-medium text-gray-700">SMTP Host</label>
+                                <input type="text" id="smtp_host" name="smtp_host"
+                                    placeholder="smtp.gmail.com"
+                                    class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm py-2 px-3 border">
+                            </div>
+                            <div>
+                                <label for="smtp_port" class="block text-sm font-medium text-gray-700">SMTP Port</label>
+                                <input type="number" id="smtp_port" name="smtp_port" value="587"
+                                    class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm py-2 px-3 border">
+                            </div>
+                        </div>
+
+                        <div>
+                            <label for="smtp_username" class="block text-sm font-medium text-gray-700">SMTP Username</label>
+                            <input type="text" id="smtp_username" name="smtp_username"
+                                placeholder="your-email@gmail.com"
+                                class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm py-2 px-3 border">
+                        </div>
+
+                        <div>
+                            <label for="smtp_password" class="block text-sm font-medium text-gray-700">SMTP Password</label>
+                            <input type="password" id="smtp_password" name="smtp_password"
+                                placeholder="App password or SMTP password"
+                                class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm py-2 px-3 border">
+                            <p class="mt-1 text-xs text-gray-500">For Gmail, use an App Password</p>
+                        </div>
+
+                        <div>
+                            <label for="from_address" class="block text-sm font-medium text-gray-700">From Address</label>
+                            <input type="email" id="from_address" name="from_address"
+                                placeholder="noreply@yourdomain.com"
+                                class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm py-2 px-3 border">
+                        </div>
+
+                        <div>
+                            <label for="alert_emails" class="block text-sm font-medium text-gray-700">Admin Notification Emails</label>
+                            <input type="text" id="alert_emails" name="alert_emails"
+                                placeholder="admin@example.com, another@example.com"
+                                class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm py-2 px-3 border">
+                            <p class="mt-1 text-xs text-gray-500">Comma-separated list of emails for admin alerts</p>
+                        </div>
+                    </div>
+
+                    <div class="flex items-center justify-between pt-4">
+                        <a href="/setup?step=3" class="text-sm text-gray-500 hover:text-gray-700">
+                            <i class="fas fa-arrow-left mr-1"></i> Back
+                        </a>
+                        <div class="space-x-3">
+                            <button type="submit" class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700">
+                                <span x-text="enabled ? 'Next' : 'Skip'"></span>
+                                <i class="fas fa-arrow-right ml-2"></i>
+                            </button>
+                        </div>
+                    </div>
+                </form>
+            </div>
+
+            <!-- Progress indicator -->
+            <div class="mt-8 flex justify-center">
+                <div class="flex space-x-2">
+                    <div class="h-2 w-8 rounded-full bg-indigo-600"></div>
+                    <div class="h-2 w-8 rounded-full bg-indigo-600"></div>
+                    <div class="h-2 w-8 rounded-full bg-indigo-600"></div>
+                    <div class="h-2 w-8 rounded-full bg-indigo-600"></div>
+                    <div class="h-2 w-8 rounded-full bg-gray-300"></div>
+                    <div class="h-2 w-8 rounded-full bg-gray-300"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+</body>
+</html>
