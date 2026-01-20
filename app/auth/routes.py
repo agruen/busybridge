@@ -31,8 +31,54 @@ from app.database import get_database, get_organization, is_oobe_completed
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/auth", tags=["auth"])
 
-# Store OAuth states temporarily (in production, use Redis or similar)
-_oauth_states: dict[str, dict] = {}
+
+async def store_oauth_state(state: str, state_type: str, user_id: Optional[int] = None, next_url: Optional[str] = None, ttl_minutes: int = 10) -> None:
+    """Store OAuth state in database with TTL."""
+    from datetime import datetime, timedelta
+    db = await get_database()
+    expires_at = (datetime.utcnow() + timedelta(minutes=ttl_minutes)).isoformat()
+    await db.execute(
+        """INSERT INTO oauth_states (state, state_type, user_id, next_url, expires_at)
+           VALUES (?, ?, ?, ?, ?)""",
+        (state, state_type, user_id, next_url, expires_at)
+    )
+    await db.commit()
+
+
+async def get_oauth_state(state: str) -> Optional[dict]:
+    """Retrieve and delete OAuth state from database."""
+    from datetime import datetime
+    db = await get_database()
+
+    # Get state if not expired
+    cursor = await db.execute(
+        """SELECT state_type, user_id, next_url FROM oauth_states
+           WHERE state = ? AND expires_at > ?""",
+        (state, datetime.utcnow().isoformat())
+    )
+    row = await cursor.fetchone()
+
+    if row:
+        # Delete the state (one-time use)
+        await db.execute("DELETE FROM oauth_states WHERE state = ?", (state,))
+        await db.commit()
+        return {
+            "type": row[0],
+            "user_id": row[1],
+            "next": row[2]
+        }
+    return None
+
+
+async def cleanup_expired_oauth_states() -> None:
+    """Clean up expired OAuth states."""
+    from datetime import datetime
+    db = await get_database()
+    await db.execute(
+        "DELETE FROM oauth_states WHERE expires_at < ?",
+        (datetime.utcnow().isoformat(),)
+    )
+    await db.commit()
 
 
 def get_redirect_uri(request: Request, path: str) -> str:
@@ -57,7 +103,8 @@ async def login(request: Request, next: Optional[str] = None):
 
     # Generate state token
     state = secrets.token_urlsafe(32)
-    _oauth_states[state] = {"type": "login", "next": next or "/app"}
+    await store_oauth_state(state, "login", next_url=next or "/app")
+    await cleanup_expired_oauth_states()  # Clean up old states
 
     redirect_uri = get_redirect_uri(request, "/auth/callback")
     auth_url = build_auth_url(
@@ -87,13 +134,13 @@ async def oauth_callback(
             status_code=status.HTTP_302_FOUND
         )
 
-    if not state or state not in _oauth_states:
+    state_data = await get_oauth_state(state)
+    if not state_data:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid state parameter"
+            detail="Invalid or expired state parameter"
         )
 
-    state_data = _oauth_states.pop(state)
     redirect_uri = get_redirect_uri(request, "/auth/callback")
 
     try:
@@ -136,6 +183,27 @@ async def oauth_callback(
             expires_in=tokens.get("expires_in")
         )
 
+        # Initialize main calendar if not set
+        if not user.main_calendar_id:
+            try:
+                from app.sync.google_calendar import GoogleCalendarClient
+                from app.config import get_settings
+                client_settings = get_settings()
+                cal_client = GoogleCalendarClient(access_token, client_settings)
+                calendars = cal_client.list_calendars()
+                # Find the primary calendar
+                primary_cal = next((c for c in calendars if c.get("primary")), None)
+                if primary_cal:
+                    db = await get_database()
+                    await db.execute(
+                        "UPDATE users SET main_calendar_id = ? WHERE id = ?",
+                        (primary_cal["id"], user.id)
+                    )
+                    await db.commit()
+                    logger.info(f"Set main calendar for user {user.id}: {primary_cal['id']}")
+            except Exception as e:
+                logger.warning(f"Could not initialize main calendar for user {user.id}: {e}")
+
         # Update last login
         await update_user_last_login(user.id)
 
@@ -169,11 +237,9 @@ async def oauth_callback(
 
 
 @router.get("/connect-client")
-async def connect_client(request: Request, user: User = None):
+async def connect_client(request: Request):
     """Initiate OAuth for connecting a client calendar."""
-    if user is None:
-        from fastapi import Depends
-        user = await get_current_user(request)
+    user = await get_current_user(request)
 
     try:
         client_id, _ = await get_oauth_credentials()
@@ -185,7 +251,8 @@ async def connect_client(request: Request, user: User = None):
 
     # Generate state token
     state = secrets.token_urlsafe(32)
-    _oauth_states[state] = {"type": "client", "user_id": user.id}
+    await store_oauth_state(state, "client", user_id=user.id)
+    await cleanup_expired_oauth_states()  # Clean up old states
 
     redirect_uri = get_redirect_uri(request, "/auth/connect-client/callback")
     auth_url = build_auth_url(
@@ -215,13 +282,12 @@ async def connect_client_callback(
             status_code=status.HTTP_302_FOUND
         )
 
-    if not state or state not in _oauth_states:
+    state_data = await get_oauth_state(state)
+    if not state_data:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid state parameter"
+            detail="Invalid or expired state parameter"
         )
-
-    state_data = _oauth_states.pop(state)
 
     if state_data.get("type") != "client":
         raise HTTPException(

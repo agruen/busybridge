@@ -58,22 +58,34 @@ async def receive_google_calendar_webhook(
     if channel["expiration"]:
         expiry = datetime.fromisoformat(channel["expiration"])
         if datetime.utcnow() > expiry:
-            logger.warning(f"Expired webhook channel: {x_goog_channel_id}")
-            return {"status": "ok", "message": "Channel expired"}
+            logger.warning(f"Expired webhook channel: {x_goog_channel_id}, cleaning up")
+            # Delete expired channel from database
+            await db.execute(
+                "DELETE FROM webhook_channels WHERE channel_id = ?",
+                (x_goog_channel_id,)
+            )
+            await db.commit()
+            # TODO: Trigger webhook re-registration for this calendar
+            return {"status": "ok", "message": "Channel expired and removed"}
 
     # Trigger sync for the affected calendar
     try:
         from app.sync.engine import trigger_sync_for_calendar, trigger_sync_for_main_calendar
+        from app.utils.tasks import create_background_task
 
         if channel["calendar_type"] == "main":
             # Sync main calendar
-            import asyncio
-            asyncio.create_task(trigger_sync_for_main_calendar(channel["user_id"]))
+            create_background_task(
+                trigger_sync_for_main_calendar(channel["user_id"]),
+                f"sync_main_calendar_user_{channel['user_id']}"
+            )
         else:
             # Sync client calendar
             if channel["client_calendar_id"]:
-                import asyncio
-                asyncio.create_task(trigger_sync_for_calendar(channel["client_calendar_id"]))
+                create_background_task(
+                    trigger_sync_for_calendar(channel["client_calendar_id"]),
+                    f"sync_calendar_{channel['client_calendar_id']}"
+                )
 
         logger.info(
             f"Sync triggered for calendar: "

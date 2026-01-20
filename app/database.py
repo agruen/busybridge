@@ -180,6 +180,18 @@ CREATE TABLE IF NOT EXISTS main_calendar_sync_state (
     last_error TEXT,
     UNIQUE(user_id)
 );
+
+-- OAuth state storage (replaces in-memory dict)
+CREATE TABLE IF NOT EXISTS oauth_states (
+    state TEXT PRIMARY KEY,
+    state_type TEXT NOT NULL,
+    user_id INTEGER,
+    next_url TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    expires_at TIMESTAMP NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_oauth_states_expiry ON oauth_states(expires_at);
 """
 
 

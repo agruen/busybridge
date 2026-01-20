@@ -271,8 +271,11 @@ async def trigger_user_sync(
         )
 
     from app.sync.engine import trigger_sync_for_user
-    import asyncio
-    asyncio.create_task(trigger_sync_for_user(user_id))
+    from app.utils.tasks import create_background_task
+    create_background_task(
+        trigger_sync_for_user(user_id),
+        f"admin_trigger_sync_user_{user_id}"
+    )
 
     return {"status": "ok", "message": "Sync triggered"}
 
@@ -483,8 +486,8 @@ async def resume_sync(admin: User = Depends(require_admin)):
 async def trigger_cleanup(admin: User = Depends(require_admin)):
     """Trigger manual cleanup of old records."""
     from app.jobs.cleanup import run_retention_cleanup
-    import asyncio
-    asyncio.create_task(run_retention_cleanup())
+    from app.utils.tasks import create_background_task
+    create_background_task(run_retention_cleanup(), "admin_trigger_cleanup")
     return {"status": "ok", "message": "Cleanup triggered"}
 
 
@@ -574,15 +577,17 @@ async def factory_reset(
     db = await get_database()
     settings = get_settings()
 
-    # Delete all data
-    tables = [
+    # Delete all data - table names are from hardcoded whitelist, safe to use in query
+    # SQLite doesn't support parameterized table names, so this is the correct approach
+    SAFE_TABLES = frozenset([
         "webhook_channels", "alert_queue", "sync_log", "busy_blocks",
         "event_mappings", "calendar_sync_state", "main_calendar_sync_state",
         "client_calendars", "oauth_tokens", "users", "settings", "organization",
-        "job_locks"
-    ]
+        "job_locks", "oauth_states"
+    ])
 
-    for table in tables:
+    for table in SAFE_TABLES:
+        # Using f-string with hardcoded whitelist is safe and necessary for SQLite
         await db.execute(f"DELETE FROM {table}")
 
     await db.commit()

@@ -128,21 +128,25 @@ async def acquire_job_lock(job_name: str, timeout_minutes: int = 30) -> bool:
     now = datetime.utcnow()
     cutoff = (now - timedelta(minutes=timeout_minutes)).isoformat()
 
-    # Try to acquire lock, but only if not held or stale
-    cursor = await db.execute(
-        """INSERT INTO job_locks (job_name, locked_at, locked_by)
-           VALUES (?, ?, ?)
-           ON CONFLICT(job_name) DO UPDATE SET
-           locked_at = excluded.locked_at,
-           locked_by = excluded.locked_by
-           WHERE job_locks.locked_at < ?
-           RETURNING job_name""",
-        (job_name, now.isoformat(), "worker", cutoff)
+    # First, try to clean up stale locks
+    await db.execute(
+        """DELETE FROM job_locks WHERE job_name = ? AND locked_at < ?""",
+        (job_name, cutoff)
     )
-    result = await cursor.fetchone()
     await db.commit()
 
-    return result is not None
+    # Now try to acquire the lock
+    try:
+        await db.execute(
+            """INSERT INTO job_locks (job_name, locked_at, locked_by)
+               VALUES (?, ?, ?)""",
+            (job_name, now.isoformat(), "worker")
+        )
+        await db.commit()
+        return True
+    except Exception:
+        # Lock already held by another process
+        return False
 
 
 async def release_job_lock(job_name: str) -> None:

@@ -16,11 +16,22 @@ logger = logging.getLogger(__name__)
 class GoogleCalendarClient:
     """Wrapper around Google Calendar API."""
 
-    def __init__(self, access_token: str):
-        """Initialize with access token."""
+    def __init__(self, access_token: str, settings=None, timeout: int = 30):
+        """
+        Initialize with access token.
+
+        Args:
+            access_token: Google OAuth access token
+            settings: Settings object (optional, will use get_settings() if not provided)
+            timeout: Request timeout in seconds (default: 30)
+        """
         self.credentials = Credentials(token=access_token)
-        self.service = build("calendar", "v3", credentials=self.credentials)
-        self.settings = get_settings()
+        # Build service with timeout support
+        import httplib2
+        http = httplib2.Http(timeout=timeout)
+        http = self.credentials.authorize(http)
+        self.service = build("calendar", "v3", http=http)
+        self.settings = settings or get_settings()
 
     def list_events(
         self,
@@ -80,6 +91,21 @@ class GoogleCalendarClient:
                 # Sync token expired, need full sync
                 logger.info(f"Sync token expired for calendar {calendar_id}")
                 return {"events": [], "sync_token_expired": True}
+            elif e.resp.status == 403:
+                # Permission denied - calendar access revoked
+                logger.error(f"Permission denied for calendar {calendar_id}")
+                raise PermissionError(f"Access to calendar {calendar_id} was revoked")
+            elif e.resp.status == 404:
+                # Calendar deleted
+                logger.warning(f"Calendar {calendar_id} not found (may have been deleted)")
+                raise FileNotFoundError(f"Calendar {calendar_id} not found")
+            else:
+                # Other HTTP errors
+                logger.error(f"HTTP error {e.resp.status} fetching events for calendar {calendar_id}")
+                raise
+        except Exception as e:
+            # Network errors, timeouts, etc.
+            logger.error(f"Network error fetching events for calendar {calendar_id}: {type(e).__name__}")
             raise
 
     def get_event(self, calendar_id: str, event_id: str) -> Optional[dict]:
