@@ -98,7 +98,7 @@ async def get_sync_status(user: User = Depends(get_current_user)):
 
     # Check if sync is paused
     paused_setting = await get_setting("sync_paused")
-    sync_paused = paused_setting and paused_setting.get("value_plain") == "true"
+    sync_paused = bool(paused_setting and paused_setting.get("value_plain") == "true")
 
     return SyncStatusResponse(
         calendars_connected=total,

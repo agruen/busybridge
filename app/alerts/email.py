@@ -113,14 +113,13 @@ async def queue_alert(
         return
 
     # Check for duplicate (same alert type for same calendar within 1 hour)
-    dedup_cutoff = (datetime.utcnow() - timedelta(hours=1)).isoformat()
     cursor = await db.execute(
         """SELECT id FROM alert_queue
-           WHERE alert_type = ? AND created_at > ?
+           WHERE alert_type = ? AND created_at > datetime('now', '-1 hour')
            AND (? IS NULL OR recipient_email IN (
                SELECT email FROM users WHERE id = ?
            ))""",
-        (alert_type, dedup_cutoff, user_id, user_id)
+        (alert_type, user_id, user_id)
     )
     existing = await cursor.fetchone()
 

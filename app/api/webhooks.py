@@ -54,6 +54,20 @@ async def receive_google_calendar_webhook(
         # Don't return error - Google will keep retrying
         return {"status": "ok", "message": "Unknown channel"}
 
+    # Verify resource ID matches the channel we registered.
+    # If it doesn't match, ignore the notification to avoid triggering sync
+    # for a potentially spoofed or stale webhook.
+    if (
+        x_goog_resource_id
+        and channel["resource_id"]
+        and x_goog_resource_id != channel["resource_id"]
+    ):
+        logger.warning(
+            f"Webhook resource mismatch for channel {x_goog_channel_id}: "
+            f"expected={channel['resource_id']} got={x_goog_resource_id}"
+        )
+        return {"status": "ok", "message": "Resource mismatch"}
+
     # Check if channel is expired
     if channel["expiration"]:
         expiry = datetime.fromisoformat(channel["expiration"])
@@ -89,13 +103,13 @@ async def receive_google_calendar_webhook(
 
         logger.info(
             f"Sync triggered for calendar: "
-            f"type={channel['calendar_type']}, calendar_id={channel.get('client_calendar_id')}"
+            f"type={channel['calendar_type']}, calendar_id={channel['client_calendar_id']}"
         )
 
     except Exception as e:
         logger.exception(f"Failed to trigger sync from webhook: {e}")
         # Still return OK to avoid Google retrying
-        return {"status": "error", "message": str(e)}
+        return {"status": "ok", "message": "Sync trigger failed"}
 
     return {"status": "ok"}
 

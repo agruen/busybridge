@@ -222,7 +222,6 @@ async def get_valid_access_token(user_id: int, email: str) -> str:
 
             # Retry logic for transient network errors
             max_retries = 3
-            last_error = None
             for attempt in range(max_retries):
                 try:
                     new_tokens = await refresh_access_token(refresh_token)
@@ -239,13 +238,12 @@ async def get_valid_access_token(user_id: int, email: str) -> str:
                         expires_in=new_tokens.get("expires_in")
                     )
                     break  # Success, exit retry loop
-                except ValueError as e:
+                except Exception as e:
                     # Permanent errors (invalid_grant, etc.) - don't retry
                     if "invalid_grant" in str(e).lower():
                         logger.error(f"Token refresh failed with permanent error: {e}")
                         raise
                     # Network/transient errors - retry
-                    last_error = e
                     if attempt < max_retries - 1:
                         import asyncio
                         wait_time = 2 ** attempt  # Exponential backoff: 1s, 2s, 4s

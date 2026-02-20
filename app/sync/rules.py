@@ -262,12 +262,46 @@ async def sync_main_event_to_clients(
                     logger.info(f"Updated busy block {existing_block['busy_block_event_id']} on calendar {cal['id']}")
                 except Exception as e:
                     logger.warning(f"Failed to update busy block, creating new: {e}")
-                    # Delete old record and create new
-                    await db.execute(
-                        "DELETE FROM busy_blocks WHERE id = ?", (existing_block["id"],)
-                    )
-                    await db.commit()
-                    existing_block = None
+                    # Fail-safe: create replacement first, then repoint DB record.
+                    # If replacement creation fails, keep the original mapping so cleanup/retry is still possible.
+                    try:
+                        replacement = client_calendar_client.create_event(
+                            cal["google_calendar_id"],
+                            busy_block
+                        )
+                        replacement_id = replacement["id"]
+
+                        await db.execute(
+                            """UPDATE busy_blocks
+                               SET busy_block_event_id = ?
+                               WHERE id = ?""",
+                            (replacement_id, existing_block["id"])
+                        )
+                        await db.commit()
+
+                        created_blocks.append(replacement_id)
+                        logger.info(
+                            f"Created replacement busy block {replacement_id} on calendar {cal['id']}"
+                        )
+
+                        # Best-effort cleanup of the old block after DB tracking is updated.
+                        try:
+                            client_calendar_client.delete_event(
+                                cal["google_calendar_id"],
+                                existing_block["busy_block_event_id"]
+                            )
+                        except Exception as cleanup_error:
+                            logger.warning(
+                                f"Failed to delete old busy block {existing_block['busy_block_event_id']}: "
+                                f"{cleanup_error}"
+                            )
+
+                    except Exception as create_error:
+                        logger.error(
+                            f"Failed to create replacement busy block on calendar {cal['id']}: {create_error}"
+                        )
+
+                    continue
 
             if not existing_block:
                 # Create new busy block

@@ -1,5 +1,6 @@
 """Core sync engine."""
 
+import json
 import logging
 from datetime import datetime
 from typing import Optional
@@ -83,6 +84,7 @@ async def trigger_sync_for_calendar(client_calendar_id: int) -> None:
         # Process each event
         synced_count = 0
         deleted_count = 0
+        event_errors = []
 
         for event in events:
             try:
@@ -123,6 +125,13 @@ async def trigger_sync_for_calendar(client_calendar_id: int) -> None:
 
             except Exception as e:
                 logger.error(f"Error processing event {event.get('id')}: {e}")
+                event_errors.append(f"{event.get('id')}: {e}")
+
+        if event_errors:
+            raise RuntimeError(
+                f"{len(event_errors)} event(s) failed while syncing calendar {client_calendar_id}. "
+                f"First error: {event_errors[0]}"
+            )
 
         # Update sync state
         now = datetime.utcnow().isoformat()
@@ -148,7 +157,11 @@ async def trigger_sync_for_calendar(client_calendar_id: int) -> None:
         await db.execute(
             """INSERT INTO sync_log (user_id, calendar_id, action, status, details)
                VALUES (?, ?, 'sync', 'success', ?)""",
-            (user_id, client_calendar_id, f'{{"synced": {synced_count}, "deleted": {deleted_count}}}')
+            (
+                user_id,
+                client_calendar_id,
+                json.dumps({"synced": synced_count, "deleted": deleted_count}),
+            )
         )
         await db.commit()
 
@@ -171,7 +184,11 @@ async def trigger_sync_for_calendar(client_calendar_id: int) -> None:
         await db.execute(
             """INSERT INTO sync_log (user_id, calendar_id, action, status, details)
                VALUES (?, ?, 'sync', 'failure', ?)""",
-            (user_id, client_calendar_id, f'{{"error": "{str(e)}"}}')
+            (
+                user_id,
+                client_calendar_id,
+                json.dumps({"error": str(e)}),
+            )
         )
         await db.commit()
 
@@ -232,7 +249,7 @@ async def trigger_sync_for_main_calendar(user_id: int) -> None:
         main_client = GoogleCalendarClient(main_token)
 
         # Fetch events
-        sync_token = sync_state.get("sync_token") if sync_state else None
+        sync_token = sync_state["sync_token"] if sync_state else None
         is_full_sync = sync_token is None
         result = main_client.list_events(main_calendar_id, sync_token=sync_token)
 
@@ -247,6 +264,7 @@ async def trigger_sync_for_main_calendar(user_id: int) -> None:
         logger.info(f"Processing {len(events)} events from main calendar for user {user_id}")
 
         # Process events
+        event_errors = []
         for event in events:
             try:
                 if event.get("status") == "cancelled":
@@ -261,6 +279,13 @@ async def trigger_sync_for_main_calendar(user_id: int) -> None:
                     )
             except Exception as e:
                 logger.error(f"Error processing main event {event.get('id')}: {e}")
+                event_errors.append(f"{event.get('id')}: {e}")
+
+        if event_errors:
+            raise RuntimeError(
+                f"{len(event_errors)} event(s) failed while syncing main calendar for user {user_id}. "
+                f"First error: {event_errors[0]}"
+            )
 
         # Update sync state
         now = datetime.utcnow().isoformat()
@@ -350,6 +375,9 @@ async def cleanup_disconnected_calendar(client_calendar_id: int, user_id: int) -
     try:
         from app.auth.google import get_valid_access_token
 
+        deleted_busy_block_ids: set[int] = set()
+        mappings_to_delete: set[int] = set()
+
         # 1. Delete busy blocks on this calendar
         cursor = await db.execute(
             "SELECT * FROM busy_blocks WHERE client_calendar_id = ?",
@@ -365,17 +393,12 @@ async def cleanup_disconnected_calendar(client_calendar_id: int, user_id: int) -
                 for block in busy_blocks:
                     try:
                         client.delete_event(calendar["google_calendar_id"], block["busy_block_event_id"])
+                        deleted_busy_block_ids.add(block["id"])
                     except Exception as e:
                         logger.warning(f"Failed to delete busy block: {e}")
 
             except Exception as e:
                 logger.warning(f"Failed to get token for cleanup: {e}")
-
-        # Delete busy block records
-        await db.execute(
-            "DELETE FROM busy_blocks WHERE client_calendar_id = ?",
-            (client_calendar_id,)
-        )
 
         # 2. Delete events synced from this calendar to main
         cursor = await db.execute(
@@ -391,11 +414,14 @@ async def cleanup_disconnected_calendar(client_calendar_id: int, user_id: int) -
                 main_client = GoogleCalendarClient(main_token)
 
                 for mapping in mappings:
+                    mapping_cleanup_ok = True
+
                     if mapping["main_event_id"]:
                         try:
                             main_client.delete_event(calendar["main_calendar_id"], mapping["main_event_id"])
                         except Exception as e:
                             logger.warning(f"Failed to delete main event: {e}")
+                            mapping_cleanup_ok = False
 
                     # Delete busy blocks for this event on other calendars
                     cursor = await db.execute(
@@ -409,30 +435,45 @@ async def cleanup_disconnected_calendar(client_calendar_id: int, user_id: int) -
                     other_blocks = await cursor.fetchall()
 
                     for block in other_blocks:
+                        if block["client_calendar_id"] == client_calendar_id:
+                            if block["id"] not in deleted_busy_block_ids:
+                                mapping_cleanup_ok = False
+                            continue
+
                         try:
                             other_token = await get_valid_access_token(user_id, block["google_account_email"])
                             other_client = GoogleCalendarClient(other_token)
                             other_client.delete_event(block["google_calendar_id"], block["busy_block_event_id"])
+                            deleted_busy_block_ids.add(block["id"])
                         except Exception as e:
                             logger.warning(f"Failed to delete busy block on other calendar: {e}")
+                            mapping_cleanup_ok = False
+
+                    if mapping_cleanup_ok:
+                        mappings_to_delete.add(mapping["id"])
 
             except Exception as e:
                 logger.warning(f"Failed to clean up main calendar events: {e}")
 
-        # Delete all busy blocks for events from this calendar
-        await db.execute(
-            """DELETE FROM busy_blocks
-               WHERE event_mapping_id IN (
-                   SELECT id FROM event_mappings WHERE origin_calendar_id = ?
-               )""",
-            (client_calendar_id,)
-        )
+        # Delete local busy block records only for events that were actually deleted remotely.
+        if deleted_busy_block_ids:
+            placeholders = ",".join("?" * len(deleted_busy_block_ids))
+            await db.execute(
+                f"DELETE FROM busy_blocks WHERE id IN ({placeholders})",
+                tuple(deleted_busy_block_ids)
+            )
 
-        # Delete event mappings
-        await db.execute(
-            "DELETE FROM event_mappings WHERE origin_calendar_id = ?",
-            (client_calendar_id,)
-        )
+        # Delete mappings only when all remote cleanup operations succeeded.
+        if mappings_to_delete:
+            placeholders = ",".join("?" * len(mappings_to_delete))
+            await db.execute(
+                f"DELETE FROM busy_blocks WHERE event_mapping_id IN ({placeholders})",
+                tuple(mappings_to_delete)
+            )
+            await db.execute(
+                f"DELETE FROM event_mappings WHERE id IN ({placeholders})",
+                tuple(mappings_to_delete)
+            )
 
         # Delete webhook channels
         await db.execute(
@@ -447,7 +488,14 @@ async def cleanup_disconnected_calendar(client_calendar_id: int, user_id: int) -
         )
 
         await db.commit()
-        logger.info(f"Cleanup completed for calendar {client_calendar_id}")
+        retained_mappings = len(mappings) - len(mappings_to_delete)
+        if retained_mappings > 0:
+            logger.warning(
+                f"Cleanup completed with {retained_mappings} mapping(s) retained "
+                f"for calendar {client_calendar_id} due to remote deletion failures"
+            )
+        else:
+            logger.info(f"Cleanup completed for calendar {client_calendar_id}")
 
     except Exception as e:
         logger.exception(f"Error during calendar cleanup: {e}")

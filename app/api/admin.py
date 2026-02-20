@@ -142,7 +142,7 @@ async def get_system_health(admin: User = Depends(require_admin)):
 
     # Sync paused
     paused = await get_setting("sync_paused")
-    sync_paused = paused and paused.get("value_plain") == "true"
+    sync_paused = bool(paused and paused.get("value_plain") == "true")
 
     # Database size
     db_size = 0
@@ -295,7 +295,55 @@ async def force_user_reauth(
             detail="User not found"
         )
 
-    # Delete all tokens for user
+    # Remove dependent client-calendar records first to satisfy foreign keys.
+    await db.execute(
+        """DELETE FROM webhook_channels
+           WHERE client_calendar_id IN (
+               SELECT id FROM client_calendars WHERE user_id = ?
+           )""",
+        (user_id,)
+    )
+    await db.execute(
+        """DELETE FROM calendar_sync_state
+           WHERE client_calendar_id IN (
+               SELECT id FROM client_calendars WHERE user_id = ?
+           )""",
+        (user_id,)
+    )
+    await db.execute(
+        """DELETE FROM busy_blocks
+           WHERE client_calendar_id IN (
+               SELECT id FROM client_calendars WHERE user_id = ?
+           )""",
+        (user_id,)
+    )
+    await db.execute(
+        """DELETE FROM busy_blocks
+           WHERE event_mapping_id IN (
+               SELECT id FROM event_mappings
+               WHERE origin_calendar_id IN (
+                   SELECT id FROM client_calendars WHERE user_id = ?
+               )
+           )""",
+        (user_id,)
+    )
+    await db.execute(
+        """DELETE FROM event_mappings
+           WHERE origin_calendar_id IN (
+               SELECT id FROM client_calendars WHERE user_id = ?
+           )""",
+        (user_id,)
+    )
+    await db.execute(
+        """DELETE FROM sync_log
+           WHERE calendar_id IN (
+               SELECT id FROM client_calendars WHERE user_id = ?
+           )""",
+        (user_id,)
+    )
+    await db.execute("DELETE FROM client_calendars WHERE user_id = ?", (user_id,))
+
+    # Delete all tokens for user.
     await db.execute("DELETE FROM oauth_tokens WHERE user_id = ?", (user_id,))
     await db.commit()
 
@@ -505,10 +553,10 @@ async def get_admin_settings(admin: User = Depends(require_admin)):
             setattr(result, key, value)
 
     alerts_enabled = await get_setting("alerts_enabled")
-    result.alerts_enabled = alerts_enabled and alerts_enabled.get("value_plain") == "true"
+    result.alerts_enabled = bool(alerts_enabled and alerts_enabled.get("value_plain") == "true")
 
     sync_paused = await get_setting("sync_paused")
-    result.sync_paused = sync_paused and sync_paused.get("value_plain") == "true"
+    result.sync_paused = bool(sync_paused and sync_paused.get("value_plain") == "true")
 
     return result
 
@@ -577,17 +625,27 @@ async def factory_reset(
     db = await get_database()
     settings = get_settings()
 
-    # Delete all data - table names are from hardcoded whitelist, safe to use in query
-    # SQLite doesn't support parameterized table names, so this is the correct approach
-    SAFE_TABLES = frozenset([
-        "webhook_channels", "alert_queue", "sync_log", "busy_blocks",
-        "event_mappings", "calendar_sync_state", "main_calendar_sync_state",
-        "client_calendars", "oauth_tokens", "users", "settings", "organization",
-        "job_locks", "oauth_states"
-    ])
+    # Delete all data in FK-safe order.
+    # SQLite doesn't support parameterized table names, so this is intentionally
+    # a hardcoded ordered list.
+    SAFE_TABLES_IN_DELETE_ORDER = [
+        "busy_blocks",
+        "webhook_channels",
+        "calendar_sync_state",
+        "main_calendar_sync_state",
+        "event_mappings",
+        "sync_log",
+        "alert_queue",
+        "oauth_states",
+        "client_calendars",
+        "oauth_tokens",
+        "users",
+        "settings",
+        "organization",
+        "job_locks",
+    ]
 
-    for table in SAFE_TABLES:
-        # Using f-string with hardcoded whitelist is safe and necessary for SQLite
+    for table in SAFE_TABLES_IN_DELETE_ORDER:
         await db.execute(f"DELETE FROM {table}")
 
     await db.commit()
