@@ -13,6 +13,15 @@ services:
       - PUBLIC_URL=https://${FQDN:-localhost:3000}
       - LOG_LEVEL=info
       - TZ=America/Chicago
+      # TEST_MODE quick switch:
+      # - Set TEST_MODE=true
+      # - Fill both allowlists with dedicated Gmail test accounts
+      # Optional cleanup marker prefix for BusyBridge-created events
+      - ENABLE_WEBHOOKS=${ENABLE_WEBHOOKS:-true}
+      - TEST_MODE=${TEST_MODE:-false}
+      - TEST_MODE_ALLOWED_HOME_EMAILS=${TEST_MODE_ALLOWED_HOME_EMAILS:-}
+      - TEST_MODE_ALLOWED_CLIENT_EMAILS=${TEST_MODE_ALLOWED_CLIENT_EMAILS:-}
+      - MANAGED_EVENT_PREFIX=${MANAGED_EVENT_PREFIX:-[BusyBridge]}
     volumes:
       - ./data:/data
       - ./secrets:/secrets

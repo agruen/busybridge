@@ -120,6 +120,56 @@ class GoogleCalendarClient:
                 return None
             raise
 
+    def search_events(
+        self,
+        calendar_id: str,
+        query: str,
+        max_results: int = 2500,
+        single_events: bool = True,
+    ) -> list[dict]:
+        """
+        Search events by free-text query.
+
+        Uses pagination and returns all matching items from Google.
+        """
+        try:
+            request_params = {
+                "calendarId": calendar_id,
+                "q": query,
+                "maxResults": max_results,
+                "singleEvents": single_events,
+                "showDeleted": False,
+            }
+
+            all_events = []
+            page_token = None
+
+            while True:
+                if page_token:
+                    request_params["pageToken"] = page_token
+
+                result = self.service.events().list(**request_params).execute()
+                all_events.extend(result.get("items", []))
+
+                page_token = result.get("nextPageToken")
+                if not page_token:
+                    break
+
+            return all_events
+
+        except HttpError as e:
+            if e.resp.status == 403:
+                logger.error(f"Permission denied searching events for calendar {calendar_id}")
+                raise PermissionError(f"Access to calendar {calendar_id} was revoked")
+            if e.resp.status == 404:
+                logger.warning(f"Calendar {calendar_id} not found during event search")
+                raise FileNotFoundError(f"Calendar {calendar_id} not found")
+            logger.error(f"HTTP error {e.resp.status} searching events for calendar {calendar_id}")
+            raise
+        except Exception as e:
+            logger.error(f"Network error searching events for calendar {calendar_id}: {type(e).__name__}")
+            raise
+
     def create_event(
         self,
         calendar_id: str,
@@ -229,8 +279,13 @@ def create_busy_block(
     """
     settings = get_settings()
 
+    summary = settings.busy_block_title
+    prefix = (settings.managed_event_prefix or "").strip()
+    if prefix:
+        summary = f"{prefix} {summary}".strip()
+
     event = {
-        "summary": settings.busy_block_title,
+        "summary": summary,
         "description": "",
         "visibility": "private",
         "transparency": "opaque",  # Show as busy
@@ -246,20 +301,44 @@ def create_busy_block(
     return event
 
 
-def copy_event_for_main(source_event: dict) -> dict:
+def copy_event_for_main(source_event: dict, source_label: Optional[str] = None) -> dict:
     """
     Create a copy of an event suitable for the main calendar.
 
     Includes full details (title, description, location, etc.)
     """
+    settings = get_settings()
+
+    base_summary = source_event.get("summary", "Untitled Event")
+    prefix = (settings.managed_event_prefix or "").strip()
+    source_display = (source_label or "").strip()
+    if len(source_display) > 80:
+        source_display = source_display[:77] + "..."
+
+    marker_parts = []
+    if prefix:
+        marker_parts.append(prefix)
+    if source_display:
+        marker_parts.append(f"[{source_display}]")
+    marker_prefix = " ".join(marker_parts).strip()
+    summary = f"{marker_prefix} {base_summary}".strip() if marker_prefix else base_summary
+
     event = {
-        "summary": source_event.get("summary", "Untitled Event"),
+        "summary": summary,
         "description": source_event.get("description", ""),
         "location": source_event.get("location", ""),
         "start": source_event["start"],
         "end": source_event["end"],
         "transparency": source_event.get("transparency", "opaque"),
     }
+
+    if source_display:
+        source_line = f"BusyBridge source: {source_display}"
+        event["description"] = (
+            f"{source_line}\n\n{event['description']}".strip()
+            if event["description"]
+            else source_line
+        )
 
     # Copy recurrence rules if present
     if "recurrence" in source_event:

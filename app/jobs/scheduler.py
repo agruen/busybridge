@@ -29,14 +29,17 @@ def setup_scheduler() -> AsyncIOScheduler:
         replace_existing=True,
     )
 
-    # Webhook renewal - every 6 hours
-    _scheduler.add_job(
-        "app.jobs.webhook_renewal:renew_expiring_webhooks",
-        trigger=IntervalTrigger(hours=settings.webhook_renewal_hours),
-        id="webhook_renewal",
-        name="Webhook Renewal",
-        replace_existing=True,
-    )
+    # Webhook renewal - every 6 hours (optional)
+    if settings.enable_webhooks:
+        _scheduler.add_job(
+            "app.jobs.webhook_renewal:renew_expiring_webhooks",
+            trigger=IntervalTrigger(hours=settings.webhook_renewal_hours),
+            id="webhook_renewal",
+            name="Webhook Renewal",
+            replace_existing=True,
+        )
+    else:
+        logger.info("Webhook renewal job disabled (ENABLE_WEBHOOKS=false)")
 
     # Consistency check - every hour
     _scheduler.add_job(

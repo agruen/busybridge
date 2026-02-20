@@ -618,3 +618,167 @@ async def test_cleanup_disconnected_calendar_outer_exception_is_swallowed(monkey
     monkeypatch.setattr("app.sync.engine.get_database", fake_get_database)
 
     await cleanup_disconnected_calendar(1, 7)
+
+
+@pytest.mark.asyncio
+async def test_cleanup_managed_events_for_user_uses_db_and_prefix_sweep(test_db, monkeypatch):
+    """Managed cleanup should delete tracked events and run prefix sweep for extra coverage."""
+    from app.sync.engine import cleanup_managed_events_for_user
+
+    user_id = await _insert_user(
+        email="managed-home@example.com",
+        google_user_id="managed-home-google",
+        main_calendar_id="managed-main-cal",
+    )
+    home_token = await _insert_token(user_id, "managed-home@example.com", account_type="home")
+    client_token_1 = await _insert_token(user_id, "managed-client-1@example.com")
+    client_token_2 = await _insert_token(user_id, "managed-client-2@example.com")
+    cal_1 = await _insert_calendar(user_id, client_token_1, "managed-client-cal-1")
+    cal_2 = await _insert_calendar(user_id, client_token_2, "managed-client-cal-2")
+    db = await get_database()
+
+    # Ensure the home token exists (used for main calendar operations).
+    assert home_token > 0
+
+    cursor = await db.execute(
+        """INSERT INTO event_mappings
+           (user_id, origin_type, origin_calendar_id, origin_event_id, main_event_id, is_recurring, user_can_edit)
+           VALUES (?, 'client', ?, 'origin-1', 'main-copy-1', FALSE, TRUE)
+           RETURNING id""",
+        (user_id, cal_1),
+    )
+    client_mapping_id = (await cursor.fetchone())["id"]
+    cursor = await db.execute(
+        """INSERT INTO event_mappings
+           (user_id, origin_type, origin_event_id, main_event_id, is_recurring, user_can_edit)
+           VALUES (?, 'main', 'main-origin-1', 'main-origin-1', FALSE, TRUE)
+           RETURNING id""",
+        (user_id,),
+    )
+    main_mapping_id = (await cursor.fetchone())["id"]
+
+    await db.execute(
+        "INSERT INTO busy_blocks (event_mapping_id, client_calendar_id, busy_block_event_id) VALUES (?, ?, ?)",
+        (client_mapping_id, cal_1, "db-busy-1"),
+    )
+    await db.execute(
+        "INSERT INTO busy_blocks (event_mapping_id, client_calendar_id, busy_block_event_id) VALUES (?, ?, ?)",
+        (client_mapping_id, cal_2, "db-busy-2"),
+    )
+    await db.execute(
+        "INSERT INTO busy_blocks (event_mapping_id, client_calendar_id, busy_block_event_id) VALUES (?, ?, ?)",
+        (main_mapping_id, cal_1, "db-busy-3"),
+    )
+    await db.commit()
+
+    async def fake_get_valid_access_token(_user_id: int, email: str) -> str:
+        return email
+
+    deleted_calls: list[tuple[str, str]] = []
+
+    class FakeGoogleCalendarClient:
+        def __init__(self, token: str):
+            self.token = token
+
+        def delete_event(self, calendar_id: str, event_id: str):
+            deleted_calls.append((calendar_id, event_id))
+            return True
+
+        def search_events(self, calendar_id: str, query: str):
+            assert query == "[BusyBridge]"
+            if self.token == "managed-home@example.com" and calendar_id == "managed-main-cal":
+                return [
+                    {"id": "prefix-main", "summary": "[BusyBridge] Main residual"},
+                    {"id": "ignore-main", "summary": "Normal event"},
+                ]
+            if self.token == "managed-client-1@example.com" and calendar_id == "managed-client-cal-1":
+                return [{"id": "prefix-client-1", "summary": "[BusyBridge] Block residual"}]
+            if self.token == "managed-client-2@example.com" and calendar_id == "managed-client-cal-2":
+                return [{"id": "prefix-client-2", "summary": "[BusyBridge] Block residual"}]
+            return []
+
+    monkeypatch.setattr("app.auth.google.get_valid_access_token", fake_get_valid_access_token)
+    monkeypatch.setattr("app.sync.engine.GoogleCalendarClient", FakeGoogleCalendarClient)
+
+    summary = await cleanup_managed_events_for_user(user_id)
+
+    assert summary["status"] == "ok"
+    assert summary["db_client_mappings_checked"] == 1
+    assert summary["db_busy_blocks_checked"] == 3
+    assert summary["db_main_events_deleted"] == 1
+    assert summary["db_busy_blocks_deleted"] == 3
+    assert summary["prefix_calendars_scanned"] == 3
+    assert summary["prefix_events_deleted"] == 3
+    assert summary["local_mappings_deleted"] == 2
+    assert summary["local_busy_blocks_deleted"] == 3
+    assert summary["errors"] == []
+
+    assert ("managed-main-cal", "main-copy-1") in deleted_calls
+    assert ("managed-client-cal-1", "db-busy-1") in deleted_calls
+    assert ("managed-client-cal-2", "db-busy-2") in deleted_calls
+    assert ("managed-client-cal-1", "db-busy-3") in deleted_calls
+    assert ("managed-main-cal", "prefix-main") in deleted_calls
+    assert ("managed-client-cal-1", "prefix-client-1") in deleted_calls
+    assert ("managed-client-cal-2", "prefix-client-2") in deleted_calls
+
+    cursor = await db.execute("SELECT COUNT(*) FROM event_mappings WHERE user_id = ?", (user_id,))
+    assert (await cursor.fetchone())[0] == 0
+    cursor = await db.execute("SELECT COUNT(*) FROM busy_blocks")
+    assert (await cursor.fetchone())[0] == 0
+
+
+@pytest.mark.asyncio
+async def test_cleanup_managed_events_for_user_without_prefix_runs_db_cleanup(test_db, monkeypatch):
+    """Managed cleanup should still run DB-driven deletion when prefix scanning is unavailable."""
+    from app.sync.engine import cleanup_managed_events_for_user
+
+    user_id = await _insert_user(
+        email="no-prefix-home@example.com",
+        google_user_id="no-prefix-home-google",
+        main_calendar_id="no-prefix-main-cal",
+    )
+    await _insert_token(user_id, "no-prefix-home@example.com", account_type="home")
+    client_token = await _insert_token(user_id, "no-prefix-client@example.com")
+    client_cal = await _insert_calendar(user_id, client_token, "no-prefix-client-cal")
+    db = await get_database()
+
+    cursor = await db.execute(
+        """INSERT INTO event_mappings
+           (user_id, origin_type, origin_calendar_id, origin_event_id, main_event_id, is_recurring, user_can_edit)
+           VALUES (?, 'client', ?, 'origin-no-prefix', 'main-no-prefix', FALSE, TRUE)
+           RETURNING id""",
+        (user_id, client_cal),
+    )
+    mapping_id = (await cursor.fetchone())["id"]
+    await db.execute(
+        "INSERT INTO busy_blocks (event_mapping_id, client_calendar_id, busy_block_event_id) VALUES (?, ?, ?)",
+        (mapping_id, client_cal, "busy-no-prefix"),
+    )
+    await db.commit()
+
+    async def fake_get_valid_access_token(_user_id: int, email: str) -> str:
+        return email
+
+    class FakeGoogleCalendarClient:
+        def __init__(self, _token: str):
+            pass
+
+        def delete_event(self, _calendar_id: str, _event_id: str):
+            return True
+
+        def search_events(self, _calendar_id: str, _query: str):
+            raise AssertionError("prefix sweep should be skipped when prefix is empty")
+
+    monkeypatch.setattr("app.sync.engine.get_settings", lambda: type("S", (), {"managed_event_prefix": ""})())
+    monkeypatch.setattr("app.auth.google.get_valid_access_token", fake_get_valid_access_token)
+    monkeypatch.setattr("app.sync.engine.GoogleCalendarClient", FakeGoogleCalendarClient)
+
+    summary = await cleanup_managed_events_for_user(user_id)
+
+    assert summary["status"] == "partial"
+    assert summary["prefix_calendars_scanned"] == 0
+    assert "managed_event_prefix_not_configured" in summary["errors"]
+    assert summary["db_main_events_deleted"] == 1
+    assert summary["db_busy_blocks_deleted"] == 1
+    assert summary["local_mappings_deleted"] == 1
+    assert summary["local_busy_blocks_deleted"] == 1

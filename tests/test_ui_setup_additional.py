@@ -103,3 +103,65 @@ async def test_setup_step5_generates_key_creates_directory_and_sets_alerts_disab
     cursor = await db.execute("SELECT value_plain FROM settings WHERE key = 'alerts_enabled'")
     row = await cursor.fetchone()
     assert row["value_plain"] == "false"
+
+
+@pytest.mark.asyncio
+async def test_setup_step3_callback_enforces_test_mode_home_allowlist(test_db, monkeypatch):
+    """Step-3 callback should enforce TEST_MODE home-account allowlist."""
+    from app.ui import setup as setup_module
+    from app.ui.setup import step_3_callback
+
+    setup_module._oobe_data.clear()
+    setup_module._oobe_data.update(
+        {
+            "client_id": "good.apps.googleusercontent.com",
+            "client_secret": "secret",
+            "oauth_state": "state-123",
+        }
+    )
+
+    monkeypatch.setattr(
+        "app.ui.setup.get_settings",
+        lambda: SimpleNamespace(public_url="http://localhost:3000", test_mode=True),
+    )
+
+    async def fake_exchange(_code, _redirect_uri, _client_id, _client_secret):
+        return {"access_token": "a", "refresh_token": "r", "expires_in": 300}
+
+    async def fake_user_info_blocked(_access):
+        return {"email": "blocked@gmail.com", "name": "Blocked", "id": "g-blocked"}
+
+    monkeypatch.setattr("app.auth.google.exchange_code_for_tokens", fake_exchange)
+    monkeypatch.setattr("app.auth.google.get_user_info", fake_user_info_blocked)
+
+    monkeypatch.setattr("app.ui.setup.get_test_mode_home_allowlist", lambda: set())
+    missing_allowlist = await step_3_callback(
+        _request("/setup/step/3/callback"),
+        code="auth-code",
+        state="state-123",
+    )
+    assert "test_mode_no_home_allowlist" in missing_allowlist.headers["location"]
+
+    monkeypatch.setattr(
+        "app.ui.setup.get_test_mode_home_allowlist",
+        lambda: {"allowed@gmail.com"},
+    )
+    blocked = await step_3_callback(
+        _request("/setup/step/3/callback"),
+        code="auth-code",
+        state="state-123",
+    )
+    assert "admin_not_allowed" in blocked.headers["location"]
+
+    async def fake_user_info_allowed(_access):
+        return {"email": "allowed@gmail.com", "name": "Allowed", "id": "g-allowed"}
+
+    monkeypatch.setattr("app.auth.google.get_user_info", fake_user_info_allowed)
+    allowed = await step_3_callback(
+        _request("/setup/step/3/callback"),
+        code="auth-code",
+        state="state-123",
+    )
+    assert allowed.status_code == 302
+    assert allowed.headers["location"] == "/setup?step=3"
+    assert setup_module._oobe_data["admin_email"] == "allowed@gmail.com"

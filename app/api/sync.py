@@ -1,10 +1,10 @@
 """Sync status and control API endpoints."""
 
+import json
 import logging
-from datetime import datetime, timedelta
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
 from app.auth.session import get_current_user, User
@@ -43,6 +43,20 @@ class SyncLogResponse(BaseModel):
     total: int
     page: int
     page_size: int
+
+
+class ManagedCleanupResponse(BaseModel):
+    """Response for manual managed-event cleanup."""
+    status: str
+    message: str
+    managed_event_prefix: str
+    db_main_events_deleted: int
+    db_busy_blocks_deleted: int
+    prefix_calendars_scanned: int
+    prefix_events_deleted: int
+    local_mappings_deleted: int
+    local_busy_blocks_deleted: int
+    errors: list[str]
 
 
 @router.get("/status", response_model=SyncStatusResponse)
@@ -214,3 +228,43 @@ async def trigger_full_resync(user: User = Depends(get_current_user)):
     await db.commit()
 
     return {"status": "ok", "message": "Full re-sync triggered"}
+
+
+@router.post("/cleanup-managed", response_model=ManagedCleanupResponse)
+async def cleanup_managed_events(user: User = Depends(get_current_user)):
+    """Manually clean up BusyBridge-managed events for the current user."""
+    db = await get_database()
+
+    from app.sync.engine import cleanup_managed_events_for_user
+
+    summary = await cleanup_managed_events_for_user(user.id)
+    status_value = summary.get("status") or "ok"
+    message = (
+        "Managed cleanup completed"
+        if status_value == "ok"
+        else "Managed cleanup completed with warnings"
+    )
+
+    await db.execute(
+        """INSERT INTO sync_log (user_id, action, status, details)
+           VALUES (?, 'managed_cleanup', ?, ?)""",
+        (
+            user.id,
+            status_value,
+            json.dumps(summary),
+        ),
+    )
+    await db.commit()
+
+    return ManagedCleanupResponse(
+        status=status_value,
+        message=message,
+        managed_event_prefix=summary.get("managed_event_prefix", ""),
+        db_main_events_deleted=summary.get("db_main_events_deleted", 0),
+        db_busy_blocks_deleted=summary.get("db_busy_blocks_deleted", 0),
+        prefix_calendars_scanned=summary.get("prefix_calendars_scanned", 0),
+        prefix_events_deleted=summary.get("prefix_events_deleted", 0),
+        local_mappings_deleted=summary.get("local_mappings_deleted", 0),
+        local_busy_blocks_deleted=summary.get("local_busy_blocks_deleted", 0),
+        errors=summary.get("errors", []),
+    )

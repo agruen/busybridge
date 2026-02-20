@@ -71,7 +71,7 @@ async def check_user_consistency(user_id: int, summary: dict) -> None:
 
     # Check event mappings with client origins
     cursor = await db.execute(
-        """SELECT em.*, cc.google_calendar_id, ot.google_account_email
+        """SELECT em.*, cc.google_calendar_id, cc.display_name, ot.google_account_email
            FROM event_mappings em
            JOIN client_calendars cc ON em.origin_calendar_id = cc.id
            JOIN oauth_tokens ot ON cc.oauth_token_id = ot.id
@@ -117,7 +117,14 @@ async def check_user_consistency(user_id: int, summary: dict) -> None:
                 if not main_event or main_event.get("status") == "cancelled":
                     # Main copy missing, recreate
                     from app.sync.google_calendar import copy_event_for_main
-                    new_event_data = copy_event_for_main(origin_event)
+                    source_label = (
+                        mapping["display_name"]
+                        or mapping["google_calendar_id"]
+                        or mapping["google_account_email"]
+                    )
+                    if mapping["google_account_email"] not in source_label:
+                        source_label = f"{source_label} ({mapping['google_account_email']})"
+                    new_event_data = copy_event_for_main(origin_event, source_label=source_label)
 
                     try:
                         result = main_client.create_event(user["main_calendar_id"], new_event_data)

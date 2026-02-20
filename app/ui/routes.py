@@ -8,6 +8,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from app.auth.session import get_current_user, get_current_user_optional, User
+from app.config import get_settings, get_test_mode_home_allowlist
 from app.database import get_database, is_oobe_completed
 
 logger = logging.getLogger(__name__)
@@ -68,6 +69,7 @@ async def dashboard(request: Request, error: Optional[str] = None):
         (user.id,)
     )
     event_count = (await cursor.fetchone())[0]
+    managed_event_prefix = (get_settings().managed_event_prefix or "").strip()
 
     return templates.TemplateResponse("dashboard.html", {
         "request": request,
@@ -75,6 +77,7 @@ async def dashboard(request: Request, error: Optional[str] = None):
         "calendars": calendars,
         "status": status_row,
         "event_count": event_count,
+        "managed_event_prefix": managed_event_prefix,
         "error": error,
     })
 
@@ -93,15 +96,23 @@ async def login_page(
     if user:
         return RedirectResponse(url="/app", status_code=status.HTTP_302_FOUND)
 
-    # Get organization domain for display
-    db = await get_database()
-    cursor = await db.execute("SELECT google_workspace_domain FROM organization LIMIT 1")
-    org = await cursor.fetchone()
+    settings = get_settings()
+    required_domain = None
+    allowed_home_emails = sorted(get_test_mode_home_allowlist()) if settings.test_mode else []
+
+    if not settings.test_mode:
+        # Get organization domain for display
+        db = await get_database()
+        cursor = await db.execute("SELECT google_workspace_domain FROM organization LIMIT 1")
+        org = await cursor.fetchone()
+        required_domain = domain or (org["google_workspace_domain"] if org else None)
 
     return templates.TemplateResponse("login.html", {
         "request": request,
         "error": error,
-        "required_domain": domain or (org["google_workspace_domain"] if org else None),
+        "required_domain": required_domain,
+        "test_mode": settings.test_mode,
+        "allowed_home_emails": allowed_home_emails,
     })
 
 

@@ -106,3 +106,50 @@ async def test_sync_status_all_health_buckets_and_log_status_filter(test_db):
     assert log.total == 2
     assert len(log.entries) == 2
     assert all(entry.status == "failure" for entry in log.entries)
+
+
+@pytest.mark.asyncio
+async def test_cleanup_managed_events_endpoint_returns_summary_and_logs_action(test_db, monkeypatch):
+    """Managed cleanup endpoint should return counts and write an audit log entry."""
+    from app.api.sync import cleanup_managed_events
+
+    user_id = await _insert_user("cleanup-api@example.com", "cleanup-api-google")
+    user = _user_model(user_id, "cleanup-api@example.com")
+
+    async def fake_cleanup_managed_events_for_user(_user_id: int):
+        return {
+            "status": "partial",
+            "managed_event_prefix": "[BusyBridge]",
+            "db_main_events_deleted": 3,
+            "db_busy_blocks_deleted": 5,
+            "prefix_calendars_scanned": 4,
+            "prefix_events_deleted": 7,
+            "local_mappings_deleted": 8,
+            "local_busy_blocks_deleted": 9,
+            "errors": ["token:bad@example.com:RuntimeError"],
+        }
+
+    monkeypatch.setattr(
+        "app.sync.engine.cleanup_managed_events_for_user",
+        fake_cleanup_managed_events_for_user,
+    )
+
+    result = await cleanup_managed_events(user=user)
+    assert result.status == "partial"
+    assert result.db_main_events_deleted == 3
+    assert result.db_busy_blocks_deleted == 5
+    assert result.prefix_events_deleted == 7
+    assert result.local_mappings_deleted == 8
+    assert len(result.errors) == 1
+
+    db = await get_database()
+    cursor = await db.execute(
+        """SELECT action, status
+           FROM sync_log
+           WHERE user_id = ?
+           ORDER BY id DESC LIMIT 1""",
+        (user_id,),
+    )
+    row = await cursor.fetchone()
+    assert row["action"] == "managed_cleanup"
+    assert row["status"] == "partial"

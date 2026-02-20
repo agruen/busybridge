@@ -13,10 +13,35 @@
             <div class="text-center mb-8">
                 <i class="fas fa-user-shield text-indigo-600 text-4xl mb-4"></i>
                 <h1 class="text-2xl font-bold text-gray-900">Admin Authentication</h1>
+                {% if test_mode %}
+                <p class="mt-2 text-gray-600">Sign in with an allowlisted Google account to become the admin.</p>
+                {% else %}
                 <p class="mt-2 text-gray-600">Sign in with your Google Workspace account to become the admin.</p>
+                {% endif %}
             </div>
 
             <div class="bg-white py-8 px-6 shadow rounded-lg">
+                {% if error %}
+                <div class="mb-4 rounded-md bg-red-50 p-4">
+                    <div class="flex">
+                        <i class="fas fa-exclamation-circle text-red-400 mt-0.5"></i>
+                        <p class="ml-3 text-sm text-red-700">
+                            {% if error == 'admin_not_allowed' %}
+                                This Google account is not in TEST_MODE_ALLOWED_HOME_EMAILS.
+                            {% elif error == 'test_mode_no_home_allowlist' %}
+                                TEST_MODE is enabled but TEST_MODE_ALLOWED_HOME_EMAILS is empty.
+                            {% elif error == 'invalid_state' %}
+                                Sign-in state was invalid or expired. Try again.
+                            {% elif error == 'oauth_failed' %}
+                                Google sign-in failed. Try again.
+                            {% else %}
+                                {{ error }}
+                            {% endif %}
+                        </p>
+                    </div>
+                </div>
+                {% endif %}
+
                 {% if oobe_data.get('admin_email') %}
                 <!-- Admin already authenticated -->
                 <div class="text-center mb-6">
@@ -34,9 +59,24 @@
                     <div class="flex">
                         <i class="fas fa-info-circle text-blue-400 mt-0.5"></i>
                         <div class="ml-3">
+                            {% if test_mode %}
+                            <p class="text-sm text-blue-700">
+                                TEST_MODE is enabled. Home login will be restricted to configured allowlisted emails.
+                            </p>
+                            {% if allowed_home_emails %}
+                            <p class="mt-2 text-xs text-blue-800 font-mono break-all">
+                                {{ allowed_home_emails|join(", ") }}
+                            </p>
+                            {% else %}
+                            <p class="mt-2 text-xs text-red-700">
+                                No allowlisted home emails are configured.
+                            </p>
+                            {% endif %}
+                            {% else %}
                             <p class="text-sm text-blue-700">
                                 This will restrict the service to <strong>@{{ oobe_data['domain'] }}</strong> users only.
                             </p>
+                            {% endif %}
                         </div>
                     </div>
                 </div>
@@ -61,9 +101,18 @@
                 {% else %}
                 <!-- Need to authenticate -->
                 <div class="text-center">
+                    {% if test_mode %}
+                    <p class="text-gray-600 mb-6">
+                        The account you sign in with will become the first admin. Only allowlisted home emails can log in while TEST_MODE is enabled.
+                    </p>
+                    {% if allowed_home_emails %}
+                    <p class="text-xs text-blue-700 mb-6 font-mono break-all">{{ allowed_home_emails|join(", ") }}</p>
+                    {% endif %}
+                    {% else %}
                     <p class="text-gray-600 mb-6">
                         The account you sign in with will become the first admin. Other users from the same Google Workspace domain will be able to use this service.
                     </p>
+                    {% endif %}
 
                     <a href="/setup/step/3/auth" class="w-full flex justify-center py-3 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700">
                         <i class="fab fa-google mr-2"></i>

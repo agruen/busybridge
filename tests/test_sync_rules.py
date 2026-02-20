@@ -2,6 +2,7 @@
 
 import pytest
 
+from app.config import get_settings
 from app.sync.google_calendar import (
     create_busy_block,
     copy_event_for_main,
@@ -17,7 +18,8 @@ def test_create_busy_block_timed():
 
     block = create_busy_block(start, end, is_all_day=False)
 
-    assert block["summary"] == "Busy"
+    expected = f"{get_settings().managed_event_prefix} Busy".strip()
+    assert block["summary"] == expected
     assert block["description"] == ""
     assert block["visibility"] == "private"
     assert block["transparency"] == "opaque"
@@ -32,7 +34,8 @@ def test_create_busy_block_all_day():
 
     block = create_busy_block(start, end, is_all_day=True)
 
-    assert block["summary"] == "Busy"
+    expected = f"{get_settings().managed_event_prefix} Busy".strip()
+    assert block["summary"] == expected
     assert "date" in block["start"]
     assert "date" in block["end"]
     assert "dateTime" not in block["start"]
@@ -52,10 +55,13 @@ def test_copy_event_for_main():
         ],
     }
 
-    result = copy_event_for_main(source)
+    result = copy_event_for_main(source, source_label="Client A (client@example.com)")
 
-    assert result["summary"] == "Client Meeting"
+    assert result["summary"].startswith(get_settings().managed_event_prefix)
+    assert "[Client A (client@example.com)]" in result["summary"]
+    assert result["summary"].endswith("Client Meeting")
     assert result["location"] == "Conference Room A"
+    assert "BusyBridge source: Client A (client@example.com)" in result["description"]
     assert "client@example.com" in result["description"]
     assert "attendees" not in result
 
@@ -73,6 +79,7 @@ def test_copy_event_for_main_with_recurrence():
 
     assert "recurrence" in result
     assert result["recurrence"] == ["RRULE:FREQ=WEEKLY;BYDAY=MO"]
+    assert result["summary"] == f"{get_settings().managed_event_prefix} Weekly Standup".strip()
 
 
 def test_should_create_busy_block_normal_event():

@@ -26,6 +26,10 @@
                         <h3 class="text-sm font-medium text-red-800">
                             {% if error == 'domain_mismatch' %}
                                 Access restricted to @{{ required_domain }} accounts only
+                            {% elif error == 'email_not_allowed' %}
+                                This Google account is not in the TEST_MODE home allowlist.
+                            {% elif error == 'test_mode_no_home_allowlist' %}
+                                TEST_MODE is enabled but TEST_MODE_ALLOWED_HOME_EMAILS is empty.
                             {% elif error == 'callback_failed' %}
                                 Authentication failed. Please try again.
                             {% else %}
@@ -37,7 +41,29 @@
             </div>
             {% endif %}
 
-            {% if required_domain %}
+            {% if test_mode %}
+            <div class="mb-6 rounded-md bg-blue-50 p-4">
+                <div class="flex">
+                    <div class="flex-shrink-0">
+                        <i class="fas fa-flask text-blue-400"></i>
+                    </div>
+                    <div class="ml-3">
+                        <p class="text-sm text-blue-700">
+                            TEST_MODE is enabled. Only allowlisted home accounts can sign in.
+                        </p>
+                        {% if allowed_home_emails %}
+                        <p class="mt-2 text-xs text-blue-800 font-mono break-all">
+                            {{ allowed_home_emails|join(", ") }}
+                        </p>
+                        {% else %}
+                        <p class="mt-2 text-xs text-red-700">
+                            No home accounts configured in TEST_MODE_ALLOWED_HOME_EMAILS.
+                        </p>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+            {% elif required_domain %}
             <div class="mb-6 rounded-md bg-blue-50 p-4">
                 <div class="flex">
                     <div class="flex-shrink-0">

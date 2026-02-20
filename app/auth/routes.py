@@ -13,10 +13,12 @@ from app.auth.google import (
     CLIENT_SCOPES,
     build_auth_url,
     exchange_code_for_tokens,
+    get_oauth_token,
     get_oauth_credentials,
     get_user_info,
     store_oauth_tokens,
 )
+from app.encryption import decrypt_value
 from app.auth.session import (
     SESSION_COOKIE_NAME,
     create_or_update_user,
@@ -25,7 +27,11 @@ from app.auth.session import (
     update_user_last_login,
     User,
 )
-from app.config import get_settings
+from app.config import (
+    get_settings,
+    get_test_mode_client_allowlist,
+    get_test_mode_home_allowlist,
+)
 from app.database import get_database, get_organization, is_oobe_completed
 
 logger = logging.getLogger(__name__)
@@ -147,24 +153,40 @@ async def oauth_callback(
         # Exchange code for tokens
         tokens = await exchange_code_for_tokens(code, redirect_uri)
         access_token = tokens["access_token"]
-        refresh_token = tokens.get("refresh_token", "")
+        refresh_token = tokens.get("refresh_token")
 
         # Get user info
         user_info = await get_user_info(access_token)
-        email = user_info["email"]
+        email = user_info["email"].strip().lower()
         google_user_id = user_info["id"]
         display_name = user_info.get("name", email.split("@")[0])
 
-        # Verify domain
-        org = await get_organization()
-        if org:
-            domain = email.split("@")[1]
-            if domain != org["google_workspace_domain"]:
-                logger.warning(f"Login attempt from wrong domain: {email}")
+        settings = get_settings()
+        if settings.test_mode:
+            home_allowlist = get_test_mode_home_allowlist()
+            if not home_allowlist:
+                logger.warning("TEST_MODE is enabled but no home-account allowlist is configured")
                 return RedirectResponse(
-                    url=f"/app/login?error=domain_mismatch&domain={org['google_workspace_domain']}",
+                    url="/app/login?error=test_mode_no_home_allowlist",
                     status_code=status.HTTP_302_FOUND
                 )
+            if email not in home_allowlist:
+                logger.warning(f"Login attempt from non-allowlisted test-mode account: {email}")
+                return RedirectResponse(
+                    url="/app/login?error=email_not_allowed",
+                    status_code=status.HTTP_302_FOUND
+                )
+        else:
+            # Verify domain
+            org = await get_organization()
+            if org:
+                domain = email.split("@")[1]
+                if domain != org["google_workspace_domain"]:
+                    logger.warning(f"Login attempt from wrong domain: {email}")
+                    return RedirectResponse(
+                        url=f"/app/login?error=domain_mismatch&domain={org['google_workspace_domain']}",
+                        status_code=status.HTTP_302_FOUND
+                    )
 
         # Create or update user
         user = await create_or_update_user(
@@ -172,6 +194,15 @@ async def oauth_callback(
             google_user_id=google_user_id,
             display_name=display_name
         )
+
+        # Google may omit refresh_token on subsequent auth flows. Preserve the
+        # existing token so UI re-login does not break background calendar sync.
+        if not refresh_token:
+            existing_token = await get_oauth_token(user.id, email)
+            if existing_token:
+                refresh_token = decrypt_value(existing_token["refresh_token_encrypted"])
+            else:
+                refresh_token = ""
 
         # Store tokens
         await store_oauth_tokens(
@@ -187,7 +218,6 @@ async def oauth_callback(
         if not user.main_calendar_id:
             try:
                 from app.sync.google_calendar import GoogleCalendarClient
-                from app.config import get_settings
                 client_settings = get_settings()
                 cal_client = GoogleCalendarClient(access_token, client_settings)
                 calendars = cal_client.list_calendars()
@@ -313,7 +343,23 @@ async def connect_client_callback(
 
         # Get user info for the client account
         user_info = await get_user_info(access_token)
-        client_email = user_info["email"]
+        client_email = user_info["email"].strip().lower()
+
+        settings = get_settings()
+        if settings.test_mode:
+            client_allowlist = get_test_mode_client_allowlist()
+            if not client_allowlist:
+                logger.warning("TEST_MODE is enabled but no client-account allowlist is configured")
+                return RedirectResponse(
+                    url="/app?error=test_mode_no_client_allowlist",
+                    status_code=status.HTTP_302_FOUND
+                )
+            if client_email not in client_allowlist:
+                logger.warning(f"Client connect attempt from non-allowlisted test-mode account: {client_email}")
+                return RedirectResponse(
+                    url="/app?error=client_email_not_allowed",
+                    status_code=status.HTTP_302_FOUND
+                )
 
         # Store tokens
         token_id = await store_oauth_tokens(

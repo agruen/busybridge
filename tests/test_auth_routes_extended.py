@@ -161,6 +161,42 @@ async def test_oauth_callback_paths(test_db, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_oauth_callback_test_mode_allowlist_paths(test_db, monkeypatch):
+    """OAuth callback should enforce TEST_MODE home-account allowlist."""
+    from app.auth.routes import oauth_callback
+
+    async def good_state(_state):
+        return {"type": "login", "next": "/app", "user_id": None}
+
+    async def fake_exchange(_code, _redirect_uri):
+        return {"access_token": "access", "refresh_token": "refresh", "expires_in": 3600}
+
+    async def fake_user_info(_access):
+        return {"email": "person@outside.com", "id": "g123", "name": "Outside"}
+
+    monkeypatch.setattr("app.auth.routes.get_oauth_state", good_state)
+    monkeypatch.setattr("app.auth.routes.exchange_code_for_tokens", fake_exchange)
+    monkeypatch.setattr("app.auth.routes.get_user_info", fake_user_info)
+    monkeypatch.setattr(
+        "app.auth.routes.get_settings",
+        lambda: SimpleNamespace(public_url="http://localhost:3000", test_mode=True),
+    )
+
+    monkeypatch.setattr("app.auth.routes.get_test_mode_home_allowlist", lambda: set())
+    missing_allowlist = await oauth_callback(_request(), code="c", state="s")
+    assert missing_allowlist.status_code == 302
+    assert "test_mode_no_home_allowlist" in missing_allowlist.headers["location"]
+
+    monkeypatch.setattr(
+        "app.auth.routes.get_test_mode_home_allowlist",
+        lambda: {"allowed@gmail.com"},
+    )
+    blocked = await oauth_callback(_request(), code="c", state="s")
+    assert blocked.status_code == 302
+    assert "email_not_allowed" in blocked.headers["location"]
+
+
+@pytest.mark.asyncio
 async def test_oauth_callback_failure_and_client_connect_paths(test_db, monkeypatch):
     """Callback and client-connect routes should handle all key error and success branches."""
     from app.auth.routes import connect_client, connect_client_callback, oauth_callback
@@ -260,6 +296,118 @@ async def test_oauth_callback_failure_and_client_connect_paths(test_db, monkeypa
 
 
 @pytest.mark.asyncio
+async def test_connect_client_callback_test_mode_allowlist_paths(test_db, monkeypatch):
+    """Client connect callback should enforce TEST_MODE client-account allowlist."""
+    from app.auth.routes import connect_client_callback
+
+    async def client_state(_state):
+        return {"type": "client", "user_id": 7}
+
+    async def exchange_ok(_code, _redirect_uri):
+        return {"access_token": "a", "refresh_token": "r", "expires_in": 3600}
+
+    async def fake_user_info(_access):
+        return {"email": "client@example.com"}
+
+    monkeypatch.setattr("app.auth.routes.get_oauth_state", client_state)
+    monkeypatch.setattr("app.auth.routes.exchange_code_for_tokens", exchange_ok)
+    monkeypatch.setattr("app.auth.routes.get_user_info", fake_user_info)
+    monkeypatch.setattr(
+        "app.auth.routes.get_settings",
+        lambda: SimpleNamespace(public_url="http://localhost:3000", test_mode=True),
+    )
+
+    monkeypatch.setattr("app.auth.routes.get_test_mode_client_allowlist", lambda: set())
+    missing_allowlist = await connect_client_callback(_request(), code="x", state="ok")
+    assert "test_mode_no_client_allowlist" in missing_allowlist.headers["location"]
+
+    monkeypatch.setattr(
+        "app.auth.routes.get_test_mode_client_allowlist",
+        lambda: {"allowed-client@gmail.com"},
+    )
+    blocked = await connect_client_callback(_request(), code="x", state="ok")
+    assert "client_email_not_allowed" in blocked.headers["location"]
+
+    async def fake_user_info_allowed(_access):
+        return {"email": "allowed-client@gmail.com"}
+
+    async def fake_store_tokens(**_kwargs):
+        return 321
+
+    monkeypatch.setattr("app.auth.routes.get_user_info", fake_user_info_allowed)
+    monkeypatch.setattr("app.auth.routes.store_oauth_tokens", fake_store_tokens)
+    allowed = await connect_client_callback(_request(), code="x", state="ok")
+    assert allowed.status_code == 302
+    assert "token_id=321" in allowed.headers["location"]
+
+
+@pytest.mark.asyncio
+async def test_oauth_callback_preserves_existing_refresh_token_when_missing(test_db, test_encryption_key, monkeypatch):
+    """OAuth callback should not overwrite an existing refresh token with empty data."""
+    from app.auth.google import get_oauth_token, store_oauth_tokens
+    from app.auth.routes import oauth_callback
+    from app.encryption import decrypt_value, init_encryption_manager
+
+    init_encryption_manager(test_encryption_key)
+    db = await get_database()
+    await db.execute(
+        """INSERT INTO users (id, email, google_user_id, display_name, main_calendar_id)
+           VALUES (31, 'preserve@inside.com', 'preserve-google', 'Preserve', 'primary-31')"""
+    )
+    await db.commit()
+
+    await store_oauth_tokens(
+        user_id=31,
+        account_type="home",
+        email="preserve@inside.com",
+        access_token="old-access",
+        refresh_token="keep-refresh",
+        expires_in=3600,
+    )
+
+    async def fake_get_oauth_state(_state):
+        return {"type": "login", "next": "/app", "user_id": None}
+
+    async def fake_exchange(_code, _redirect_uri):
+        # Simulates Google returning no refresh_token on later consent flows.
+        return {"access_token": "new-access", "expires_in": 3600}
+
+    async def fake_user_info(_access_token):
+        return {"email": "preserve@inside.com", "id": "preserve-google", "name": "Preserve"}
+
+    async def fake_get_org():
+        return {"google_workspace_domain": "inside.com"}
+
+    async def fake_create_or_update_user(**_kwargs):
+        return SimpleNamespace(
+            id=31,
+            email="preserve@inside.com",
+            is_admin=False,
+            main_calendar_id="primary-31",
+        )
+
+    async def fake_update_user_last_login(_user_id: int):
+        return None
+
+    monkeypatch.setattr("app.auth.routes.get_oauth_state", fake_get_oauth_state)
+    monkeypatch.setattr("app.auth.routes.exchange_code_for_tokens", fake_exchange)
+    monkeypatch.setattr("app.auth.routes.get_user_info", fake_user_info)
+    monkeypatch.setattr("app.auth.routes.get_organization", fake_get_org)
+    monkeypatch.setattr("app.auth.routes.create_or_update_user", fake_create_or_update_user)
+    monkeypatch.setattr("app.auth.routes.update_user_last_login", fake_update_user_last_login)
+    monkeypatch.setattr("app.auth.routes.create_session_token", lambda **_kwargs: "session-token")
+
+    response = await oauth_callback(_request(), code="code", state="state")
+    assert response.status_code == 302
+    assert response.headers["location"] == "/app"
+
+    token_row = await get_oauth_token(31, "preserve@inside.com")
+    assert token_row is not None
+    assert decrypt_value(token_row["access_token_encrypted"]) == "new-access"
+    assert decrypt_value(token_row["refresh_token_encrypted"]) == "keep-refresh"
+
+
+@pytest.mark.asyncio
 async def test_logout_routes():
     """Logout routes should redirect to login and clear cookie."""
     from app.auth.routes import logout, logout_get
@@ -272,4 +420,3 @@ async def test_logout_routes():
     response_get = await logout_get(None)
     assert response_get.status_code == 302
     assert response_get.headers["location"] == "/app/login"
-

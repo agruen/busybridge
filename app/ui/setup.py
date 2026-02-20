@@ -10,7 +10,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
-from app.config import get_settings
+from app.config import get_settings, get_test_mode_home_allowlist
 from app.database import get_database, is_oobe_completed, set_setting
 from app.encryption import (
     generate_encryption_key,
@@ -46,7 +46,7 @@ class Step4Request(BaseModel):
 
 
 @router.get("", response_class=HTMLResponse)
-async def setup_wizard(request: Request, step: int = 1):
+async def setup_wizard(request: Request, step: int = 1, error: Optional[str] = None):
     """OOBE setup wizard."""
     if await is_oobe_completed():
         return RedirectResponse(url="/app", status_code=status.HTTP_302_FOUND)
@@ -62,10 +62,15 @@ async def setup_wizard(request: Request, step: int = 1):
 
     template = template_map.get(step, "setup/step1_welcome.html")
 
+    settings = get_settings()
+
     context = {
         "request": request,
         "step": step,
         "oobe_data": _oobe_data,
+        "error": error,
+        "test_mode": settings.test_mode,
+        "allowed_home_emails": sorted(get_test_mode_home_allowlist()) if settings.test_mode else [],
     }
 
     # For step 5, generate encryption key if not already done
@@ -184,14 +189,23 @@ async def step_3_callback(
         # Get user info
         user_info = await get_user_info(tokens["access_token"])
 
+        admin_email = user_info["email"].strip().lower()
+        settings = get_settings()
+        if settings.test_mode:
+            home_allowlist = get_test_mode_home_allowlist()
+            if not home_allowlist:
+                return RedirectResponse(url="/setup?step=3&error=test_mode_no_home_allowlist", status_code=status.HTTP_302_FOUND)
+            if admin_email not in home_allowlist:
+                return RedirectResponse(url="/setup?step=3&error=admin_not_allowed", status_code=status.HTTP_302_FOUND)
+
         # Store in oobe data
-        _oobe_data["admin_email"] = user_info["email"]
-        _oobe_data["admin_name"] = user_info.get("name", user_info["email"].split("@")[0])
+        _oobe_data["admin_email"] = admin_email
+        _oobe_data["admin_name"] = user_info.get("name", admin_email.split("@")[0])
         _oobe_data["admin_google_id"] = user_info["id"]
         _oobe_data["admin_access_token"] = tokens["access_token"]
         _oobe_data["admin_refresh_token"] = tokens.get("refresh_token", "")
         _oobe_data["admin_token_expiry"] = tokens.get("expires_in")
-        _oobe_data["domain"] = user_info["email"].split("@")[1]
+        _oobe_data["domain"] = admin_email.split("@")[1]
 
         return RedirectResponse(url="/setup?step=3", status_code=status.HTTP_302_FOUND)
 

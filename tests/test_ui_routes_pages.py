@@ -144,6 +144,7 @@ async def test_index_dashboard_and_login_page_paths(test_db, monkeypatch):
     dash_render = await dashboard(_request("/app"))
     assert dash_render.status_code == 200
     assert dash_render.context["event_count"] >= 1
+    assert "managed_event_prefix" in dash_render.context
 
     # login page with authenticated user redirects to /app
     login_auth = await login_page(_request("/app/login"))
@@ -154,6 +155,20 @@ async def test_index_dashboard_and_login_page_paths(test_db, monkeypatch):
     login_render = await login_page(_request("/app/login"))
     assert login_render.status_code == 200
     assert login_render.context["required_domain"] == "example.com"
+
+    monkeypatch.setattr("app.ui.routes.get_settings", lambda: SimpleNamespace(test_mode=True))
+    monkeypatch.setattr(
+        "app.ui.routes.get_test_mode_home_allowlist",
+        lambda: {"test-a@gmail.com", "test-b@gmail.com"},
+    )
+    login_test_mode = await login_page(_request("/app/login"))
+    assert login_test_mode.status_code == 200
+    assert login_test_mode.context["test_mode"] is True
+    assert login_test_mode.context["required_domain"] is None
+    assert login_test_mode.context["allowed_home_emails"] == [
+        "test-a@gmail.com",
+        "test-b@gmail.com",
+    ]
 
 
 @pytest.mark.asyncio

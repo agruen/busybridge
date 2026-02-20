@@ -10,6 +10,7 @@ A self-hosted, multi-user calendar synchronization service for consulting organi
 - **Smart Busy Blocks**: Only creates blocks for events that actually block time (respects "Free" vs "Busy" status)
 - **Webhook Integration**: Real-time sync via Google Calendar push notifications
 - **Email Alerts**: Notifications for sync failures, token revocations, and other issues
+- **Manual Managed Cleanup**: One-click removal of BusyBridge-created events using DB mappings plus prefix sweep
 - **Admin Dashboard**: Manage users, view system health, and configure settings
 
 ## Quick Start
@@ -97,13 +98,22 @@ Client Calendar Event → Main Calendar (with full details)
 | `PUBLIC_URL` | Public URL for OAuth callbacks | Required |
 | `LOG_LEVEL` | Logging level (debug, info, warning, error) | `info` |
 | `TZ` | Timezone for scheduled jobs | `UTC` |
+| `ENABLE_WEBHOOKS` | Enable webhook renewal job | `true` |
+| `TEST_MODE` | Enable Gmail-safe testing mode with allowlists | `false` |
+| `TEST_MODE_ALLOWED_HOME_EMAILS` | Comma-separated allowlist for home-login accounts in test mode | `` |
+| `TEST_MODE_ALLOWED_CLIENT_EMAILS` | Comma-separated allowlist for client-account connections in test mode | `` |
+| `MANAGED_EVENT_PREFIX` | Visible summary prefix added to BusyBridge-created events | `[BusyBridge]` |
+
+### Gmail Test Mode
+
+For production-like testing with Gmail test accounts (without paid Workspace), see `GMAIL_TESTING.md`.
 
 ### Scheduled Jobs
 
 | Job | Frequency | Description |
 |-----|-----------|-------------|
 | Periodic Sync | Every 5 minutes | Poll all calendars for changes |
-| Webhook Renewal | Every 6 hours | Renew expiring webhook channels |
+| Webhook Renewal | Every 6 hours | Renew expiring webhook channels (if `ENABLE_WEBHOOKS=true`) |
 | Consistency Check | Every hour | Verify database matches reality |
 | Token Refresh | Every 30 minutes | Proactively refresh expiring tokens |
 | Alert Processing | Every minute | Send queued email alerts |
@@ -168,7 +178,7 @@ When running, API documentation is available at:
 
 - All OAuth tokens are encrypted using AES-256-GCM
 - Encryption key is stored separately from database
-- Domain restriction prevents login from unauthorized domains
+- Home login restriction is enforced (domain-based by default, email allowlist in `TEST_MODE`)
 - Session tokens are JWTs with configurable expiration
 - Rate limiting on all endpoints
 

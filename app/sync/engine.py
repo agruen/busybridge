@@ -5,6 +5,7 @@ import logging
 from datetime import datetime
 from typing import Optional
 
+from app.config import get_settings
 from app.database import get_database, get_setting
 from app.sync.google_calendar import GoogleCalendarClient
 from app.sync.rules import (
@@ -15,6 +16,18 @@ from app.sync.rules import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _summary_has_prefix(summary: Optional[str], prefix: str) -> bool:
+    """Check whether an event summary starts with the configured visible prefix."""
+    if not summary:
+        return False
+
+    normalized_prefix = (prefix or "").strip().lower()
+    if not normalized_prefix:
+        return False
+
+    return summary.strip().lower().startswith(normalized_prefix)
 
 
 async def is_sync_paused() -> bool:
@@ -54,6 +67,9 @@ async def trigger_sync_for_calendar(client_calendar_id: int) -> None:
 
     user_id = calendar["user_id"]
     client_email = calendar["google_account_email"]
+    source_label = calendar["display_name"] or calendar["google_calendar_id"] or client_email
+    if client_email not in source_label:
+        source_label = f"{source_label} ({client_email})"
     main_calendar_id = calendar["main_calendar_id"]
     user_email = calendar["user_email"]
 
@@ -108,6 +124,7 @@ async def trigger_sync_for_calendar(client_calendar_id: int) -> None:
                         client_calendar_id=client_calendar_id,
                         main_calendar_id=main_calendar_id,
                         client_email=client_email,
+                        source_label=source_label,
                     )
 
                     if main_event_id:
@@ -499,3 +516,227 @@ async def cleanup_disconnected_calendar(client_calendar_id: int, user_id: int) -
 
     except Exception as e:
         logger.exception(f"Error during calendar cleanup: {e}")
+
+
+async def cleanup_managed_events_for_user(user_id: int) -> dict:
+    """
+    Remove BusyBridge-managed events for a user.
+
+    Uses two strategies for full coverage:
+    1. Internal DB references (event_mappings and busy_blocks)
+    2. Prefix search sweep across main and client calendars
+    """
+    db = await get_database()
+    settings = get_settings()
+    managed_prefix = (settings.managed_event_prefix or "").strip()
+
+    summary = {
+        "status": "ok",
+        "managed_event_prefix": managed_prefix,
+        "db_client_mappings_checked": 0,
+        "db_busy_blocks_checked": 0,
+        "db_main_events_deleted": 0,
+        "db_busy_blocks_deleted": 0,
+        "prefix_calendars_scanned": 0,
+        "prefix_matches_found": 0,
+        "prefix_events_deleted": 0,
+        "local_mappings_deleted": 0,
+        "local_busy_blocks_deleted": 0,
+        "errors": [],
+    }
+
+    cursor = await db.execute(
+        "SELECT id, email, main_calendar_id FROM users WHERE id = ?",
+        (user_id,),
+    )
+    user = await cursor.fetchone()
+    if not user:
+        summary["status"] = "error"
+        summary["errors"].append(f"user_not_found:{user_id}")
+        return summary
+
+    from app.auth.google import get_valid_access_token
+
+    client_cache: dict[str, GoogleCalendarClient] = {}
+    token_failures: set[str] = set()
+
+    async def _get_client_for_email(email: str) -> Optional[GoogleCalendarClient]:
+        normalized_email = (email or "").strip().lower()
+        if not normalized_email:
+            return None
+
+        if normalized_email in client_cache:
+            return client_cache[normalized_email]
+        if normalized_email in token_failures:
+            return None
+
+        try:
+            access_token = await get_valid_access_token(user_id, email)
+            client_cache[normalized_email] = GoogleCalendarClient(access_token)
+            return client_cache[normalized_email]
+        except Exception as e:
+            token_failures.add(normalized_email)
+            summary["errors"].append(f"token:{email}:{type(e).__name__}")
+            logger.warning(f"Failed to get token for cleanup user={user_id}, email={email}: {e}")
+            return None
+
+    # Pass 1a: DB-driven cleanup of client-origin event copies on the main calendar.
+    cursor = await db.execute(
+        """SELECT id, main_event_id
+           FROM event_mappings
+           WHERE user_id = ? AND origin_type = 'client'
+           AND deleted_at IS NULL AND main_event_id IS NOT NULL""",
+        (user_id,),
+    )
+    client_origin_mappings = await cursor.fetchall()
+    summary["db_client_mappings_checked"] = len(client_origin_mappings)
+
+    if client_origin_mappings and user["main_calendar_id"]:
+        main_client = await _get_client_for_email(user["email"])
+        if main_client:
+            for mapping in client_origin_mappings:
+                try:
+                    main_client.delete_event(user["main_calendar_id"], mapping["main_event_id"])
+                    summary["db_main_events_deleted"] += 1
+                except Exception as e:
+                    summary["errors"].append(f"main_delete:{mapping['main_event_id']}:{type(e).__name__}")
+                    logger.warning(
+                        "Failed DB-driven main event delete for user=%s event=%s: %s",
+                        user_id,
+                        mapping["main_event_id"],
+                        e,
+                    )
+
+    # Pass 1b: DB-driven cleanup of busy blocks on client calendars.
+    cursor = await db.execute(
+        """SELECT bb.id, bb.busy_block_event_id, cc.google_calendar_id, ot.google_account_email
+           FROM busy_blocks bb
+           JOIN event_mappings em ON bb.event_mapping_id = em.id
+           JOIN client_calendars cc ON bb.client_calendar_id = cc.id
+           JOIN oauth_tokens ot ON cc.oauth_token_id = ot.id
+           WHERE em.user_id = ?""",
+        (user_id,),
+    )
+    busy_blocks = await cursor.fetchall()
+    summary["db_busy_blocks_checked"] = len(busy_blocks)
+
+    for block in busy_blocks:
+        client = await _get_client_for_email(block["google_account_email"])
+        if not client:
+            continue
+
+        try:
+            client.delete_event(block["google_calendar_id"], block["busy_block_event_id"])
+            summary["db_busy_blocks_deleted"] += 1
+        except Exception as e:
+            summary["errors"].append(
+                f"busy_block_delete:{block['busy_block_event_id']}:{type(e).__name__}"
+            )
+            logger.warning(
+                "Failed DB-driven busy block delete for user=%s event=%s: %s",
+                user_id,
+                block["busy_block_event_id"],
+                e,
+            )
+
+    # Pass 2: Prefix sweep across visible calendars for extra coverage.
+    if managed_prefix:
+        seen_calendars: set[tuple[str, str]] = set()
+
+        async def _sweep_calendar(
+            calendar_id: str,
+            account_email: str,
+            label: str,
+        ) -> None:
+            calendar_key = ((account_email or "").strip().lower(), calendar_id)
+            if calendar_key in seen_calendars:
+                return
+            seen_calendars.add(calendar_key)
+
+            client = await _get_client_for_email(account_email)
+            if not client:
+                return
+
+            try:
+                events = client.search_events(calendar_id, managed_prefix)
+                summary["prefix_calendars_scanned"] += 1
+            except Exception as e:
+                summary["errors"].append(f"prefix_scan:{label}:{type(e).__name__}")
+                logger.warning(
+                    "Failed prefix sweep for user=%s calendar=%s label=%s: %s",
+                    user_id,
+                    calendar_id,
+                    label,
+                    e,
+                )
+                return
+
+            for event in events:
+                event_id = event.get("id")
+                if not event_id:
+                    continue
+                if not _summary_has_prefix(event.get("summary"), managed_prefix):
+                    continue
+
+                summary["prefix_matches_found"] += 1
+                try:
+                    client.delete_event(calendar_id, event_id)
+                    summary["prefix_events_deleted"] += 1
+                except Exception as e:
+                    summary["errors"].append(f"prefix_delete:{event_id}:{type(e).__name__}")
+                    logger.warning(
+                        "Failed prefix delete for user=%s calendar=%s event=%s: %s",
+                        user_id,
+                        calendar_id,
+                        event_id,
+                        e,
+                    )
+
+        if user["main_calendar_id"]:
+            await _sweep_calendar(
+                calendar_id=user["main_calendar_id"],
+                account_email=user["email"],
+                label="main",
+            )
+
+        cursor = await db.execute(
+            """SELECT cc.google_calendar_id, ot.google_account_email
+               FROM client_calendars cc
+               JOIN oauth_tokens ot ON cc.oauth_token_id = ot.id
+               WHERE cc.user_id = ?""",
+            (user_id,),
+        )
+        client_calendars = await cursor.fetchall()
+        for calendar in client_calendars:
+            await _sweep_calendar(
+                calendar_id=calendar["google_calendar_id"],
+                account_email=calendar["google_account_email"],
+                label=f"client:{calendar['google_calendar_id']}",
+            )
+    else:
+        summary["errors"].append("managed_event_prefix_not_configured")
+
+    # Local reset: remove mappings (cascades busy blocks) so state can be rebuilt cleanly.
+    cursor = await db.execute(
+        "SELECT COUNT(*) FROM event_mappings WHERE user_id = ?",
+        (user_id,),
+    )
+    summary["local_mappings_deleted"] = (await cursor.fetchone())[0]
+
+    cursor = await db.execute(
+        """SELECT COUNT(*)
+           FROM busy_blocks bb
+           JOIN event_mappings em ON bb.event_mapping_id = em.id
+           WHERE em.user_id = ?""",
+        (user_id,),
+    )
+    summary["local_busy_blocks_deleted"] = (await cursor.fetchone())[0]
+
+    await db.execute("DELETE FROM event_mappings WHERE user_id = ?", (user_id,))
+    await db.commit()
+
+    if summary["errors"]:
+        summary["status"] = "partial"
+
+    logger.info("Managed cleanup completed for user %s: %s", user_id, summary)
+    return summary
