@@ -444,6 +444,9 @@ async def test_reconcile_calendar_paths(test_db, monkeypatch):
         def is_our_event(self, event: dict) -> bool:
             return event["id"] == "ours-event"
 
+        def delete_event(self, _calendar_id: str, _event_id: str):
+            return True
+
     monkeypatch.setattr("app.auth.google.get_valid_access_token", fake_get_valid_access_token)
     monkeypatch.setattr("app.sync.consistency.GoogleCalendarClient", FakeGoogleClient)
 

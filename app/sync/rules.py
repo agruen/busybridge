@@ -4,6 +4,8 @@ import logging
 from datetime import datetime
 from typing import Optional
 
+from googleapiclient.errors import HttpError
+
 from app.database import get_database
 from app.sync.google_calendar import (
     GoogleCalendarClient,
@@ -81,11 +83,20 @@ async def sync_client_event_to_main(
             try:
                 main_client.update_event(main_calendar_id, main_event_id, main_event_data)
                 logger.info(f"Updated main event {main_event_id} from client event {event_id}")
+            except HttpError as e:
+                if e.resp.status in (404, 410):
+                    # Old event is gone -- safe to create a replacement
+                    logger.warning(f"Main event {main_event_id} gone ({e.resp.status}), creating replacement")
+                    result = main_client.create_event(main_calendar_id, main_event_data)
+                    main_event_id = result["id"]
+                else:
+                    # Transient/server error -- re-raise so we don't create a duplicate
+                    logger.error(f"Failed to update main event (HTTP {e.resp.status}): {e}")
+                    raise
             except Exception as e:
+                # Non-HTTP error (network timeout, etc.) -- re-raise to avoid orphaned duplicate
                 logger.error(f"Failed to update main event: {e}")
-                # Try to create new if update failed
-                result = main_client.create_event(main_calendar_id, main_event_data)
-                main_event_id = result["id"]
+                raise
 
         # Update mapping
         await db.execute(
@@ -355,7 +366,8 @@ async def handle_deleted_client_event(
         except Exception as e:
             logger.error(f"Failed to delete main event: {e}")
 
-    # Delete all busy blocks created for this event
+    # Delete all busy blocks created for this event -- only remove DB records
+    # for blocks that were successfully deleted remotely.
     cursor = await db.execute(
         """SELECT bb.*, cc.google_calendar_id, ot.google_account_email
            FROM busy_blocks bb
@@ -366,18 +378,25 @@ async def handle_deleted_client_event(
     )
     busy_blocks = await cursor.fetchall()
 
+    deleted_block_ids: set[int] = set()
     for block in busy_blocks:
         try:
             from app.auth.google import get_valid_access_token
             token = await get_valid_access_token(user_id, block["google_account_email"])
             client = GoogleCalendarClient(token)
             client.delete_event(block["google_calendar_id"], block["busy_block_event_id"])
+            deleted_block_ids.add(block["id"])
             logger.info(f"Deleted busy block {block['busy_block_event_id']}")
         except Exception as e:
             logger.error(f"Failed to delete busy block: {e}")
 
-    # Delete busy block records
-    await db.execute("DELETE FROM busy_blocks WHERE event_mapping_id = ?", (mapping["id"],))
+    # Only remove DB records for blocks confirmed deleted remotely
+    if deleted_block_ids:
+        placeholders = ",".join("?" * len(deleted_block_ids))
+        await db.execute(
+            f"DELETE FROM busy_blocks WHERE id IN ({placeholders})",
+            tuple(deleted_block_ids),
+        )
 
     # Soft delete the mapping (for recurring events) or hard delete
     if mapping["is_recurring"]:
@@ -433,7 +452,8 @@ async def handle_deleted_main_event(
             except Exception as e:
                 logger.warning(f"Failed to delete client event: {e}")
 
-    # Delete all busy blocks for this event
+    # Delete all busy blocks for this event -- only remove DB records for
+    # blocks that were successfully deleted remotely.
     cursor = await db.execute(
         """SELECT bb.*, cc.google_calendar_id, ot.google_account_email
            FROM busy_blocks bb
@@ -444,17 +464,24 @@ async def handle_deleted_main_event(
     )
     busy_blocks = await cursor.fetchall()
 
+    deleted_block_ids: set[int] = set()
     for block in busy_blocks:
         try:
             from app.auth.google import get_valid_access_token
             token = await get_valid_access_token(user_id, block["google_account_email"])
             client = GoogleCalendarClient(token)
             client.delete_event(block["google_calendar_id"], block["busy_block_event_id"])
+            deleted_block_ids.add(block["id"])
         except Exception as e:
             logger.error(f"Failed to delete busy block: {e}")
 
-    # Clean up database
-    await db.execute("DELETE FROM busy_blocks WHERE event_mapping_id = ?", (mapping["id"],))
+    # Only remove DB records for blocks confirmed deleted remotely
+    if deleted_block_ids:
+        placeholders = ",".join("?" * len(deleted_block_ids))
+        await db.execute(
+            f"DELETE FROM busy_blocks WHERE id IN ({placeholders})",
+            tuple(deleted_block_ids),
+        )
 
     if mapping["is_recurring"]:
         await db.execute(
