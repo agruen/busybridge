@@ -149,13 +149,24 @@ async def connect_client_calendar(
             detail="Calendar already connected"
         )
 
+    # Auto-assign a color for this calendar (Google Calendar event colorIds 1-11)
+    cursor = await db.execute(
+        """SELECT color_id FROM client_calendars
+           WHERE user_id = ? AND is_active = TRUE AND color_id IS NOT NULL""",
+        (user.id,)
+    )
+    used_colors = {row["color_id"] for row in await cursor.fetchall()}
+    # Pick the first unused color, cycling through 1-11
+    all_colors = [str(i) for i in range(1, 12)]
+    color_id = next((c for c in all_colors if c not in used_colors), all_colors[0])
+
     # Create the calendar connection
     cursor = await db.execute(
         """INSERT INTO client_calendars
-           (user_id, oauth_token_id, google_calendar_id, display_name)
-           VALUES (?, ?, ?, ?)
+           (user_id, oauth_token_id, google_calendar_id, display_name, color_id)
+           VALUES (?, ?, ?, ?, ?)
            RETURNING id""",
-        (user.id, request.token_id, request.calendar_id, display_name)
+        (user.id, request.token_id, request.calendar_id, display_name, color_id)
     )
     row = await cursor.fetchone()
     calendar_id = row["id"]

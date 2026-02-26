@@ -3,6 +3,20 @@
 {% block title %}Dashboard - Calendar Sync{% endblock %}
 
 {% block content %}
+<style>
+    /* Google Calendar event color palette (colorId 1-11) */
+    .gcal-color-1  { background-color: #7986CB; } /* Lavender */
+    .gcal-color-2  { background-color: #33B679; } /* Sage */
+    .gcal-color-3  { background-color: #8E24AA; } /* Grape */
+    .gcal-color-4  { background-color: #E67C73; } /* Flamingo */
+    .gcal-color-5  { background-color: #F6BF26; } /* Banana */
+    .gcal-color-6  { background-color: #F4511E; } /* Tangerine */
+    .gcal-color-7  { background-color: #039BE5; } /* Peacock */
+    .gcal-color-8  { background-color: #616161; } /* Graphite */
+    .gcal-color-9  { background-color: #3F51B5; } /* Blueberry */
+    .gcal-color-10 { background-color: #0B8043; } /* Basil */
+    .gcal-color-11 { background-color: #D50000; } /* Tomato */
+</style>
 <div class="px-4 sm:px-0">
     {% if error %}
     <div class="mb-4 rounded-md bg-red-50 p-4">
@@ -134,7 +148,12 @@
                             {% endif %}
                         </div>
                         <div class="ml-4 min-w-0 flex-1">
-                            <p class="text-sm font-medium text-gray-900 truncate">{{ cal['display_name'] or cal['google_calendar_id'] }}</p>
+                            <p class="text-sm font-medium text-gray-900 truncate">
+                                {% if cal['color_id'] %}
+                                <span class="inline-block w-3 h-3 rounded-full mr-1.5 align-middle gcal-color-{{ cal['color_id'] }}" title="Events from this calendar appear in this color on your main calendar"></span>
+                                {% endif %}
+                                {{ cal['display_name'] or cal['google_calendar_id'] }}
+                            </p>
                             <p class="text-sm text-gray-500">{{ cal['google_account_email'] }}</p>
                             {% set last_sync = cal['last_incremental_sync'] or cal['last_full_sync'] %}
                             {% if last_sync %}
