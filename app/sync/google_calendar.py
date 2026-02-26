@@ -198,6 +198,14 @@ class GoogleCalendarClient:
         send_notifications: bool = False,
     ) -> dict:
         """Update an event."""
+        # Re-stamp our sync tag -- events().update() is a full replacement,
+        # so without this the extendedProperties (and our tag) get stripped.
+        if "extendedProperties" not in event_data:
+            event_data["extendedProperties"] = {}
+        if "private" not in event_data["extendedProperties"]:
+            event_data["extendedProperties"]["private"] = {}
+        event_data["extendedProperties"]["private"][self.settings.calendar_sync_tag] = "true"
+
         return self.service.events().update(
             calendarId=calendar_id,
             eventId=event_id,

@@ -226,15 +226,65 @@ async def reconcile_calendar(client_calendar_id: int) -> dict:
         mapped_ids = set(row["origin_event_id"] for row in await cursor.fetchall())
 
         stale_ids = mapped_ids - current_event_ids
-        summary["stale_mappings_removed"] = len(stale_ids)
 
-        # Remove stale mappings
+        # For each stale mapping, clean up the remote main-calendar copy and busy
+        # blocks BEFORE deleting the DB record. Only delete from DB if remote
+        # cleanup succeeded so we retain tracking for retry on failure.
+        actually_removed = 0
         for event_id in stale_ids:
-            await db.execute(
-                """DELETE FROM event_mappings
+            cursor = await db.execute(
+                """SELECT id, main_event_id FROM event_mappings
                    WHERE origin_calendar_id = ? AND origin_event_id = ?""",
                 (client_calendar_id, event_id)
             )
+            mapping = await cursor.fetchone()
+            if not mapping:
+                continue
+
+            cleanup_ok = True
+
+            # Delete the main calendar copy
+            if mapping["main_event_id"] and calendar["main_calendar_id"]:
+                try:
+                    main_token = await get_valid_access_token(user_id, calendar["user_email"])
+                    main_client = GoogleCalendarClient(main_token)
+                    main_client.delete_event(calendar["main_calendar_id"], mapping["main_event_id"])
+                except Exception as e:
+                    logger.warning(f"Failed to delete stale main event {mapping['main_event_id']}: {e}")
+                    cleanup_ok = False
+
+            # Delete associated busy blocks
+            cursor = await db.execute(
+                """SELECT bb.id, bb.busy_block_event_id, cc.google_calendar_id, ot.google_account_email
+                   FROM busy_blocks bb
+                   JOIN client_calendars cc ON bb.client_calendar_id = cc.id
+                   JOIN oauth_tokens ot ON cc.oauth_token_id = ot.id
+                   WHERE bb.event_mapping_id = ?""",
+                (mapping["id"],)
+            )
+            blocks = await cursor.fetchall()
+            for block in blocks:
+                try:
+                    block_token = await get_valid_access_token(user_id, block["google_account_email"])
+                    block_client = GoogleCalendarClient(block_token)
+                    block_client.delete_event(block["google_calendar_id"], block["busy_block_event_id"])
+                except Exception as e:
+                    logger.warning(f"Failed to delete stale busy block {block['busy_block_event_id']}: {e}")
+                    cleanup_ok = False
+
+            if cleanup_ok:
+                await db.execute(
+                    "DELETE FROM event_mappings WHERE id = ?",
+                    (mapping["id"],)
+                )
+                actually_removed += 1
+            else:
+                logger.warning(
+                    f"Retaining stale mapping {mapping['id']} for event {event_id} "
+                    f"due to remote cleanup failures"
+                )
+
+        summary["stale_mappings_removed"] = actually_removed
 
         await db.commit()
         logger.info(f"Reconciliation completed for calendar {client_calendar_id}: {summary}")

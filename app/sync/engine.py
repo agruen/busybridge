@@ -1,5 +1,6 @@
 """Core sync engine."""
 
+import asyncio
 import json
 import logging
 from datetime import datetime
@@ -16,6 +17,18 @@ from app.sync.rules import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Per-calendar locks to prevent concurrent syncs (e.g. webhook + periodic overlap).
+_calendar_locks: dict[str, asyncio.Lock] = {}
+_calendar_locks_guard = asyncio.Lock()
+
+
+async def _get_calendar_lock(key: str) -> asyncio.Lock:
+    """Get or create an asyncio lock for a specific calendar sync key."""
+    async with _calendar_locks_guard:
+        if key not in _calendar_locks:
+            _calendar_locks[key] = asyncio.Lock()
+        return _calendar_locks[key]
 
 
 def _summary_has_prefix(summary: Optional[str], prefix: str) -> bool:
@@ -42,6 +55,17 @@ async def trigger_sync_for_calendar(client_calendar_id: int) -> None:
         logger.info("Sync is paused, skipping calendar sync")
         return
 
+    lock = await _get_calendar_lock(f"client:{client_calendar_id}")
+    if lock.locked():
+        logger.info(f"Sync already in progress for calendar {client_calendar_id}, skipping")
+        return
+
+    async with lock:
+        await _sync_client_calendar(client_calendar_id)
+
+
+async def _sync_client_calendar(client_calendar_id: int) -> None:
+    """Internal: perform sync for a client calendar (must be called under lock)."""
     db = await get_database()
 
     # Get calendar info
@@ -230,6 +254,18 @@ async def trigger_sync_for_main_calendar(user_id: int) -> None:
     if await is_sync_paused():
         logger.info("Sync is paused, skipping main calendar sync")
         return
+
+    lock = await _get_calendar_lock(f"main:{user_id}")
+    if lock.locked():
+        logger.info(f"Main calendar sync already in progress for user {user_id}, skipping")
+        return
+
+    async with lock:
+        await _sync_main_calendar(user_id)
+
+
+async def _sync_main_calendar(user_id: int) -> None:
+    """Internal: perform main calendar sync (must be called under lock)."""
 
     db = await get_database()
 
@@ -580,6 +616,11 @@ async def cleanup_managed_events_for_user(user_id: int) -> dict:
             logger.warning(f"Failed to get token for cleanup user={user_id}, email={email}: {e}")
             return None
 
+    # Track which mappings/blocks were successfully cleaned remotely so we only
+    # delete DB records for those -- otherwise we lose tracking for retry.
+    cleaned_mapping_ids: set[int] = set()
+    failed_mapping_ids: set[int] = set()
+
     # Pass 1a: DB-driven cleanup of client-origin event copies on the main calendar.
     cursor = await db.execute(
         """SELECT id, main_event_id
@@ -598,7 +639,9 @@ async def cleanup_managed_events_for_user(user_id: int) -> dict:
                 try:
                     main_client.delete_event(user["main_calendar_id"], mapping["main_event_id"])
                     summary["db_main_events_deleted"] += 1
+                    cleaned_mapping_ids.add(mapping["id"])
                 except Exception as e:
+                    failed_mapping_ids.add(mapping["id"])
                     summary["errors"].append(f"main_delete:{mapping['main_event_id']}:{type(e).__name__}")
                     logger.warning(
                         "Failed DB-driven main event delete for user=%s event=%s: %s",
@@ -716,23 +759,43 @@ async def cleanup_managed_events_for_user(user_id: int) -> dict:
     else:
         summary["errors"].append("managed_event_prefix_not_configured")
 
-    # Local reset: remove mappings (cascades busy blocks) so state can be rebuilt cleanly.
+    # Local reset: only delete mappings whose remote events were successfully cleaned up.
+    # Retain mappings that failed so they can be retried or cleaned manually.
+
+    # Collect all mapping IDs for this user.
     cursor = await db.execute(
-        "SELECT COUNT(*) FROM event_mappings WHERE user_id = ?",
+        "SELECT id FROM event_mappings WHERE user_id = ?",
         (user_id,),
     )
-    summary["local_mappings_deleted"] = (await cursor.fetchone())[0]
+    all_mapping_ids = set(row["id"] for row in await cursor.fetchall())
 
-    cursor = await db.execute(
-        """SELECT COUNT(*)
-           FROM busy_blocks bb
-           JOIN event_mappings em ON bb.event_mapping_id = em.id
-           WHERE em.user_id = ?""",
-        (user_id,),
-    )
-    summary["local_busy_blocks_deleted"] = (await cursor.fetchone())[0]
+    # Mappings not referenced by pass 1a (main-origin or already-deleted) are safe to remove
+    # as long as their busy blocks were all cleaned (or they had none that failed).
+    safe_to_delete = (all_mapping_ids - failed_mapping_ids)
 
-    await db.execute("DELETE FROM event_mappings WHERE user_id = ?", (user_id,))
+    if safe_to_delete:
+        placeholders = ",".join("?" * len(safe_to_delete))
+        cursor = await db.execute(
+            f"SELECT COUNT(*) FROM event_mappings WHERE id IN ({placeholders})",
+            tuple(safe_to_delete),
+        )
+        summary["local_mappings_deleted"] = (await cursor.fetchone())[0]
+
+        cursor = await db.execute(
+            f"""SELECT COUNT(*) FROM busy_blocks
+                WHERE event_mapping_id IN ({placeholders})""",
+            tuple(safe_to_delete),
+        )
+        summary["local_busy_blocks_deleted"] = (await cursor.fetchone())[0]
+
+        await db.execute(
+            f"DELETE FROM event_mappings WHERE id IN ({placeholders})",
+            tuple(safe_to_delete),
+        )
+    else:
+        summary["local_mappings_deleted"] = 0
+        summary["local_busy_blocks_deleted"] = 0
+
     await db.commit()
 
     if summary["errors"]:

