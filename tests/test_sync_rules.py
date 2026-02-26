@@ -190,3 +190,44 @@ def test_can_user_edit_event_no_permission():
     }
 
     assert can_user_edit_event(event, "me@example.com") is False
+
+
+def test_copy_event_for_main_with_color():
+    """Test copying an event with a color ID for calendar color-coding."""
+    source = {
+        "summary": "Client Meeting",
+        "description": "Discuss project",
+        "start": {"dateTime": "2024-01-15T10:00:00Z"},
+        "end": {"dateTime": "2024-01-15T11:00:00Z"},
+    }
+
+    result = copy_event_for_main(source, source_label="Client A", color_id="7")
+
+    assert result["colorId"] == "7"
+    assert "Client Meeting" in result["summary"]
+
+
+def test_copy_event_for_main_without_color():
+    """Test copying an event without a color ID omits colorId field."""
+    source = {
+        "summary": "Team Sync",
+        "start": {"dateTime": "2024-01-15T10:00:00Z"},
+        "end": {"dateTime": "2024-01-15T11:00:00Z"},
+    }
+
+    result = copy_event_for_main(source)
+
+    assert "colorId" not in result
+
+
+def test_copy_event_for_main_with_none_color():
+    """Test that passing color_id=None doesn't add colorId."""
+    source = {
+        "summary": "Standup",
+        "start": {"dateTime": "2024-01-15T10:00:00Z"},
+        "end": {"dateTime": "2024-01-15T10:30:00Z"},
+    }
+
+    result = copy_event_for_main(source, color_id=None)
+
+    assert "colorId" not in result

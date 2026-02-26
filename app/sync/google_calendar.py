@@ -309,7 +309,11 @@ def create_busy_block(
     return event
 
 
-def copy_event_for_main(source_event: dict, source_label: Optional[str] = None) -> dict:
+def copy_event_for_main(
+    source_event: dict,
+    source_label: Optional[str] = None,
+    color_id: Optional[str] = None,
+) -> dict:
     """
     Create a copy of an event suitable for the main calendar.
 
@@ -339,6 +343,10 @@ def copy_event_for_main(source_event: dict, source_label: Optional[str] = None) 
         "end": source_event["end"],
         "transparency": source_event.get("transparency", "opaque"),
     }
+
+    # Apply color to distinguish events from different client calendars
+    if color_id:
+        event["colorId"] = color_id
 
     if source_display:
         source_line = f"BusyBridge source: {source_display}"

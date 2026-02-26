@@ -96,6 +96,7 @@ async def _sync_client_calendar(client_calendar_id: int) -> None:
         source_label = f"{source_label} ({client_email})"
     main_calendar_id = calendar["main_calendar_id"]
     user_email = calendar["user_email"]
+    color_id = calendar["color_id"]
 
     try:
         from app.auth.google import get_valid_access_token
@@ -149,6 +150,7 @@ async def _sync_client_calendar(client_calendar_id: int) -> None:
                         main_calendar_id=main_calendar_id,
                         client_email=client_email,
                         source_label=source_label,
+                        color_id=color_id,
                     )
 
                     if main_event_id:

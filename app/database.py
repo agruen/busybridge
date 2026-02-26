@@ -70,6 +70,7 @@ CREATE TABLE IF NOT EXISTS client_calendars (
     oauth_token_id INTEGER NOT NULL REFERENCES oauth_tokens(id),
     google_calendar_id TEXT NOT NULL,
     display_name TEXT,
+    color_id TEXT,
     is_active BOOLEAN DEFAULT TRUE,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     disconnected_at TIMESTAMP

@@ -128,6 +128,66 @@ async def test_connect_calendar_token_missing_and_calendar_verify_failure(test_d
 
 
 @pytest.mark.asyncio
+async def test_color_auto_assignment_on_connect(test_db, monkeypatch):
+    """Connecting calendars should auto-assign distinct Google Calendar color IDs."""
+    from app.api.calendars import ConnectCalendarRequest, connect_client_calendar
+
+    user_id = await _insert_user("color@example.com", "color-google")
+    token_id = await _insert_token(user_id, "color-client@example.com")
+    user = _user_model(user_id, "color@example.com")
+
+    async def fake_get_valid_access_token(_user_id, _email):
+        return "token"
+
+    cal_counter = {"n": 0}
+
+    def fake_build(*_a, **_kw):
+        svc = type("Svc", (), {})()
+
+        def calendars():
+            c = type("C", (), {})()
+
+            def get(calendarId=""):
+                g = type("G", (), {})()
+                cal_counter["n"] += 1
+                g.execute = lambda: {"summary": f"Cal {cal_counter['n']}"}
+                return g
+            c.get = get
+            return c
+        svc.calendars = calendars
+        return svc
+
+    monkeypatch.setattr("app.api.calendars.get_valid_access_token", fake_get_valid_access_token)
+    monkeypatch.setattr("googleapiclient.discovery.build", fake_build)
+    monkeypatch.setattr("app.utils.tasks.create_background_task", lambda *a, **kw: None)
+
+    # Connect three calendars
+    await connect_client_calendar(
+        request=ConnectCalendarRequest(token_id=token_id, calendar_id="cal-a"),
+        user=user,
+    )
+    await connect_client_calendar(
+        request=ConnectCalendarRequest(token_id=token_id, calendar_id="cal-b"),
+        user=user,
+    )
+    await connect_client_calendar(
+        request=ConnectCalendarRequest(token_id=token_id, calendar_id="cal-c"),
+        user=user,
+    )
+
+    # Verify they got different colors assigned in the DB
+    db = await get_database()
+    cursor = await db.execute(
+        "SELECT color_id FROM client_calendars WHERE user_id = ? AND is_active = TRUE ORDER BY id",
+        (user_id,),
+    )
+    colors = [row["color_id"] for row in await cursor.fetchall()]
+    assert len(colors) == 3
+    assert len(set(colors)) == 3  # All different
+    assert all(c in [str(i) for i in range(1, 12)] for c in colors)
+
+
+@pytest.mark.asyncio
 async def test_calendar_sync_and_status_not_found_paths(test_db):
     """Manual sync and status endpoints should 404 for unknown calendars."""
     from app.api.calendars import get_calendar_status, trigger_calendar_sync

@@ -27,6 +27,7 @@ async def sync_client_event_to_main(
     main_calendar_id: str,
     client_email: str,
     source_label: Optional[str] = None,
+    color_id: Optional[str] = None,
 ) -> Optional[str]:
     """
     Sync a client calendar event to the main calendar.
@@ -56,7 +57,7 @@ async def sync_client_event_to_main(
     existing = await cursor.fetchone()
 
     # Prepare the event copy for main calendar
-    main_event_data = copy_event_for_main(event, source_label=source_label)
+    main_event_data = copy_event_for_main(event, source_label=source_label, color_id=color_id)
 
     # Determine if user can edit
     user_can_edit = can_user_edit_event(event, client_email)
