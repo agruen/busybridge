@@ -1,7 +1,7 @@
 """Google Calendar API wrapper."""
 
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from google.oauth2.credentials import Credentials
@@ -272,6 +272,74 @@ class GoogleCalendarClient:
             raise
 
 
+def _build_timed_dt(src: dict) -> dict:
+    """Build a dateTime start/end dict, preserving the source timezone correctly.
+
+    If the source has a named ``timeZone`` field, it is passed through as-is.
+    If the ``dateTime`` ends with ``Z`` (UTC), we explicitly label it as UTC.
+    If the ``dateTime`` carries a fixed offset (e.g. ``-05:00``) but no named
+    timezone, we omit the ``timeZone`` field entirely so that Google Calendar
+    uses the embedded offset rather than defaulting to UTC.  This is critical
+    for recurring events: setting ``timeZone: "UTC"`` would anchor the
+    recurrence pattern to UTC wall-clock time, causing every instance to drift
+    by one hour after a DST transition.
+    """
+    dt = src.get("dateTime")
+    tz = src.get("timeZone")
+    result: dict = {"dateTime": dt}
+    if tz:
+        result["timeZone"] = tz
+    elif dt and dt.endswith("Z"):
+        result["timeZone"] = "UTC"
+    # Fixed-offset dateTime (e.g. "…-05:00"): omit timeZone and let Google
+    # honour the embedded offset for RRULE expansion.
+    return result
+
+
+def derive_instance_event_id(parent_event_id: str, original_start_time: dict) -> str:
+    """Construct the Google Calendar instance event ID for one occurrence.
+
+    Google formats recurring-event instance IDs as::
+
+        "<parentId>_<utcTimestamp>"
+
+    where *utcTimestamp* is ``YYYYMMDDTHHmmssZ`` for timed events or
+    ``YYYYMMDD`` for all-day events.
+
+    Args:
+        parent_event_id: The ``id`` of the parent recurring event.
+        original_start_time: The ``originalStartTime`` dict returned by the
+            Google Calendar API for the instance (contains either a ``date``
+            or a ``dateTime`` field).
+
+    Returns:
+        The full instance event ID string.
+
+    Raises:
+        ValueError: If *original_start_time* has neither ``date`` nor
+            ``dateTime``.
+    """
+    if "date" in original_start_time:
+        date_suffix = original_start_time["date"].replace("-", "")
+        return f"{parent_event_id}_{date_suffix}"
+
+    dt_str = original_start_time.get("dateTime", "")
+    if not dt_str:
+        raise ValueError(
+            "originalStartTime has neither 'date' nor 'dateTime': "
+            f"{original_start_time!r}"
+        )
+
+    if dt_str.endswith("Z"):
+        dt = datetime.fromisoformat(dt_str[:-1]).replace(tzinfo=timezone.utc)
+    else:
+        dt = datetime.fromisoformat(dt_str)
+
+    dt_utc = dt.astimezone(timezone.utc)
+    suffix = dt_utc.strftime("%Y%m%dT%H%M%S") + "Z"
+    return f"{parent_event_id}_{suffix}"
+
+
 def create_busy_block(
     start: dict,
     end: dict,
@@ -303,8 +371,8 @@ def create_busy_block(
         event["start"] = {"date": start.get("date")}
         event["end"] = {"date": end.get("date")}
     else:
-        event["start"] = {"dateTime": start.get("dateTime"), "timeZone": start.get("timeZone", "UTC")}
-        event["end"] = {"dateTime": end.get("dateTime"), "timeZone": end.get("timeZone", "UTC")}
+        event["start"] = _build_timed_dt(start)
+        event["end"] = _build_timed_dt(end)
 
     return event
 

@@ -137,6 +137,8 @@ async def _sync_client_calendar(client_calendar_id: int) -> None:
                         event_id=event["id"],
                         main_calendar_id=main_calendar_id,
                         main_client=main_client,
+                        recurring_event_id=event.get("recurringEventId"),
+                        original_start_time=event.get("originalStartTime"),
                     )
                     deleted_count += 1
                 else:
@@ -323,7 +325,12 @@ async def _sync_main_calendar(user_id: int) -> None:
         for event in events:
             try:
                 if event.get("status") == "cancelled":
-                    await handle_deleted_main_event(user_id, event["id"])
+                    await handle_deleted_main_event(
+                        user_id,
+                        event["id"],
+                        recurring_event_id=event.get("recurringEventId"),
+                        original_start_time=event.get("originalStartTime"),
+                    )
                 else:
                     await sync_main_event_to_clients(
                         main_client=main_client,
