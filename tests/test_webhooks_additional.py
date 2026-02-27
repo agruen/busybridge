@@ -59,12 +59,13 @@ async def test_receive_webhook_triggers_main_sync_task_path(test_db, monkeypatch
     db = await get_database()
     await db.execute(
         """INSERT INTO webhook_channels
-           (user_id, calendar_type, client_calendar_id, channel_id, resource_id, expiration)
-           VALUES (?, 'main', NULL, ?, ?, ?)""",
+           (user_id, calendar_type, client_calendar_id, channel_id, resource_id, token, expiration)
+           VALUES (?, 'main', NULL, ?, ?, ?, ?)""",
         (
             user_id,
             "main-channel",
             "main-resource",
+            "main-secret-token",
             (datetime.utcnow() + timedelta(days=1)).isoformat(),
         ),
     )
@@ -85,6 +86,7 @@ async def test_receive_webhook_triggers_main_sync_task_path(test_db, monkeypatch
     result = await receive_google_calendar_webhook(
         request=None,
         x_goog_channel_id="main-channel",
+        x_goog_channel_token="main-secret-token",
         x_goog_resource_id="main-resource",
         x_goog_resource_state="exists",
         x_goog_message_number="2",
@@ -104,13 +106,14 @@ async def test_receive_webhook_returns_ok_when_trigger_fails(test_db, monkeypatc
     db = await get_database()
     await db.execute(
         """INSERT INTO webhook_channels
-           (user_id, calendar_type, client_calendar_id, channel_id, resource_id, expiration)
-           VALUES (?, 'client', ?, ?, ?, ?)""",
+           (user_id, calendar_type, client_calendar_id, channel_id, resource_id, token, expiration)
+           VALUES (?, 'client', ?, ?, ?, ?, ?)""",
         (
             user_id,
             calendar_id,
             "client-channel",
             "client-resource",
+            "client-secret-token",
             (datetime.utcnow() + timedelta(days=1)).isoformat(),
         ),
     )
@@ -129,6 +132,7 @@ async def test_receive_webhook_returns_ok_when_trigger_fails(test_db, monkeypatc
     result = await receive_google_calendar_webhook(
         request=None,
         x_goog_channel_id="client-channel",
+        x_goog_channel_token="client-secret-token",
         x_goog_resource_id="client-resource",
         x_goog_resource_state="exists",
         x_goog_message_number="3",
@@ -203,3 +207,47 @@ async def test_stop_webhook_channel_non_success_and_exception_paths(test_db, mon
 
     monkeypatch.setattr("httpx.AsyncClient", lambda: ExplodingClient())
     assert await stop_webhook_channel("explode", "res", "token") is False
+
+
+@pytest.mark.asyncio
+async def test_receive_webhook_rejects_wrong_token(test_db):
+    """Webhook receiver should silently drop notifications with a bad token."""
+    from app.api.webhooks import receive_google_calendar_webhook
+
+    user_id = await _insert_user("token-wh@example.com", "token-wh-google", main_calendar_id="token-main")
+    db = await get_database()
+    await db.execute(
+        """INSERT INTO webhook_channels
+           (user_id, calendar_type, client_calendar_id, channel_id, resource_id, token, expiration)
+           VALUES (?, 'main', NULL, ?, ?, ?, ?)""",
+        (
+            user_id,
+            "token-channel",
+            "token-resource",
+            "correct-secret",
+            (datetime.utcnow() + timedelta(days=1)).isoformat(),
+        ),
+    )
+    await db.commit()
+
+    # Missing token
+    result = await receive_google_calendar_webhook(
+        request=None,
+        x_goog_channel_id="token-channel",
+        x_goog_channel_token=None,
+        x_goog_resource_id="token-resource",
+        x_goog_resource_state="exists",
+        x_goog_message_number="1",
+    )
+    assert result == {"status": "ok"}
+
+    # Wrong token
+    result = await receive_google_calendar_webhook(
+        request=None,
+        x_goog_channel_id="token-channel",
+        x_goog_channel_token="wrong-secret",
+        x_goog_resource_id="token-resource",
+        x_goog_resource_state="exists",
+        x_goog_message_number="2",
+    )
+    assert result == {"status": "ok"}
