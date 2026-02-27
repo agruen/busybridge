@@ -68,9 +68,9 @@ BusyBridge is built around one simple principle: **your main calendar is your si
 
 ### Creating Appointments
 
-**Always create appointments on your main calendar**, not on client calendars.
+Where you create an appointment depends on who needs to receive the invite:
 
-When you add an event to your main calendar, BusyBridge automatically creates a "Busy" block on every connected client calendar. Your clients see you as unavailable during that time, but they cannot see the details of what you're doing.
+**Create on your main calendar** when the meeting is yours to own — personal blocks, internal meetings with your own org, or any appointment where you don't need the invite to come from a client domain. BusyBridge automatically creates "Busy" blocks on every connected client calendar.
 
 ```
 You create event on Main Calendar
@@ -82,7 +82,17 @@ BusyBridge detects it (within 5 min, or instantly via webhook)
 "Busy" block created on Client C calendar
 ```
 
-> **Do not create appointments directly on client calendars.** Events you create there are treated as client-origin events — they will be copied to your main calendar, which is probably not what you want.
+**Create on the client calendar** when you're organizing a meeting that needs to live within that client's domain — for example, inviting client colleagues to an internal meeting where the invite should come from their org. BusyBridge treats it as a client-origin event: it syncs a full-detail copy to your main calendar and creates "Busy" blocks on your other connected client calendars (but not back on Client A, to avoid duplication).
+
+```
+You create event on Client A Calendar
+         ↓
+BusyBridge copies it to your Main Calendar (with full details)
+         ↓
+"Busy" block created on Client B calendar
+"Busy" block created on Client C calendar
+(no busy block on Client A — it already has the real event)
+```
 
 ### When Clients Schedule You
 
@@ -112,7 +122,8 @@ Client calendars are not useful for your day-to-day viewing — they only show "
 
 | Action | Where |
 |--------|-------|
-| Create a new appointment | Your **main calendar** |
+| Create a personal or internal appointment | Your **main calendar** |
+| Organize a meeting within a client's domain | That **client's calendar** |
 | View your full schedule | Your **main calendar** |
 | See what a client sees | That **client's calendar** (shows "Busy" blocks) |
 | Accept a client meeting | Handled automatically — appears on main calendar |
