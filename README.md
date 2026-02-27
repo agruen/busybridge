@@ -62,6 +62,61 @@ A self-hosted, multi-user calendar synchronization service for consulting organi
      - `https://your-domain/auth/connect-client/callback`
      - `https://your-domain/setup/step/3/callback`
 
+## Appointment Workflow
+
+BusyBridge is built around one simple principle: **your main calendar is your single source of truth**. Client calendars are managed automatically — you rarely need to interact with them directly.
+
+### Creating Appointments
+
+**Always create appointments on your main calendar**, not on client calendars.
+
+When you add an event to your main calendar, BusyBridge automatically creates a "Busy" block on every connected client calendar. Your clients see you as unavailable during that time, but they cannot see the details of what you're doing.
+
+```
+You create event on Main Calendar
+         ↓
+BusyBridge detects it (within 5 min, or instantly via webhook)
+         ↓
+"Busy" block created on Client A calendar
+"Busy" block created on Client B calendar
+"Busy" block created on Client C calendar
+```
+
+> **Do not create appointments directly on client calendars.** Events you create there are treated as client-origin events — they will be copied to your main calendar, which is probably not what you want.
+
+### When Clients Schedule You
+
+When a client adds you to a meeting on their calendar, BusyBridge handles the sync automatically:
+
+```
+Client creates event on Client A Calendar
+         ↓
+BusyBridge copies it to your Main Calendar (with full details)
+         ↓
+"Busy" block created on Client B calendar
+"Busy" block created on Client C calendar
+```
+
+You'll see the appointment on your main calendar with full details (title, description, attendees). Other clients only see "Busy" — no cross-client information is ever shared.
+
+### Viewing Your Schedule
+
+**Always view your main calendar** for your complete schedule. It contains:
+
+- Full details of all client-scheduled meetings (synced from client calendars)
+- All your own appointments (created directly on main)
+
+Client calendars are not useful for your day-to-day viewing — they only show "Busy" blocks from your other commitments, which is the view your clients see.
+
+### Summary
+
+| Action | Where |
+|--------|-------|
+| Create a new appointment | Your **main calendar** |
+| View your full schedule | Your **main calendar** |
+| See what a client sees | That **client's calendar** (shows "Busy" blocks) |
+| Accept a client meeting | Handled automatically — appears on main calendar |
+
 ## Architecture
 
 The application runs as a single Docker container containing:
