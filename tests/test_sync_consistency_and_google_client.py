@@ -441,6 +441,12 @@ async def test_reconcile_calendar_paths(test_db, monkeypatch):
                 ]
             }
 
+        def get_event(self, _calendar_id: str, event_id: str):
+            # keep-event still exists; stale-event does not
+            if event_id == "keep-event":
+                return {"id": "keep-event", "status": "confirmed"}
+            return None
+
         def is_our_event(self, event: dict) -> bool:
             return event["id"] == "ours-event"
 

@@ -124,7 +124,6 @@ async def check_user_consistency(user_id: int, summary: dict) -> None:
                             block["google_calendar_id"], block["busy_block_event_id"]
                         )
                         await db.execute("DELETE FROM busy_blocks WHERE id = ?", (block["id"],))
-                        summary["orphaned_busy_blocks_deleted"] += 1
                     except Exception as e:
                         logger.warning(
                             f"Failed to delete busy block {block['busy_block_event_id']}: {e}"
