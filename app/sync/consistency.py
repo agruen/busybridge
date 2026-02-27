@@ -92,7 +92,7 @@ async def check_user_consistency(user_id: int, summary: dict) -> None:
             origin_event = client.get_event(mapping["google_calendar_id"], mapping["origin_event_id"])
 
             if not origin_event or origin_event.get("status") == "cancelled":
-                # Origin deleted, delete main copy
+                # Origin deleted — clean up main copy
                 if mapping["main_event_id"]:
                     try:
                         main_client.delete_event(user["main_calendar_id"], mapping["main_event_id"])
@@ -101,10 +101,36 @@ async def check_user_consistency(user_id: int, summary: dict) -> None:
                     except Exception:
                         pass
 
-                # Delete busy blocks
-                await db.execute(
-                    "DELETE FROM busy_blocks WHERE event_mapping_id = ?", (mapping["id"],)
+                # Fetch busy blocks and delete them remotely before wiping DB rows.
+                # Without this step the "Busy" events linger on client calendars
+                # even after the source meeting is gone.
+                bb_cursor = await db.execute(
+                    """SELECT bb.id, bb.busy_block_event_id,
+                              cc.google_calendar_id, ot.google_account_email
+                       FROM busy_blocks bb
+                       JOIN client_calendars cc ON bb.client_calendar_id = cc.id
+                       JOIN oauth_tokens ot ON cc.oauth_token_id = ot.id
+                       WHERE bb.event_mapping_id = ?""",
+                    (mapping["id"],)
                 )
+                blocks_to_delete = await bb_cursor.fetchall()
+                for block in blocks_to_delete:
+                    try:
+                        block_token = await get_valid_access_token(
+                            user_id, block["google_account_email"]
+                        )
+                        block_client = GoogleCalendarClient(block_token)
+                        block_client.delete_event(
+                            block["google_calendar_id"], block["busy_block_event_id"]
+                        )
+                        await db.execute("DELETE FROM busy_blocks WHERE id = ?", (block["id"],))
+                        summary["orphaned_busy_blocks_deleted"] += 1
+                    except Exception as e:
+                        logger.warning(
+                            f"Failed to delete busy block {block['busy_block_event_id']}: {e}"
+                        )
+                        summary["errors"] += 1
+
                 await db.execute(
                     "DELETE FROM event_mappings WHERE id = ?", (mapping["id"],)
                 )
@@ -156,17 +182,47 @@ async def check_user_consistency(user_id: int, summary: dict) -> None:
 
     for block in busy_blocks:
         if block["mapping_deleted"]:
-            # Mapping was deleted, remove busy block
+            # Mapping was deleted — delete the remote busy block first, then the
+            # DB row only if the remote delete succeeded.  Deleting the DB row
+            # unconditionally (as before) would lose our handle on the event and
+            # leave a permanent ghost "Busy" block on the client calendar.
+            deleted_remotely = False
             try:
                 client_token = await get_valid_access_token(user_id, block["google_account_email"])
-                client = GoogleCalendarClient(client_token)
-                client.delete_event(block["google_calendar_id"], block["busy_block_event_id"])
+                block_client = GoogleCalendarClient(client_token)
+                block_client.delete_event(block["google_calendar_id"], block["busy_block_event_id"])
+                deleted_remotely = True
                 summary["orphaned_busy_blocks_deleted"] += 1
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(
+                    f"Failed to delete orphaned busy block {block['busy_block_event_id']}: {e}"
+                )
+                summary["errors"] += 1
 
-            await db.execute("DELETE FROM busy_blocks WHERE id = ?", (block["id"],))
-            await db.commit()
+            if deleted_remotely:
+                await db.execute("DELETE FROM busy_blocks WHERE id = ?", (block["id"],))
+                await db.commit()
+        else:
+            # Block is active — verify it still exists on the client calendar.
+            # If a user manually deleted it, remove the now-stale DB row so it
+            # doesn't accumulate indefinitely.
+            try:
+                client_token = await get_valid_access_token(user_id, block["google_account_email"])
+                block_client = GoogleCalendarClient(client_token)
+                remote = block_client.get_event(
+                    block["google_calendar_id"], block["busy_block_event_id"]
+                )
+                if not remote or remote.get("status") == "cancelled":
+                    await db.execute("DELETE FROM busy_blocks WHERE id = ?", (block["id"],))
+                    await db.commit()
+                    logger.info(
+                        f"Removed stale busy block DB record {block['id']} "
+                        f"(event no longer exists remotely)"
+                    )
+            except Exception as e:
+                logger.warning(
+                    f"Could not verify busy block {block['busy_block_event_id']} existence: {e}"
+                )
 
 
 async def reconcile_calendar(client_calendar_id: int) -> dict:
@@ -225,7 +281,25 @@ async def reconcile_calendar(client_calendar_id: int) -> dict:
         )
         mapped_ids = set(row["origin_event_id"] for row in await cursor.fetchall())
 
-        stale_ids = mapped_ids - current_event_ids
+        potentially_stale_ids = mapped_ids - current_event_ids
+
+        # Verify each potentially-stale ID via get_event before acting on it.
+        # list_events(singleEvents=False) only returns parent recurring events,
+        # never individual instances.  Forked instance mappings (e.g.
+        # "abc123_20260227T150000Z") would always appear absent from
+        # current_event_ids and would be wrongly deleted without this check.
+        stale_ids = set()
+        for event_id in potentially_stale_ids:
+            try:
+                ev = client.get_event(calendar["google_calendar_id"], event_id)
+                if not ev or ev.get("status") == "cancelled":
+                    stale_ids.add(event_id)
+                # else: event still exists (e.g. a forked instance) — not stale
+            except Exception as e:
+                logger.warning(
+                    f"Could not verify event {event_id} existence, skipping: {e}"
+                )
+                # Skip rather than risk a false-positive deletion
 
         # For each stale mapping, clean up the remote main-calendar copy and busy
         # blocks BEFORE deleting the DB record. Only delete from DB if remote
