@@ -94,6 +94,12 @@ BusyBridge copies it to your Main Calendar (with full details)
 (no busy block on Client A — it already has the real event)
 ```
 
+### Recurring Meetings
+
+Recurring events sync as recurring events — BusyBridge copies the recurrence rule (RRULE) directly onto each busy block, so the block expands identically to the original. Your clients see a recurring "Busy" block that matches the series; BusyBridge does not create individual entries per occurrence.
+
+If you later modify or cancel a single instance of a recurring series, that change is synced individually without affecting the rest of the series.
+
 ### When Clients Schedule You
 
 When a client adds you to a meeting on their calendar, BusyBridge handles the sync automatically:
