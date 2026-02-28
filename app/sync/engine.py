@@ -98,6 +98,9 @@ async def _sync_client_calendar(client_calendar_id: int) -> None:
     user_email = calendar["user_email"]
     color_id = calendar["color_id"]
 
+    # Initialised before the try so it's always accessible in the except block.
+    event_errors = []
+
     try:
         from app.auth.google import get_valid_access_token
 
@@ -125,7 +128,6 @@ async def _sync_client_calendar(client_calendar_id: int) -> None:
         # Process each event
         synced_count = 0
         deleted_count = 0
-        event_errors = []
 
         for event in events:
             try:
@@ -225,14 +227,14 @@ async def _sync_client_calendar(client_calendar_id: int) -> None:
         )
         await db.commit()
 
-        # Log failure
+        # Log failure — include per-event errors so the log is actionable.
         await db.execute(
             """INSERT INTO sync_log (user_id, calendar_id, action, status, details)
                VALUES (?, ?, 'sync', 'failure', ?)""",
             (
                 user_id,
                 client_calendar_id,
-                json.dumps({"error": str(e)}),
+                json.dumps({"error": str(e), "failed_events": event_errors}),
             )
         )
         await db.commit()
@@ -300,6 +302,9 @@ async def _sync_main_calendar(user_id: int) -> None:
         await db.commit()
         sync_state = {"sync_token": None}
 
+    # Initialised before the try so it's always accessible in the except block.
+    event_errors = []
+
     try:
         from app.auth.google import get_valid_access_token
         main_token = await get_valid_access_token(user_id, user_email)
@@ -321,7 +326,6 @@ async def _sync_main_calendar(user_id: int) -> None:
         logger.info(f"Processing {len(events)} events from main calendar for user {user_id}")
 
         # Process events
-        event_errors = []
         for event in events:
             try:
                 if event.get("status") == "cancelled":
@@ -371,6 +375,17 @@ async def _sync_main_calendar(user_id: int) -> None:
 
         logger.info(f"Main calendar sync completed for user {user_id}")
 
+        # Log success
+        await db.execute(
+            """INSERT INTO sync_log (user_id, action, status, details)
+               VALUES (?, 'sync_main', 'success', ?)""",
+            (
+                user_id,
+                json.dumps({"events_processed": len(events), "is_full_sync": is_full_sync}),
+            )
+        )
+        await db.commit()
+
     except Exception as e:
         logger.exception(f"Main calendar sync failed for user {user_id}: {e}")
 
@@ -380,6 +395,17 @@ async def _sync_main_calendar(user_id: int) -> None:
                last_error = ?
                WHERE user_id = ?""",
             (str(e), user_id)
+        )
+        await db.commit()
+
+        # Log failure — include per-event errors so the log is actionable.
+        await db.execute(
+            """INSERT INTO sync_log (user_id, action, status, details)
+               VALUES (?, 'sync_main', 'failure', ?)""",
+            (
+                user_id,
+                json.dumps({"error": str(e), "failed_events": event_errors}),
+            )
         )
         await db.commit()
 
@@ -558,6 +584,23 @@ async def cleanup_disconnected_calendar(client_calendar_id: int, user_id: int) -
             )
         else:
             logger.info(f"Cleanup completed for calendar {client_calendar_id}")
+
+        # Audit entry so admins can see disconnect cleanups without trawling logs.
+        await db.execute(
+            """INSERT INTO sync_log (user_id, calendar_id, action, status, details)
+               VALUES (?, ?, 'disconnect_cleanup', ?, ?)""",
+            (
+                user_id,
+                client_calendar_id,
+                "warning" if retained_mappings > 0 else "success",
+                json.dumps({
+                    "mappings_cleaned": len(mappings_to_delete),
+                    "mappings_retained": retained_mappings,
+                    "busy_blocks_deleted": len(deleted_busy_block_ids),
+                }),
+            ),
+        )
+        await db.commit()
 
     except Exception as e:
         logger.exception(f"Error during calendar cleanup: {e}")
@@ -811,4 +854,21 @@ async def cleanup_managed_events_for_user(user_id: int) -> dict:
         summary["status"] = "partial"
 
     logger.info("Managed cleanup completed for user %s: %s", user_id, summary)
+
+    # Audit entry — errors list may be long; store it alongside the counts.
+    await db.execute(
+        """INSERT INTO sync_log (user_id, action, status, details)
+           VALUES (?, 'managed_cleanup', ?, ?)""",
+        (
+            user_id,
+            summary["status"],
+            json.dumps({
+                **{k: v for k, v in summary.items() if k != "errors"},
+                "error_count": len(summary["errors"]),
+                "errors": summary["errors"],
+            }),
+        ),
+    )
+    await db.commit()
+
     return summary

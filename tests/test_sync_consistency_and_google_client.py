@@ -246,7 +246,7 @@ async def test_run_consistency_check_and_user_error_path(test_db, monkeypatch):
     user_1 = await _insert_user(email="u1@example.com", google_user_id="u1-google", main_calendar_id="main-1")
     await _insert_user(email="u2@example.com", google_user_id="u2-google", main_calendar_id="main-2")
 
-    async def fake_check_user_consistency(user_id: int, summary: dict):
+    async def fake_check_user_consistency(user_id: int, summary: dict, dry_run: bool = False):
         if user_id == user_1:
             raise RuntimeError("boom")
         summary["mappings_checked"] += 1

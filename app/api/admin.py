@@ -539,6 +539,47 @@ async def trigger_cleanup(admin: User = Depends(require_admin)):
     return {"status": "ok", "message": "Cleanup triggered"}
 
 
+@router.post("/consistency/check")
+async def trigger_consistency_check(
+    dry_run: bool = False,
+    user_id: Optional[int] = None,
+    admin: User = Depends(require_admin),
+):
+    """Run (or preview) the consistency check.
+
+    With dry_run=True no changes are made; the response includes a
+    "planned_actions" list describing every action that would be taken.
+    Pass user_id to scope the check to a single user.
+    """
+    from app.sync.consistency import run_consistency_check, check_user_consistency
+
+    if user_id is not None:
+        db = await get_database()
+        cursor = await db.execute("SELECT id FROM users WHERE id = ?", (user_id,))
+        if not await cursor.fetchone():
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="User not found",
+            )
+
+        per_user_summary = {
+            "users_checked": 0,
+            "mappings_checked": 0,
+            "orphaned_main_events_deleted": 0,
+            "missing_copies_recreated": 0,
+            "orphaned_busy_blocks_deleted": 0,
+            "errors": 0,
+        }
+        if dry_run:
+            per_user_summary["planned_actions"] = []
+
+        await check_user_consistency(user_id, per_user_summary, dry_run=dry_run)
+        return {"dry_run": dry_run, "summary": per_user_summary}
+
+    result = await run_consistency_check(dry_run=dry_run)
+    return {"dry_run": dry_run, "summary": result}
+
+
 @router.get("/settings", response_model=SettingsResponse)
 async def get_admin_settings(admin: User = Depends(require_admin)):
     """Get system settings."""
