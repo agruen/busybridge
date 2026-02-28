@@ -159,7 +159,7 @@ async def test_color_auto_assignment_on_connect(test_db, monkeypatch):
 
     monkeypatch.setattr("app.api.calendars.get_valid_access_token", fake_get_valid_access_token)
     monkeypatch.setattr("googleapiclient.discovery.build", fake_build)
-    monkeypatch.setattr("app.utils.tasks.create_background_task", lambda *a, **kw: None)
+    monkeypatch.setattr("app.utils.tasks.create_background_task", lambda coro, *a, **kw: coro.close())
 
     # Connect three calendars
     await connect_client_calendar(
