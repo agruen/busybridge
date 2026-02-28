@@ -4,6 +4,7 @@ import logging
 import os
 import sys
 from contextlib import asynccontextmanager
+from datetime import datetime
 
 from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -37,7 +38,59 @@ async def lifespan(app: FastAPI):
     logger.info(f"Public URL: {settings.public_url}")
     logger.info(f"Database: {settings.database_path}")
 
-    # Initialize database
+    # -----------------------------------------------------------------------
+    # Catastrophic-recovery path: if a restore-pending.zip exists next to the
+    # database file, restore it NOW — before aiosqlite opens the DB and before
+    # the scheduler fires a single sync job.
+    #
+    # To trigger: drop a BusyBridge backup ZIP at
+    #   <data dir>/restore-pending.zip
+    # (i.e. ./data/restore-pending.zip on the host)
+    # then start (or restart) the container.  The file is archived as
+    # restore-pending-done-<timestamp>.zip after a successful restore so it
+    # will not re-trigger on the next restart.
+    # -----------------------------------------------------------------------
+    _startup_restored = False
+    _restore_pending = os.path.join(
+        os.path.dirname(settings.database_path), "restore-pending.zip"
+    )
+    if os.path.exists(_restore_pending):
+        logger.warning("=" * 60)
+        logger.warning("STARTUP RESTORE: restore-pending.zip detected.")
+        logger.warning("Restoring database before opening connections.")
+        logger.warning("Sync will NOT start until restore is complete.")
+        logger.warning("=" * 60)
+        try:
+            from app.sync.backup import apply_startup_restore
+            _meta = await apply_startup_restore(_restore_pending)
+            # Archive so it doesn't re-trigger on the next restart
+            _done = _restore_pending.replace(
+                ".zip",
+                f"-done-{datetime.now().strftime('%Y%m%d-%H%M%S')}.zip",
+            )
+            os.rename(_restore_pending, _done)
+            _startup_restored = True
+            logger.warning(
+                f"STARTUP RESTORE COMPLETE: restored backup "
+                f"'{_meta.get('backup_id', 'unknown')}'. "
+                f"Archived restore file to {os.path.basename(_done)}."
+            )
+            logger.warning(
+                "Calendar events will be reconciled automatically on the "
+                "first consistency check. You may also trigger it manually "
+                "via POST /api/admin/consistency/check."
+            )
+        except Exception as exc:
+            logger.error("=" * 60)
+            logger.error(f"STARTUP RESTORE FAILED: {exc}")
+            logger.error(
+                "Refusing to start — sync must not run on an unknown state. "
+                "Fix the restore-pending.zip and restart."
+            )
+            logger.error("=" * 60)
+            raise SystemExit(1)
+
+    # Initialize database (opens aiosqlite — restored file if we just swapped it)
     await get_database()
     logger.info("Database initialized")
 
@@ -51,6 +104,16 @@ async def lifespan(app: FastAPI):
             logger.info("Encryption manager initialized")
         except Exception as e:
             logger.warning(f"Could not initialize encryption: {e}")
+
+    # After a startup restore, clear all sync tokens so every calendar does a
+    # clean full re-fetch on the first sync rather than using stale tokens.
+    if _startup_restored:
+        try:
+            from app.sync.backup import _clear_sync_tokens
+            await _clear_sync_tokens()
+            logger.info("Startup restore: sync tokens cleared — full re-sync on first run")
+        except Exception as e:
+            logger.warning(f"Could not clear sync tokens after restore: {e}")
 
     # Start background scheduler
     try:
