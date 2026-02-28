@@ -25,6 +25,7 @@ services:
     volumes:
       - ./data:/data
       - ./secrets:/secrets
+      - ./backups:/data/backups
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
       interval: 30s

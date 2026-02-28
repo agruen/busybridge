@@ -86,6 +86,15 @@ def setup_scheduler() -> AsyncIOScheduler:
         replace_existing=True,
     )
 
+    # Backup - daily at 11 PM (uses system timezone, set via TZ env var)
+    _scheduler.add_job(
+        "app.jobs.backup_job:run_scheduled_backup",
+        trigger=CronTrigger(hour=23, minute=0),
+        id="daily_backup",
+        name="Daily Backup",
+        replace_existing=True,
+    )
+
     _scheduler.start()
     logger.info("Background scheduler started")
 
