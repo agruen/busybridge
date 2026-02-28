@@ -38,6 +38,13 @@ def setup_scheduler() -> AsyncIOScheduler:
             name="Webhook Renewal",
             replace_existing=True,
         )
+        # Register webhooks for all users on startup
+        _scheduler.add_job(
+            "app.jobs.webhook_renewal:register_all_webhooks",
+            id="webhook_initial_registration",
+            name="Webhook Initial Registration",
+            replace_existing=True,
+        )
     else:
         logger.info("Webhook renewal job disabled (ENABLE_WEBHOOKS=false)")
 

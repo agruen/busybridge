@@ -83,6 +83,21 @@ async def renew_expiring_webhooks() -> None:
             )
 
 
+async def register_all_webhooks() -> None:
+    """Register webhooks for all active users (called on startup)."""
+    db = await get_database()
+    cursor = await db.execute(
+        "SELECT id FROM users WHERE main_calendar_id IS NOT NULL"
+    )
+    users = await cursor.fetchall()
+    for user in users:
+        try:
+            await register_webhooks_for_user(user["id"])
+            logger.info(f"Registered webhooks for user {user['id']}")
+        except Exception as e:
+            logger.error(f"Failed to register webhooks for user {user['id']}: {e}")
+
+
 async def register_webhooks_for_user(user_id: int) -> None:
     """Register webhooks for all of a user's calendars."""
     db = await get_database()
