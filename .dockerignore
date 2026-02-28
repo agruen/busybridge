@@ -1,0 +1,7 @@
+.env
+.git
+data
+secrets
+backups
+__pycache__
+*.pyc

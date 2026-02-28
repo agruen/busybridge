@@ -6,13 +6,24 @@
     <title>{% block title %}Calendar Sync{% endblock %}</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+    <script src="https://unpkg.com/htmx.org@1.9.10/dist/ext/json-enc.js"></script>
     <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
     <style>
         [x-cloak] { display: none !important; }
+        #toast {
+            position: fixed; top: 1rem; right: 1rem; z-index: 9999;
+            padding: 0.75rem 1.25rem; border-radius: 0.5rem;
+            color: #fff; font-size: 0.875rem; font-weight: 500;
+            transform: translateX(120%); transition: transform 0.3s ease;
+            pointer-events: none;
+        }
+        #toast.show { transform: translateX(0); }
+        #toast.success { background-color: #059669; }
+        #toast.error { background-color: #dc2626; }
     </style>
 </head>
-<body class="h-full">
+<body class="h-full" hx-ext="json-enc">
     {% block body %}
     <div class="min-h-full">
         {% if user %}
@@ -65,6 +76,24 @@
     </div>
     {% endblock %}
 
+    <div id="toast"></div>
+    <script>
+        function showToast(msg, type) {
+            var t = document.getElementById('toast');
+            t.textContent = msg;
+            t.className = type + ' show';
+            setTimeout(function() { t.className = ''; }, 3000);
+        }
+        document.body.addEventListener('htmx:afterRequest', function(e) {
+            if (e.detail.elt.getAttribute('hx-swap') === 'none') {
+                if (e.detail.successful) {
+                    showToast('Done!', 'success');
+                } else {
+                    showToast('Error: ' + (e.detail.xhr.status || 'request failed'), 'error');
+                }
+            }
+        });
+    </script>
     {% block scripts %}{% endblock %}
 </body>
 </html>

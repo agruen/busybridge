@@ -14,10 +14,10 @@
                 <p class="mt-1 text-sm text-gray-500">Select which calendar should be your main calendar. All client calendar events will sync here.</p>
             </div>
             <div class="px-6 py-4">
-                <form hx-put="/api/me/main-calendar" hx-swap="none" class="space-y-4">
+                <div class="space-y-4">
                     <div>
                         <label for="calendar_id" class="block text-sm font-medium text-gray-700">Calendar</label>
-                        <select id="calendar_id" name="calendar_id" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm py-2 px-3 border">
+                        <select id="calendar_id" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm py-2 px-3 border">
                             {% for cal in calendars %}
                             <option value="{{ cal['id'] }}" {% if cal['id'] == user.main_calendar_id %}selected{% endif %}>
                                 {{ cal.get('summary', cal['id']) }}{% if cal.get('primary') %} (Primary){% endif %}
@@ -25,10 +25,10 @@
                             {% endfor %}
                         </select>
                     </div>
-                    <button type="submit" class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700">
+                    <button type="button" onclick="saveMainCalendar()" class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700">
                         Save
                     </button>
-                </form>
+                </div>
             </div>
         </div>
 
@@ -39,10 +39,10 @@
                 <p class="mt-1 text-sm text-gray-500">Choose what email notifications you want to receive.</p>
             </div>
             <div class="px-6 py-4">
-                <form hx-put="/api/me/alert-preferences" hx-swap="none" class="space-y-4">
+                <div class="space-y-4">
                     <div class="flex items-start">
                         <div class="flex items-center h-5">
-                            <input id="email_on_sync_failure" name="email_on_sync_failure" type="checkbox" checked class="h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500">
+                            <input id="email_on_sync_failure" type="checkbox" checked class="h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500">
                         </div>
                         <div class="ml-3 text-sm">
                             <label for="email_on_sync_failure" class="font-medium text-gray-700">Sync failure alerts</label>
@@ -51,17 +51,17 @@
                     </div>
                     <div class="flex items-start">
                         <div class="flex items-center h-5">
-                            <input id="email_on_token_revoked" name="email_on_token_revoked" type="checkbox" checked class="h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500">
+                            <input id="email_on_token_revoked" type="checkbox" checked class="h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500">
                         </div>
                         <div class="ml-3 text-sm">
                             <label for="email_on_token_revoked" class="font-medium text-gray-700">Re-authentication required</label>
                             <p class="text-gray-500">Get notified when you need to re-authenticate with Google.</p>
                         </div>
                     </div>
-                    <button type="submit" class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700">
+                    <button type="button" onclick="saveAlertPreferences()" class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700">
                         Save Preferences
                     </button>
-                </form>
+                </div>
             </div>
         </div>
 
@@ -112,4 +112,40 @@
         </div>
     </div>
 </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    async function saveMainCalendar() {
+        const calendarId = document.getElementById('calendar_id').value;
+        const resp = await fetch('/api/me/main-calendar', {
+            method: 'PUT',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({calendar_id: calendarId})
+        });
+        if (resp.ok) {
+            window.location.reload();
+        } else {
+            const data = await resp.json();
+            alert('Error: ' + (data.detail || 'Failed to save'));
+        }
+    }
+
+    async function saveAlertPreferences() {
+        const resp = await fetch('/api/me/alert-preferences', {
+            method: 'PUT',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                email_on_sync_failure: document.getElementById('email_on_sync_failure').checked,
+                email_on_token_revoked: document.getElementById('email_on_token_revoked').checked
+            })
+        });
+        if (resp.ok) {
+            window.location.reload();
+        } else {
+            const data = await resp.json();
+            alert('Error: ' + (data.detail || 'Failed to save'));
+        }
+    }
+</script>
 {% endblock %}

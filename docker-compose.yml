@@ -2,11 +2,13 @@ version: '3.8'
 
 services:
   calendar-sync:
-    build: .
+    build:
+      context: .
+      network: host
     container_name: calendar-sync
     restart: unless-stopped
     ports:
-      - "3000:3000"
+      - "8033:3000"
     environment:
       - DATABASE_PATH=/data/calendar-sync.db
       - ENCRYPTION_KEY_FILE=/secrets/encryption.key

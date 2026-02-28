@@ -26,11 +26,7 @@ class GoogleCalendarClient:
             timeout: Request timeout in seconds (default: 30)
         """
         self.credentials = Credentials(token=access_token)
-        # Build service with timeout support
-        import httplib2
-        http = httplib2.Http(timeout=timeout)
-        http = self.credentials.authorize(http)
-        self.service = build("calendar", "v3", http=http)
+        self.service = build("calendar", "v3", credentials=self.credentials)
         self.settings = settings or get_settings()
 
     def list_events(

@@ -227,7 +227,8 @@ async def global_exception_handler(request: Request, exc: Exception):
 @app.get("/favicon.ico")
 async def favicon():
     """Return empty response for favicon."""
-    return JSONResponse(content={}, status_code=204)
+    from fastapi.responses import Response
+    return Response(status_code=204)
 
 
 if __name__ == "__main__":

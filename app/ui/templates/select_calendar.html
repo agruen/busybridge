@@ -14,11 +14,7 @@
         <ul class="divide-y divide-gray-200">
             {% for cal in calendars %}
             <li class="hover:bg-gray-50">
-                <form hx-post="/api/client-calendars" hx-swap="none" class="px-6 py-4 flex items-center justify-between">
-                    <input type="hidden" name="token_id" value="{{ token_id }}">
-                    <input type="hidden" name="calendar_id" value="{{ cal['id'] }}">
-                    <input type="hidden" name="display_name" value="{{ cal.get('summary', cal['id']) }}">
-
+                <div class="px-6 py-4 flex items-center justify-between">
                     <div class="flex items-center">
                         <div class="flex-shrink-0 h-10 w-10 flex items-center justify-center rounded-full" style="background-color: {{ cal.get('backgroundColor', '#4285f4') }}20;">
                             <i class="fas fa-calendar" style="color: {{ cal.get('backgroundColor', '#4285f4') }};"></i>
@@ -31,10 +27,12 @@
                             {% endif %}
                         </div>
                     </div>
-                    <button type="submit" class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700">
+                    <button type="button"
+                            onclick="connectCalendar({{ token_id }}, '{{ cal['id'] }}', '{{ cal.get('summary', cal['id']) | e }}')"
+                            class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700">
                         Connect
                     </button>
-                </form>
+                </div>
             </li>
             {% endfor %}
         </ul>
@@ -58,10 +56,26 @@
 </div>
 
 <script>
-    document.body.addEventListener('htmx:afterRequest', function(evt) {
-        if (evt.detail.successful) {
-            window.location.href = '/app';
+    async function connectCalendar(tokenId, calendarId, displayName) {
+        try {
+            const resp = await fetch('/api/client-calendars', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    token_id: tokenId,
+                    calendar_id: calendarId,
+                    display_name: displayName
+                })
+            });
+            if (resp.ok) {
+                window.location.href = '/app';
+            } else {
+                const data = await resp.json();
+                alert('Error: ' + (data.detail || 'Failed to connect calendar'));
+            }
+        } catch (err) {
+            alert('Error: ' + err.message);
         }
-    });
+    }
 </script>
 {% endblock %}

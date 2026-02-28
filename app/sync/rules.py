@@ -209,11 +209,6 @@ async def sync_main_event_to_clients(
     db = await get_database()
     created_blocks = []
 
-    # Skip events we created
-    if main_client.is_our_event(event):
-        logger.debug(f"Skipping our own event on main: {event.get('id')}")
-        return []
-
     # Check if we should create busy blocks
     if not should_create_busy_block(event):
         logger.debug(f"Skipping event (no busy block needed): {event.get('id')}")
