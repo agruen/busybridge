@@ -306,6 +306,50 @@ def delete_backup(backup_id: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Startup restore (catastrophic recovery path)
+# ---------------------------------------------------------------------------
+
+async def apply_startup_restore(zip_path: str) -> dict:
+    """Restore the database from a backup ZIP before the scheduler starts.
+
+    This is the catastrophic recovery entry point.  It must be called
+    BEFORE get_database() opens the aiosqlite connection so that aiosqlite
+    sees the restored file when it first opens it.
+
+    It does NOT reconcile Google Calendar events — that is left to the
+    normal consistency check on the first scheduled run after startup.
+
+    Returns the backup metadata dict.
+    Raises on any validation or I/O error (caller should abort startup).
+    """
+    if not os.path.exists(zip_path):
+        raise FileNotFoundError(f"Restore file not found: {zip_path}")
+    if not zipfile.is_zipfile(zip_path):
+        raise ValueError(f"Not a valid ZIP file: {zip_path}")
+
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        names = zf.namelist()
+        if "metadata.json" not in names:
+            raise ValueError("Not a valid BusyBridge backup: missing metadata.json")
+        if "database.db" not in names:
+            raise ValueError("Not a valid BusyBridge backup: missing database.db")
+
+        with zf.open("metadata.json") as f:
+            metadata = json.load(f)
+
+        # Replace the DB file at the filesystem level using sqlite3 — no
+        # aiosqlite connection is open yet so this is safe.
+        await _restore_full_db(zf)
+
+    logger.info(
+        f"Startup restore: database replaced with backup "
+        f"'{metadata.get('backup_id', 'unknown')}' "
+        f"(originally created {metadata.get('created_at', 'unknown')})"
+    )
+    return metadata
+
+
+# ---------------------------------------------------------------------------
 # Restore helpers
 # ---------------------------------------------------------------------------
 
