@@ -298,7 +298,8 @@ class TestListAndDeleteBackups:
         monkeypatch.setenv("BACKUP_PATH", str(tmp_path))
         for ts, btype in [("20240101-120000", "daily"), ("20240102-120000", "daily")]:
             bid = f"backup-{ts}-{btype}"
-            meta = {"backup_id": bid, "backup_type": btype, "created_at": f"2024-01-{ts[:2]}-01T12:00:00"}
+            created_at = f"{ts[:4]}-{ts[4:6]}-{ts[6:8]}T{ts[9:11]}:{ts[11:13]}:{ts[13:15]}"
+            meta = {"backup_id": bid, "backup_type": btype, "created_at": created_at}
             (tmp_path / f"{bid}.zip").write_bytes(_make_backup_zip(meta))
 
         results = list_backups()
