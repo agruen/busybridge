@@ -62,6 +62,78 @@ A self-hosted, multi-user calendar synchronization service for consulting organi
      - `https://your-domain/auth/connect-client/callback`
      - `https://your-domain/setup/step/3/callback`
 
+## Appointment Workflow
+
+BusyBridge is built around one simple principle: **your main calendar is your single source of truth**. Client calendars are managed automatically — you rarely need to interact with them directly.
+
+### Creating Appointments
+
+Where you create an appointment depends on who needs to receive the invite:
+
+**Create on your main calendar** when the meeting is yours to own — personal blocks, internal meetings with your own org, or any appointment where you don't need the invite to come from a client domain. BusyBridge automatically creates "Busy" blocks on every connected client calendar.
+
+```
+You create event on Main Calendar
+         ↓
+BusyBridge detects it (within 5 min, or instantly via webhook)
+         ↓
+"Busy" block created on Client A calendar
+"Busy" block created on Client B calendar
+"Busy" block created on Client C calendar
+```
+
+**Create on the client calendar** when you're organizing a meeting that needs to live within that client's domain — for example, inviting client colleagues to an internal meeting where the invite should come from their org. BusyBridge treats it as a client-origin event: it syncs a full-detail copy to your main calendar and creates "Busy" blocks on your other connected client calendars (but not back on Client A, to avoid duplication).
+
+```
+You create event on Client A Calendar
+         ↓
+BusyBridge copies it to your Main Calendar (with full details)
+         ↓
+"Busy" block created on Client B calendar
+"Busy" block created on Client C calendar
+(no busy block on Client A — it already has the real event)
+```
+
+### Recurring Meetings
+
+Recurring events sync as recurring events — BusyBridge copies the recurrence rule (RRULE) directly onto each busy block, so the block expands identically to the original. Your clients see a recurring "Busy" block that matches the series; BusyBridge does not create individual entries per occurrence.
+
+If you later modify or cancel a single instance of a recurring series, that change is synced individually without affecting the rest of the series.
+
+### When Clients Schedule You
+
+When a client adds you to a meeting on their calendar, BusyBridge handles the sync automatically:
+
+```
+Client creates event on Client A Calendar
+         ↓
+BusyBridge copies it to your Main Calendar (with full details)
+         ↓
+"Busy" block created on Client B calendar
+"Busy" block created on Client C calendar
+```
+
+You'll see the appointment on your main calendar with full details (title, description, attendees). Other clients only see "Busy" — no cross-client information is ever shared.
+
+### Viewing Your Schedule
+
+**Always view your main calendar** for your complete schedule. It contains:
+
+- Full details of all client-scheduled meetings (synced from client calendars)
+- All your own appointments (created directly on main)
+
+Client calendars are not useful for your day-to-day viewing — they only show "Busy" blocks from your other commitments, which is the view your clients see.
+
+### Summary
+
+| Action | Where |
+|--------|-------|
+| Create a personal or internal appointment | Your **main calendar** |
+| Organize a meeting within a client's domain | That **client's calendar** |
+| View your full schedule | Your **main calendar** |
+| See what a client sees | That **client's calendar** (shows "Busy" blocks) |
+| Accept a client meeting | Handled automatically — appears on main calendar |
+
 ## Architecture
 
 The application runs as a single Docker container containing:

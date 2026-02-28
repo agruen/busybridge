@@ -13,6 +13,7 @@ from app.sync.google_calendar import (
     copy_event_for_main,
     should_create_busy_block,
     can_user_edit_event,
+    derive_instance_event_id,
 )
 
 logger = logging.getLogger(__name__)
@@ -113,7 +114,63 @@ async def sync_client_event_to_main(
         return main_event_id
 
     else:
-        # Create new event on main calendar
+        # If this is a modified instance of a recurring series we already
+        # track, cancel the old recurring occurrences at this time slot first
+        # so we don't end up with duplicate busy blocks.
+        if recurring_event_id:
+            cursor = await db.execute(
+                """SELECT * FROM event_mappings
+                   WHERE user_id = ? AND origin_calendar_id = ? AND origin_event_id = ?""",
+                (user_id, client_calendar_id, recurring_event_id)
+            )
+            parent_mapping = await cursor.fetchone()
+
+            if parent_mapping:
+                original_start_time = event.get("originalStartTime")
+                if original_start_time:
+                    # Cancel the instance on the main-calendar copy of the series.
+                    if parent_mapping["main_event_id"]:
+                        main_instance_id = derive_instance_event_id(
+                            parent_mapping["main_event_id"], original_start_time
+                        )
+                        try:
+                            main_client.delete_event(main_calendar_id, main_instance_id)
+                            logger.info(
+                                f"Cancelled series main instance {main_instance_id} "
+                                "to fork modified occurrence"
+                            )
+                        except Exception as e:
+                            logger.warning(
+                                f"Failed to cancel series main instance {main_instance_id}: {e}"
+                            )
+
+                    # Cancel the corresponding busy block instances.
+                    cursor2 = await db.execute(
+                        """SELECT bb.*, cc.google_calendar_id, ot.google_account_email
+                           FROM busy_blocks bb
+                           JOIN client_calendars cc ON bb.client_calendar_id = cc.id
+                           JOIN oauth_tokens ot ON cc.oauth_token_id = ot.id
+                           WHERE bb.event_mapping_id = ?""",
+                        (parent_mapping["id"],)
+                    )
+                    for block in await cursor2.fetchall():
+                        bb_instance_id = derive_instance_event_id(
+                            block["busy_block_event_id"], original_start_time
+                        )
+                        try:
+                            from app.auth.google import get_valid_access_token
+                            token = await get_valid_access_token(
+                                user_id, block["google_account_email"]
+                            )
+                            cal_client = GoogleCalendarClient(token)
+                            cal_client.delete_event(block["google_calendar_id"], bb_instance_id)
+                            logger.info(f"Cancelled series busy block instance {bb_instance_id}")
+                        except Exception as e:
+                            logger.warning(
+                                f"Failed to cancel series busy block instance {bb_instance_id}: {e}"
+                            )
+
+        # Create new standalone event on main calendar for this instance.
         try:
             result = main_client.create_event(main_calendar_id, main_event_data)
             main_event_id = result["id"]
@@ -337,15 +394,165 @@ async def sync_main_event_to_clients(
     return created_blocks
 
 
+async def _handle_cancelled_recurring_instance(
+    user_id: int,
+    mapping: dict,
+    original_start_time: dict,
+    main_calendar_id: Optional[str],
+    main_client: Optional[GoogleCalendarClient],
+) -> None:
+    """Cancel one instance of a recurring event's main-calendar copy and busy blocks.
+
+    Called when a single occurrence of a tracked recurring series is cancelled.
+    Derives the instance event ID for each managed event (main copy + each busy
+    block) from the parent event ID and the occurrence's ``originalStartTime``,
+    then issues a delete for that specific instance.  The parent recurring event
+    and its DB mapping are left intact.
+    """
+    db = await get_database()
+
+    # Cancel the corresponding instance on the main-calendar copy of the series.
+    if main_client and main_calendar_id and mapping["main_event_id"]:
+        main_instance_id = derive_instance_event_id(
+            mapping["main_event_id"], original_start_time
+        )
+        try:
+            main_client.delete_event(main_calendar_id, main_instance_id)
+            logger.info(f"Cancelled main calendar instance {main_instance_id}")
+        except Exception as e:
+            logger.warning(f"Failed to cancel main calendar instance {main_instance_id}: {e}")
+
+    # Cancel the corresponding instance on each busy-block calendar.
+    cursor = await db.execute(
+        """SELECT bb.*, cc.google_calendar_id, ot.google_account_email
+           FROM busy_blocks bb
+           JOIN client_calendars cc ON bb.client_calendar_id = cc.id
+           JOIN oauth_tokens ot ON cc.oauth_token_id = ot.id
+           WHERE bb.event_mapping_id = ?""",
+        (mapping["id"],)
+    )
+    busy_blocks = await cursor.fetchall()
+
+    for block in busy_blocks:
+        bb_instance_id = derive_instance_event_id(
+            block["busy_block_event_id"], original_start_time
+        )
+        try:
+            from app.auth.google import get_valid_access_token
+            token = await get_valid_access_token(user_id, block["google_account_email"])
+            cal_client = GoogleCalendarClient(token)
+            cal_client.delete_event(block["google_calendar_id"], bb_instance_id)
+            logger.info(f"Cancelled busy block instance {bb_instance_id}")
+        except Exception as e:
+            logger.warning(f"Failed to cancel busy block instance {bb_instance_id}: {e}")
+
+
 async def handle_deleted_client_event(
     user_id: int,
     client_calendar_id: int,
     event_id: str,
     main_calendar_id: str,
     main_client: GoogleCalendarClient,
+    recurring_event_id: Optional[str] = None,
+    original_start_time: Optional[dict] = None,
 ) -> None:
-    """Handle deletion of an event from a client calendar."""
+    """Handle deletion of an event from a client calendar.
+
+    When *recurring_event_id* is provided the deleted event is a single
+    instance of a recurring series.  In that case we cancel just that one
+    occurrence on the main-calendar copy and on every busy-block calendar,
+    leaving the rest of the series intact.
+    """
     db = await get_database()
+
+    # ------------------------------------------------------------------ #
+    # Single-instance cancellation of a recurring series                   #
+    # ------------------------------------------------------------------ #
+    if recurring_event_id:
+        handled = False
+
+        # Propagate the instance cancellation through the parent mapping.
+        if original_start_time:
+            cursor = await db.execute(
+                """SELECT * FROM event_mappings
+                   WHERE user_id = ? AND origin_calendar_id = ? AND origin_event_id = ?""",
+                (user_id, client_calendar_id, recurring_event_id)
+            )
+            parent_mapping = await cursor.fetchone()
+
+            if parent_mapping:
+                await _handle_cancelled_recurring_instance(
+                    user_id=user_id,
+                    mapping=parent_mapping,
+                    original_start_time=original_start_time,
+                    main_calendar_id=main_calendar_id,
+                    main_client=main_client,
+                )
+                handled = True
+        else:
+            logger.warning(
+                f"Cancelled recurring instance {event_id} has no originalStartTime; "
+                "cannot cancel specific occurrence"
+            )
+
+        # If we previously forked this instance (due to a prior modification),
+        # clean up the standalone mapping and its events too.
+        cursor = await db.execute(
+            """SELECT * FROM event_mappings
+               WHERE user_id = ? AND origin_calendar_id = ? AND origin_event_id = ?""",
+            (user_id, client_calendar_id, event_id)
+        )
+        instance_mapping = await cursor.fetchone()
+
+        if instance_mapping:
+            if instance_mapping["main_event_id"]:
+                try:
+                    main_client.delete_event(main_calendar_id, instance_mapping["main_event_id"])
+                    logger.info(
+                        f"Deleted forked instance main event {instance_mapping['main_event_id']}"
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to delete forked instance main event: {e}")
+
+            cursor = await db.execute(
+                """SELECT bb.*, cc.google_calendar_id, ot.google_account_email
+                   FROM busy_blocks bb
+                   JOIN client_calendars cc ON bb.client_calendar_id = cc.id
+                   JOIN oauth_tokens ot ON cc.oauth_token_id = ot.id
+                   WHERE bb.event_mapping_id = ?""",
+                (instance_mapping["id"],)
+            )
+            forked_blocks = await cursor.fetchall()
+            deleted_ids: set[int] = set()
+            for block in forked_blocks:
+                try:
+                    from app.auth.google import get_valid_access_token
+                    token = await get_valid_access_token(user_id, block["google_account_email"])
+                    cal_client = GoogleCalendarClient(token)
+                    cal_client.delete_event(block["google_calendar_id"], block["busy_block_event_id"])
+                    deleted_ids.add(block["id"])
+                except Exception as e:
+                    logger.error(f"Failed to delete forked instance busy block: {e}")
+
+            if deleted_ids:
+                placeholders = ",".join("?" * len(deleted_ids))
+                await db.execute(
+                    f"DELETE FROM busy_blocks WHERE id IN ({placeholders})",
+                    tuple(deleted_ids)
+                )
+            await db.execute("DELETE FROM event_mappings WHERE id = ?", (instance_mapping["id"],))
+            await db.commit()
+            handled = True
+
+        if handled:
+            logger.info(f"Handled cancelled recurring instance {event_id}")
+        else:
+            logger.debug(f"No mapping found for cancelled recurring instance {event_id}")
+        return
+
+    # ------------------------------------------------------------------ #
+    # Full deletion of a non-instance event                                #
+    # ------------------------------------------------------------------ #
 
     # Find the event mapping
     cursor = await db.execute(
@@ -415,9 +622,47 @@ async def handle_deleted_client_event(
 async def handle_deleted_main_event(
     user_id: int,
     event_id: str,
+    recurring_event_id: Optional[str] = None,
+    original_start_time: Optional[dict] = None,
 ) -> None:
-    """Handle deletion of an event from the main calendar."""
+    """Handle deletion of an event from the main calendar.
+
+    When *recurring_event_id* is provided the deleted event is a single
+    instance of a recurring series.  In that case we cancel just that one
+    occurrence on every busy-block calendar, leaving the rest of the series
+    intact.
+    """
     db = await get_database()
+
+    # ------------------------------------------------------------------ #
+    # Single-instance cancellation of a recurring series                   #
+    # ------------------------------------------------------------------ #
+    if recurring_event_id and original_start_time:
+        cursor = await db.execute(
+            """SELECT * FROM event_mappings
+               WHERE user_id = ? AND main_event_id = ?""",
+            (user_id, recurring_event_id)
+        )
+        parent_mapping = await cursor.fetchone()
+
+        if parent_mapping:
+            # Cancel busy-block instances only (the main calendar is the source
+            # of truth here, so no need to touch it again).
+            await _handle_cancelled_recurring_instance(
+                user_id=user_id,
+                mapping=parent_mapping,
+                original_start_time=original_start_time,
+                main_calendar_id=None,
+                main_client=None,
+            )
+            logger.info(f"Handled cancelled main recurring instance {event_id}")
+        else:
+            logger.debug(f"No mapping found for cancelled main recurring instance {event_id}")
+        return
+
+    # ------------------------------------------------------------------ #
+    # Full deletion of a non-instance event                                #
+    # ------------------------------------------------------------------ #
 
     # Find mappings for this main event
     cursor = await db.execute(

@@ -345,7 +345,7 @@ async def test_trigger_sync_for_main_calendar_state_creation_token_expiry_and_su
     deleted_main_ids: list[str] = []
     synced_main_ids: list[str] = []
 
-    async def fake_handle_deleted_main_event(_user_id: int, event_id: str):
+    async def fake_handle_deleted_main_event(_user_id: int, event_id: str, **_kwargs):
         deleted_main_ids.append(event_id)
 
     async def fake_sync_main_event_to_clients(**kwargs):

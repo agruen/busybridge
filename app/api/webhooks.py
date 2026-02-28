@@ -15,6 +15,7 @@ router = APIRouter(prefix="/webhooks", tags=["webhooks"])
 async def receive_google_calendar_webhook(
     request: Request,
     x_goog_channel_id: str = Header(None, alias="X-Goog-Channel-ID"),
+    x_goog_channel_token: str = Header(None, alias="X-Goog-Channel-Token"),
     x_goog_resource_id: str = Header(None, alias="X-Goog-Resource-ID"),
     x_goog_resource_state: str = Header(None, alias="X-Goog-Resource-State"),
     x_goog_message_number: str = Header(None, alias="X-Goog-Message-Number"),
@@ -53,6 +54,16 @@ async def receive_google_calendar_webhook(
         logger.warning(f"Unknown webhook channel: {x_goog_channel_id}")
         # Don't return error - Google will keep retrying
         return {"status": "ok", "message": "Unknown channel"}
+
+    # Verify the shared secret token to confirm the request came from Google.
+    # Channels registered without a token (legacy rows with empty string) are
+    # accepted so that in-flight channels survive a rolling deploy; they will
+    # be replaced by the normal renewal cycle within 6 days.
+    import hmac
+    stored_token = channel["token"] if channel["token"] else ""
+    if stored_token and not hmac.compare_digest(stored_token, x_goog_channel_token or ""):
+        logger.warning(f"Webhook token mismatch for channel {x_goog_channel_id}")
+        return {"status": "ok"}
 
     # Verify resource ID matches the channel we registered.
     # If it doesn't match, ignore the notification to avoid triggering sync
@@ -126,6 +137,7 @@ async def register_webhook_channel(
 
     Returns the channel info including expiration time.
     """
+    import secrets
     import uuid
     from datetime import timedelta
     import httpx
@@ -133,6 +145,7 @@ async def register_webhook_channel(
 
     settings = get_settings()
     channel_id = str(uuid.uuid4())
+    channel_token = secrets.token_urlsafe(32)
     webhook_url = f"{settings.public_url}/api/webhooks/google-calendar"
 
     # Google webhooks expire after max 7 days, we'll set for 6 days
@@ -144,6 +157,7 @@ async def register_webhook_channel(
         "type": "web_hook",
         "address": webhook_url,
         "expiration": str(expiration_ms),
+        "token": channel_token,
     }
 
     # Make the watch request
@@ -167,14 +181,15 @@ async def register_webhook_channel(
     db = await get_database()
     await db.execute(
         """INSERT INTO webhook_channels
-           (user_id, calendar_type, client_calendar_id, channel_id, resource_id, expiration)
-           VALUES (?, ?, ?, ?, ?, ?)""",
+           (user_id, calendar_type, client_calendar_id, channel_id, resource_id, token, expiration)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
         (
             user_id,
             calendar_type,
             client_calendar_id,
             channel_id,
             result["resourceId"],
+            channel_token,
             expiration.isoformat(),
         )
     )

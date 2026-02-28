@@ -144,6 +144,7 @@ CREATE TABLE IF NOT EXISTS webhook_channels (
     client_calendar_id INTEGER REFERENCES client_calendars(id),
     channel_id TEXT NOT NULL UNIQUE,
     resource_id TEXT NOT NULL,
+    token TEXT NOT NULL DEFAULT '',
     expiration TIMESTAMP NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -215,6 +216,20 @@ async def init_schema(db: aiosqlite.Connection) -> None:
     """Initialize database schema."""
     await db.executescript(SCHEMA)
     await db.commit()
+
+    # Migrations for columns added after initial release.
+    # ALTER TABLE IF NOT EXISTS ... ADD COLUMN is not supported in older SQLite,
+    # so we swallow the "duplicate column" error instead.
+    migrations = [
+        "ALTER TABLE webhook_channels ADD COLUMN token TEXT NOT NULL DEFAULT ''",
+    ]
+    for stmt in migrations:
+        try:
+            await db.execute(stmt)
+            await db.commit()
+        except Exception:
+            pass  # column already exists
+
     logger.info("Database schema initialized")
 
 

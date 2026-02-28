@@ -162,4 +162,5 @@ async def test_check_user_consistency_error_branches(test_db, monkeypatch):
         "SELECT COUNT(*) FROM busy_blocks WHERE event_mapping_id = ?",
         (deleted_mapping_id,),
     )
-    assert (await cursor.fetchone())[0] == 0
+    # Remote delete failed, so the DB row is kept for retry on the next run.
+    assert (await cursor.fetchone())[0] == 1

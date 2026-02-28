@@ -246,7 +246,7 @@ async def test_run_consistency_check_and_user_error_path(test_db, monkeypatch):
     user_1 = await _insert_user(email="u1@example.com", google_user_id="u1-google", main_calendar_id="main-1")
     await _insert_user(email="u2@example.com", google_user_id="u2-google", main_calendar_id="main-2")
 
-    async def fake_check_user_consistency(user_id: int, summary: dict):
+    async def fake_check_user_consistency(user_id: int, summary: dict, dry_run: bool = False):
         if user_id == user_1:
             raise RuntimeError("boom")
         summary["mappings_checked"] += 1
@@ -440,6 +440,12 @@ async def test_reconcile_calendar_paths(test_db, monkeypatch):
                     {"id": "ours-event", "status": "confirmed"},
                 ]
             }
+
+        def get_event(self, _calendar_id: str, event_id: str):
+            # keep-event still exists; stale-event does not
+            if event_id == "keep-event":
+                return {"id": "keep-event", "status": "confirmed"}
+            return None
 
         def is_our_event(self, event: dict) -> bool:
             return event["id"] == "ours-event"
