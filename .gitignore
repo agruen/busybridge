@@ -110,3 +110,8 @@ data/
 secrets/
 *.db
 *.db-journal
+
+# E2E test auth state (secrets)
+e2e/auth/.auth_state.json
+e2e/auth/.calendar_tokens.json
+e2e/auth/client_secret.json
