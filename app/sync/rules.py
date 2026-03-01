@@ -29,6 +29,7 @@ async def sync_client_event_to_main(
     client_email: str,
     source_label: Optional[str] = None,
     color_id: Optional[str] = None,
+    main_email: Optional[str] = None,
 ) -> Optional[str]:
     """
     Sync a client calendar event to the main calendar.
@@ -57,8 +58,17 @@ async def sync_client_event_to_main(
     )
     existing = await cursor.fetchone()
 
-    # Prepare the event copy for main calendar
-    main_event_data = copy_event_for_main(event, source_label=source_label, color_id=color_id)
+    # Prepare the event copy for main calendar.
+    # On updates, pass current_rsvp_status from DB to avoid resetting the
+    # user's RSVP response back to needsAction.
+    current_rsvp = existing["rsvp_status"] if existing else None
+    main_event_data = copy_event_for_main(
+        event,
+        source_label=source_label,
+        color_id=color_id,
+        main_email=main_email,
+        current_rsvp_status=current_rsvp,
+    )
 
     # Determine if user can edit
     user_can_edit = can_user_edit_event(event, client_email)
@@ -100,14 +110,21 @@ async def sync_client_event_to_main(
                 logger.error(f"Failed to update main event: {e}")
                 raise
 
+        # If the event transitioned to an invite (has attendees + main_email)
+        # and we weren't tracking RSVP yet, start tracking it.
+        new_rsvp = existing["rsvp_status"]
+        if new_rsvp is None and event.get("attendees") and main_email:
+            new_rsvp = "needsAction"
+
         # Update mapping
         await db.execute(
             """UPDATE event_mappings SET
                main_event_id = ?, event_start = ?, event_end = ?,
-               is_all_day = ?, is_recurring = ?, user_can_edit = ?, updated_at = ?
+               is_all_day = ?, is_recurring = ?, user_can_edit = ?,
+               rsvp_status = ?, updated_at = ?
                WHERE id = ?""",
             (main_event_id, event_start, event_end, is_all_day, is_recurring,
-             user_can_edit, datetime.utcnow().isoformat(), existing["id"])
+             user_can_edit, new_rsvp, datetime.utcnow().isoformat(), existing["id"])
         )
         await db.commit()
 
@@ -179,15 +196,19 @@ async def sync_client_event_to_main(
             logger.error(f"Failed to create main event: {e}")
             return None
 
+        # Track RSVP status for events with attendees (invites).
+        initial_rsvp = "needsAction" if (event.get("attendees") and main_email) else None
+
         # Create mapping
         await db.execute(
             """INSERT INTO event_mappings
                (user_id, origin_type, origin_calendar_id, origin_event_id,
                 origin_recurring_event_id, main_event_id, event_start, event_end,
-                is_all_day, is_recurring, user_can_edit)
-               VALUES (?, 'client', ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                is_all_day, is_recurring, user_can_edit, rsvp_status)
+               VALUES (?, 'client', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (user_id, client_calendar_id, event_id, recurring_event_id,
-             main_event_id, event_start, event_end, is_all_day, is_recurring, user_can_edit)
+             main_event_id, event_start, event_end, is_all_day, is_recurring,
+             user_can_edit, initial_rsvp)
         )
         await db.commit()
 
@@ -612,6 +633,71 @@ async def handle_deleted_client_event(
 
     await db.commit()
     logger.info(f"Cleaned up mapping for deleted event {event_id}")
+
+
+async def propagate_rsvp_to_client(
+    user_id: int,
+    main_event: dict,
+    mapping: dict,
+    new_rsvp_status: str,
+) -> bool:
+    """Propagate an RSVP response from the main calendar copy back to the client calendar.
+
+    Patches the client event's attendee list with the new responseStatus and
+    updates the stored rsvp_status in event_mappings.
+
+    Returns True if the propagation succeeded.
+    """
+    db = await get_database()
+
+    # Look up the client calendar and its OAuth credentials.
+    cursor = await db.execute(
+        """SELECT cc.google_calendar_id, ot.google_account_email
+           FROM client_calendars cc
+           JOIN oauth_tokens ot ON cc.oauth_token_id = ot.id
+           WHERE cc.id = ?""",
+        (mapping["origin_calendar_id"],)
+    )
+    cal = await cursor.fetchone()
+    if not cal:
+        logger.warning(
+            f"Cannot propagate RSVP: client calendar {mapping['origin_calendar_id']} not found"
+        )
+        return False
+
+    client_email = cal["google_account_email"]
+
+    try:
+        from app.auth.google import get_valid_access_token
+        token = await get_valid_access_token(user_id, client_email)
+        client = GoogleCalendarClient(token)
+
+        # Patch only the attendee response on the client event.
+        client.patch_event(
+            cal["google_calendar_id"],
+            mapping["origin_event_id"],
+            {"attendees": [{"email": client_email, "responseStatus": new_rsvp_status}]},
+            send_updates="none",
+        )
+
+        # Persist the new status so future syncs don't re-trigger propagation.
+        await db.execute(
+            "UPDATE event_mappings SET rsvp_status = ?, updated_at = ? WHERE id = ?",
+            (new_rsvp_status, datetime.utcnow().isoformat(), mapping["id"]),
+        )
+        await db.commit()
+
+        logger.info(
+            f"Propagated RSVP '{new_rsvp_status}' to client event "
+            f"{mapping['origin_event_id']} on calendar {cal['google_calendar_id']}"
+        )
+        return True
+
+    except Exception as e:
+        logger.error(
+            f"Failed to propagate RSVP to client event {mapping['origin_event_id']}: {e}"
+        )
+        return False
 
 
 async def handle_deleted_main_event(

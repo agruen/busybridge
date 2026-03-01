@@ -102,6 +102,7 @@ CREATE TABLE IF NOT EXISTS event_mappings (
     is_all_day BOOLEAN DEFAULT FALSE,
     is_recurring BOOLEAN DEFAULT FALSE,
     user_can_edit BOOLEAN DEFAULT TRUE,
+    rsvp_status TEXT,
     deleted_at TIMESTAMP,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP,
@@ -222,6 +223,7 @@ async def init_schema(db: aiosqlite.Connection) -> None:
     # so we swallow the "duplicate column" error instead.
     migrations = [
         "ALTER TABLE webhook_channels ADD COLUMN token TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE event_mappings ADD COLUMN rsvp_status TEXT",
     ]
     for stmt in migrations:
         try:

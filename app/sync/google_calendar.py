@@ -171,6 +171,7 @@ class GoogleCalendarClient:
         calendar_id: str,
         event_data: dict,
         send_notifications: bool = False,
+        send_updates: str = "none",
     ) -> dict:
         """Create an event on a calendar."""
         # Add our sync tag to identify events we created
@@ -184,6 +185,7 @@ class GoogleCalendarClient:
             calendarId=calendar_id,
             body=event_data,
             sendNotifications=send_notifications,
+            sendUpdates=send_updates,
             conferenceDataVersion=1,
         ).execute()
 
@@ -193,6 +195,7 @@ class GoogleCalendarClient:
         event_id: str,
         event_data: dict,
         send_notifications: bool = False,
+        send_updates: str = "none",
     ) -> dict:
         """Update an event."""
         # Re-stamp our sync tag -- events().update() is a full replacement,
@@ -208,6 +211,7 @@ class GoogleCalendarClient:
             eventId=event_id,
             body=event_data,
             sendNotifications=send_notifications,
+            sendUpdates=send_updates,
             conferenceDataVersion=1,
         ).execute()
 
@@ -217,6 +221,7 @@ class GoogleCalendarClient:
         event_id: str,
         event_patch: dict,
         send_notifications: bool = False,
+        send_updates: str = "none",
     ) -> dict:
         """Patch (partial update) an event."""
         return self.service.events().patch(
@@ -224,6 +229,7 @@ class GoogleCalendarClient:
             eventId=event_id,
             body=event_patch,
             sendNotifications=send_notifications,
+            sendUpdates=send_updates,
             conferenceDataVersion=1,
         ).execute()
 
@@ -380,6 +386,8 @@ def copy_event_for_main(
     source_event: dict,
     source_label: Optional[str] = None,
     color_id: Optional[str] = None,
+    main_email: Optional[str] = None,
+    current_rsvp_status: Optional[str] = None,
 ) -> dict:
     """
     Create a copy of an event suitable for the main calendar.
@@ -418,6 +426,16 @@ def copy_event_for_main(
     if "hangoutLink" in source_event:
         event["hangoutLink"] = source_event["hangoutLink"]
 
+    # Inject main_email as sole attendee so Google shows native RSVP buttons.
+    # Use current_rsvp_status (from DB) on updates to avoid resetting an
+    # existing response back to needsAction.
+    if source_event.get("attendees") and main_email:
+        event["attendees"] = [{
+            "email": main_email,
+            "responseStatus": current_rsvp_status or "needsAction",
+            "self": True,
+        }]
+
     # Append metadata to the END of the description so the actual content
     # stays front and center.  The managed_event_prefix tag is included so
     # events can still be bulk-found/deleted in an emergency.
@@ -434,6 +452,10 @@ def copy_event_for_main(
 
     if source_display:
         footer_parts.append(f"Source: {source_display}")
+
+    # Include a link to the original event so the user can RSVP there
+    if source_event.get("htmlLink"):
+        footer_parts.append(f"Original event: {source_event['htmlLink']}")
 
     if footer_parts:
         footer = "\n".join(footer_parts)

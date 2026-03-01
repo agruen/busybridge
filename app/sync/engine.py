@@ -14,6 +14,7 @@ from app.sync.rules import (
     sync_main_event_to_clients,
     handle_deleted_client_event,
     handle_deleted_main_event,
+    propagate_rsvp_to_client,
 )
 
 logger = logging.getLogger(__name__)
@@ -161,6 +162,7 @@ async def _sync_client_calendar(client_calendar_id: int) -> None:
                         client_email=client_email,
                         source_label=source_label,
                         color_id=color_id,
+                        main_email=user_email,
                     )
 
                     if main_event_id:
@@ -342,6 +344,31 @@ async def _sync_main_calendar(user_id: int) -> None:
                         original_start_time=event.get("originalStartTime"),
                     )
                 else:
+                    # Check for RSVP changes on client-origin events.
+                    cursor = await db.execute(
+                        """SELECT * FROM event_mappings
+                           WHERE user_id = ? AND main_event_id = ? AND origin_type = 'client'""",
+                        (user_id, event["id"]),
+                    )
+                    rsvp_mapping = await cursor.fetchone()
+
+                    if rsvp_mapping and rsvp_mapping["rsvp_status"] is not None:
+                        # Find the user's current responseStatus from the attendees list.
+                        current_rsvp = None
+                        for attendee in event.get("attendees", []):
+                            if attendee.get("self"):
+                                current_rsvp = attendee.get("responseStatus")
+                                break
+
+                        if current_rsvp and current_rsvp != rsvp_mapping["rsvp_status"]:
+                            await propagate_rsvp_to_client(
+                                user_id=user_id,
+                                main_event=event,
+                                mapping=dict(rsvp_mapping),
+                                new_rsvp_status=current_rsvp,
+                            )
+
+                    # Always sync busy blocks (handles time changes, etc.)
                     await sync_main_event_to_clients(
                         main_client=main_client,
                         event=event,

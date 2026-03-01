@@ -195,7 +195,12 @@ async def check_user_consistency(user_id: int, summary: dict, dry_run: bool = Fa
                         })
                         summary["missing_copies_recreated"] += 1
                     else:
-                        new_event_data = copy_event_for_main(origin_event, source_label=source_label)
+                        new_event_data = copy_event_for_main(
+                            origin_event,
+                            source_label=source_label,
+                            main_email=user["email"],
+                            current_rsvp_status=mapping["rsvp_status"],
+                        )
                         try:
                             result = main_client.create_event(user["main_calendar_id"], new_event_data)
                             await db.execute(
