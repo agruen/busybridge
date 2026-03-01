@@ -58,6 +58,9 @@ async def sync_client_event_to_main(
     )
     existing = await cursor.fetchone()
 
+    # Determine if user can edit
+    user_can_edit = can_user_edit_event(event, client_email)
+
     # Prepare the event copy for main calendar.
     # On updates, pass current_rsvp_status from DB to avoid resetting the
     # user's RSVP response back to needsAction.
@@ -68,10 +71,8 @@ async def sync_client_event_to_main(
         color_id=color_id,
         main_email=main_email,
         current_rsvp_status=current_rsvp,
+        user_can_edit=user_can_edit,
     )
-
-    # Determine if user can edit
-    user_can_edit = can_user_edit_event(event, client_email)
 
     # Parse event times
     start = event.get("start", {})

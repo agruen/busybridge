@@ -278,6 +278,66 @@ async def trigger_sync_for_main_calendar(user_id: int) -> None:
         await _sync_main_calendar(user_id)
 
 
+async def _revert_if_moved(
+    main_client: GoogleCalendarClient,
+    main_calendar_id: str,
+    event: dict,
+    mapping: dict,
+) -> bool:
+    """Revert time/location changes on a main-calendar copy of a non-editable client event.
+
+    Compares the current event start/end against the stored mapping values.
+    If they differ, patches the main event back to the original times and logs
+    a warning.
+
+    Returns True if a revert was performed.
+    """
+    start = event.get("start", {})
+    end = event.get("end", {})
+    is_all_day = "date" in start
+
+    if is_all_day:
+        current_start = start.get("date")
+        current_end = end.get("date")
+    else:
+        current_start = start.get("dateTime")
+        current_end = end.get("dateTime")
+
+    stored_start = mapping["event_start"]
+    stored_end = mapping["event_end"]
+
+    if current_start == stored_start and current_end == stored_end:
+        return False
+
+    # Time was changed on a non-editable event — revert it.
+    logger.warning(
+        f"Reverting move on non-editable event {event['id']} "
+        f"(was {current_start}–{current_end}, restoring {stored_start}–{stored_end})"
+    )
+
+    if mapping.get("is_all_day"):
+        patch = {
+            "start": {"date": stored_start},
+            "end": {"date": stored_end},
+        }
+    else:
+        # Preserve the original timezone if present in the event.
+        tz = start.get("timeZone") or end.get("timeZone")
+        patch_start = {"dateTime": stored_start}
+        patch_end = {"dateTime": stored_end}
+        if tz:
+            patch_start["timeZone"] = tz
+            patch_end["timeZone"] = tz
+        patch = {"start": patch_start, "end": patch_end}
+
+    try:
+        main_client.patch_event(main_calendar_id, event["id"], patch)
+        return True
+    except Exception as e:
+        logger.error(f"Failed to revert move on event {event['id']}: {e}")
+        return False
+
+
 async def _sync_main_calendar(user_id: int) -> None:
     """Internal: perform main calendar sync (must be called under lock)."""
 
@@ -344,31 +404,41 @@ async def _sync_main_calendar(user_id: int) -> None:
                         original_start_time=event.get("originalStartTime"),
                     )
                 else:
-                    # Check for RSVP changes on client-origin events.
+                    # Check for client-origin mapping (used for RSVP and edit guards).
                     cursor = await db.execute(
                         """SELECT * FROM event_mappings
                            WHERE user_id = ? AND main_event_id = ? AND origin_type = 'client'""",
                         (user_id, event["id"]),
                     )
-                    rsvp_mapping = await cursor.fetchone()
+                    client_origin_mapping = await cursor.fetchone()
 
-                    if rsvp_mapping and rsvp_mapping["rsvp_status"] is not None:
-                        # Find the user's current responseStatus from the attendees list.
+                    # Guard: revert time/location changes on non-editable events.
+                    if client_origin_mapping and not client_origin_mapping["user_can_edit"]:
+                        reverted = await _revert_if_moved(
+                            main_client, main_calendar_id, event, client_origin_mapping
+                        )
+                        if reverted:
+                            # We patched the main event back; skip further
+                            # sync so the stale times don't propagate.
+                            continue
+
+                    # Check for RSVP changes on client-origin events.
+                    if client_origin_mapping and client_origin_mapping["rsvp_status"] is not None:
                         current_rsvp = None
                         for attendee in event.get("attendees", []):
                             if attendee.get("self"):
                                 current_rsvp = attendee.get("responseStatus")
                                 break
 
-                        if current_rsvp and current_rsvp != rsvp_mapping["rsvp_status"]:
+                        if current_rsvp and current_rsvp != client_origin_mapping["rsvp_status"]:
                             await propagate_rsvp_to_client(
                                 user_id=user_id,
                                 main_event=event,
-                                mapping=dict(rsvp_mapping),
+                                mapping=dict(client_origin_mapping),
                                 new_rsvp_status=current_rsvp,
                             )
 
-                    # Always sync busy blocks (handles time changes, etc.)
+                    # Sync busy blocks (handles time changes, etc.)
                     await sync_main_event_to_clients(
                         main_client=main_client,
                         event=event,

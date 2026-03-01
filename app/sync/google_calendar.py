@@ -388,6 +388,7 @@ def copy_event_for_main(
     color_id: Optional[str] = None,
     main_email: Optional[str] = None,
     current_rsvp_status: Optional[str] = None,
+    user_can_edit: bool = True,
 ) -> dict:
     """
     Create a copy of an event suitable for the main calendar.
@@ -396,8 +397,9 @@ def copy_event_for_main(
     """
     settings = get_settings()
 
-    # Use the original event title as-is (no prefix cluttering the summary)
     summary = source_event.get("summary", "Untitled Event")
+    if not user_can_edit:
+        summary = f"\U0001f510 {summary}"
 
     source_display = (source_label or "").strip()
     if len(source_display) > 80:

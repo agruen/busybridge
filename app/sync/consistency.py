@@ -200,6 +200,7 @@ async def check_user_consistency(user_id: int, summary: dict, dry_run: bool = Fa
                             source_label=source_label,
                             main_email=user["email"],
                             current_rsvp_status=mapping["rsvp_status"],
+                            user_can_edit=mapping["user_can_edit"],
                         )
                         try:
                             result = main_client.create_event(user["main_calendar_id"], new_event_data)
