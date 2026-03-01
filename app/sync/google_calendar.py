@@ -388,19 +388,12 @@ def copy_event_for_main(
     """
     settings = get_settings()
 
-    base_summary = source_event.get("summary", "Untitled Event")
-    prefix = (settings.managed_event_prefix or "").strip()
+    # Use the original event title as-is (no prefix cluttering the summary)
+    summary = source_event.get("summary", "Untitled Event")
+
     source_display = (source_label or "").strip()
     if len(source_display) > 80:
         source_display = source_display[:77] + "..."
-
-    marker_parts = []
-    if prefix:
-        marker_parts.append(prefix)
-    if source_display:
-        marker_parts.append(f"[{source_display}]")
-    marker_prefix = " ".join(marker_parts).strip()
-    summary = f"{marker_prefix} {base_summary}".strip() if marker_prefix else base_summary
 
     event = {
         "summary": summary,
@@ -415,14 +408,6 @@ def copy_event_for_main(
     if color_id:
         event["colorId"] = color_id
 
-    if source_display:
-        source_line = f"BusyBridge source: {source_display}"
-        event["description"] = (
-            f"{source_line}\n\n{event['description']}".strip()
-            if event["description"]
-            else source_line
-        )
-
     # Copy recurrence rules if present
     if "recurrence" in source_event:
         event["recurrence"] = source_event["recurrence"]
@@ -433,15 +418,27 @@ def copy_event_for_main(
     if "hangoutLink" in source_event:
         event["hangoutLink"] = source_event["hangoutLink"]
 
-    # Copy attendees for reference (but don't actually invite them)
+    # Append metadata to the END of the description so the actual content
+    # stays front and center.  The managed_event_prefix tag is included so
+    # events can still be bulk-found/deleted in an emergency.
+    footer_parts = []
+
     if "attendees" in source_event:
-        # Store as description instead of actual attendees
         attendee_list = [a.get("email", "") for a in source_event["attendees"]]
         if attendee_list:
-            event["description"] = (
-                event.get("description", "") +
-                f"\n\nOriginal attendees: {', '.join(attendee_list)}"
-            ).strip()
+            footer_parts.append(f"Original attendees: {', '.join(attendee_list)}")
+
+    if source_display:
+        footer_parts.append(f"BusyBridge source: {source_display}")
+
+    prefix = (settings.managed_event_prefix or "").strip()
+    if prefix:
+        footer_parts.append(f"Managed by {prefix}")
+
+    if footer_parts:
+        footer = "\n".join(footer_parts)
+        base_desc = event["description"]
+        event["description"] = f"{base_desc}\n\n---\n{footer}".strip() if base_desc else footer
 
     return event
 

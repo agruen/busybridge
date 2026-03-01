@@ -31,16 +31,22 @@ async def _get_calendar_lock(key: str) -> asyncio.Lock:
         return _calendar_locks[key]
 
 
-def _summary_has_prefix(summary: Optional[str], prefix: str) -> bool:
-    """Check whether an event summary starts with the configured visible prefix."""
-    if not summary:
-        return False
+def _event_has_managed_prefix(event: dict, prefix: str) -> bool:
+    """Check whether an event is BusyBridge-managed.
 
+    Matches if the prefix appears at the start of the summary (busy blocks)
+    OR anywhere in the description (main-calendar copies store metadata there).
+    """
     normalized_prefix = (prefix or "").strip().lower()
     if not normalized_prefix:
         return False
 
-    return summary.strip().lower().startswith(normalized_prefix)
+    summary = (event.get("summary") or "").strip().lower()
+    if summary.startswith(normalized_prefix):
+        return True
+
+    description = (event.get("description") or "").lower()
+    return normalized_prefix in description
 
 
 async def is_sync_paused() -> bool:
@@ -770,7 +776,7 @@ async def cleanup_managed_events_for_user(user_id: int) -> dict:
                 event_id = event.get("id")
                 if not event_id:
                     continue
-                if not _summary_has_prefix(event.get("summary"), managed_prefix):
+                if not _event_has_managed_prefix(event, managed_prefix):
                     continue
 
                 summary["prefix_matches_found"] += 1

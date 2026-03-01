@@ -280,45 +280,57 @@ class TestTriggerSyncForUserPausedGuard:
 
 
 # ---------------------------------------------------------------------------
-# _summary_has_prefix (pure helper)
+# _event_has_managed_prefix (pure helper)
 # ---------------------------------------------------------------------------
 
 
-class TestSummaryHasPrefix:
-    def test_returns_true_when_summary_starts_with_prefix(self):
-        from app.sync.engine import _summary_has_prefix
+class TestEventHasManagedPrefix:
+    def test_matches_prefix_in_summary(self):
+        from app.sync.engine import _event_has_managed_prefix
 
-        assert _summary_has_prefix("BUSY: Meeting", "BUSY:") is True
+        event = {"summary": "[BusyBridge] Busy"}
+        assert _event_has_managed_prefix(event, "[BusyBridge]") is True
 
-    def test_returns_false_when_summary_does_not_start_with_prefix(self):
-        from app.sync.engine import _summary_has_prefix
+    def test_matches_prefix_in_description(self):
+        from app.sync.engine import _event_has_managed_prefix
 
-        assert _summary_has_prefix("Regular Meeting", "BUSY:") is False
+        event = {"summary": "Team Standup", "description": "Notes\n\n---\nManaged by [BusyBridge]"}
+        assert _event_has_managed_prefix(event, "[BusyBridge]") is True
 
-    def test_case_insensitive_comparison(self):
-        from app.sync.engine import _summary_has_prefix
+    def test_no_match_when_prefix_absent(self):
+        from app.sync.engine import _event_has_managed_prefix
 
-        assert _summary_has_prefix("busy: Meeting", "BUSY:") is True
+        event = {"summary": "Regular Meeting", "description": "Just a normal event"}
+        assert _event_has_managed_prefix(event, "[BusyBridge]") is False
 
-    def test_returns_false_when_summary_is_none(self):
-        from app.sync.engine import _summary_has_prefix
+    def test_case_insensitive_summary(self):
+        from app.sync.engine import _event_has_managed_prefix
 
-        assert _summary_has_prefix(None, "BUSY:") is False
+        event = {"summary": "[busybridge] Busy"}
+        assert _event_has_managed_prefix(event, "[BusyBridge]") is True
 
-    def test_returns_false_when_summary_is_empty_string(self):
-        from app.sync.engine import _summary_has_prefix
+    def test_case_insensitive_description(self):
+        from app.sync.engine import _event_has_managed_prefix
 
-        assert _summary_has_prefix("", "BUSY:") is False
+        event = {"summary": "Meeting", "description": "managed by [busybridge]"}
+        assert _event_has_managed_prefix(event, "[BusyBridge]") is True
+
+    def test_returns_false_when_summary_and_description_none(self):
+        from app.sync.engine import _event_has_managed_prefix
+
+        assert _event_has_managed_prefix({}, "[BusyBridge]") is False
 
     def test_returns_false_when_prefix_is_empty(self):
-        from app.sync.engine import _summary_has_prefix
+        from app.sync.engine import _event_has_managed_prefix
 
-        assert _summary_has_prefix("Some Meeting", "") is False
+        event = {"summary": "Some Meeting"}
+        assert _event_has_managed_prefix(event, "") is False
 
     def test_returns_false_when_prefix_is_whitespace_only(self):
-        from app.sync.engine import _summary_has_prefix
+        from app.sync.engine import _event_has_managed_prefix
 
-        assert _summary_has_prefix("Some Meeting", "   ") is False
+        event = {"summary": "Some Meeting"}
+        assert _event_has_managed_prefix(event, "   ") is False
 
 
 # ---------------------------------------------------------------------------
