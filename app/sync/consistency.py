@@ -212,6 +212,126 @@ async def check_user_consistency(user_id: int, summary: dict, dry_run: bool = Fa
             logger.error(f"Error checking mapping {mapping['id']}: {e}")
             summary["errors"] += 1
 
+    # Check personal-origin event mappings
+    cursor = await db.execute(
+        """SELECT em.*, cc.google_calendar_id, cc.display_name, ot.google_account_email
+           FROM event_mappings em
+           JOIN client_calendars cc ON em.origin_calendar_id = cc.id
+           JOIN oauth_tokens ot ON cc.oauth_token_id = ot.id
+           WHERE em.user_id = ? AND em.origin_type = 'personal' AND em.deleted_at IS NULL
+           AND cc.is_active = TRUE""",
+        (user_id,)
+    )
+    personal_mappings = await cursor.fetchall()
+
+    for mapping in personal_mappings:
+        summary["mappings_checked"] += 1
+
+        try:
+            personal_token = await get_valid_access_token(user_id, mapping["google_account_email"])
+            personal_client = GoogleCalendarClient(personal_token)
+
+            # Check if origin event still exists on the personal calendar
+            origin_event = personal_client.get_event(mapping["google_calendar_id"], mapping["origin_event_id"])
+
+            if not origin_event or origin_event.get("status") == "cancelled":
+                # Origin deleted -- clean up the busy block on main calendar
+                if mapping["main_event_id"]:
+                    if dry_run:
+                        summary.setdefault("planned_actions", []).append({
+                            "action": "delete_orphaned_personal_busy_block",
+                            "event_mapping_id": mapping["id"],
+                            "main_event_id": mapping["main_event_id"],
+                            "origin_event_id": mapping["origin_event_id"],
+                        })
+                        summary["orphaned_main_events_deleted"] += 1
+                    else:
+                        try:
+                            main_client.delete_event(user["main_calendar_id"], mapping["main_event_id"])
+                            summary["orphaned_main_events_deleted"] += 1
+                            logger.info(f"Deleted orphaned personal busy block {mapping['main_event_id']}")
+                        except Exception:
+                            pass
+
+                # Clean up busy blocks on client calendars
+                bb_cursor = await db.execute(
+                    """SELECT bb.id, bb.busy_block_event_id,
+                              cc2.google_calendar_id, ot2.google_account_email
+                       FROM busy_blocks bb
+                       JOIN client_calendars cc2 ON bb.client_calendar_id = cc2.id
+                       JOIN oauth_tokens ot2 ON cc2.oauth_token_id = ot2.id
+                       WHERE bb.event_mapping_id = ?""",
+                    (mapping["id"],)
+                )
+                blocks_to_delete = await bb_cursor.fetchall()
+                for block in blocks_to_delete:
+                    if dry_run:
+                        summary.setdefault("planned_actions", []).append({
+                            "action": "delete_busy_block_for_removed_personal_event",
+                            "busy_block_id": block["id"],
+                            "busy_block_event_id": block["busy_block_event_id"],
+                        })
+                    else:
+                        try:
+                            block_token = await get_valid_access_token(
+                                user_id, block["google_account_email"]
+                            )
+                            block_client = GoogleCalendarClient(block_token)
+                            block_client.delete_event(
+                                block["google_calendar_id"], block["busy_block_event_id"]
+                            )
+                            await db.execute("DELETE FROM busy_blocks WHERE id = ?", (block["id"],))
+                        except Exception as e:
+                            logger.warning(
+                                f"Failed to delete personal busy block {block['busy_block_event_id']}: {e}"
+                            )
+                            summary["errors"] += 1
+
+                if not dry_run:
+                    await db.execute(
+                        "DELETE FROM event_mappings WHERE id = ?", (mapping["id"],)
+                    )
+                    await db.commit()
+                continue
+
+            # Check if the busy block on main still exists
+            if mapping["main_event_id"]:
+                main_event = main_client.get_event(user["main_calendar_id"], mapping["main_event_id"])
+                if not main_event or main_event.get("status") == "cancelled":
+                    # Busy block missing on main — recreate
+                    from app.sync.google_calendar import create_personal_busy_block
+
+                    if dry_run:
+                        summary.setdefault("planned_actions", []).append({
+                            "action": "recreate_personal_busy_block",
+                            "event_mapping_id": mapping["id"],
+                            "origin_event_id": mapping["origin_event_id"],
+                            "missing_main_event_id": mapping["main_event_id"],
+                        })
+                        summary["missing_copies_recreated"] += 1
+                    else:
+                        start = origin_event.get("start", {})
+                        end = origin_event.get("end", {})
+                        is_all_day = "date" in start
+                        new_event_data = create_personal_busy_block(start, end, is_all_day)
+                        if "recurrence" in origin_event:
+                            new_event_data["recurrence"] = origin_event["recurrence"]
+                        try:
+                            result = main_client.create_event(user["main_calendar_id"], new_event_data)
+                            await db.execute(
+                                "UPDATE event_mappings SET main_event_id = ?, updated_at = ? WHERE id = ?",
+                                (result["id"], datetime.utcnow().isoformat(), mapping["id"])
+                            )
+                            await db.commit()
+                            summary["missing_copies_recreated"] += 1
+                            logger.info(f"Recreated personal busy block for mapping {mapping['id']}")
+                        except Exception as e:
+                            logger.error(f"Failed to recreate personal busy block: {e}")
+
+        except Exception as e:
+            logger.error(f"Error checking personal mapping {mapping['id']}: {e}")
+            summary["errors"] += 1
+
     # Check busy blocks
     cursor = await db.execute(
         """SELECT bb.*, cc.google_calendar_id, ot.google_account_email, em.deleted_at as mapping_deleted

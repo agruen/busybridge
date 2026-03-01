@@ -10,6 +10,7 @@ from app.database import get_database
 from app.sync.google_calendar import (
     GoogleCalendarClient,
     create_busy_block,
+    create_personal_busy_block,
     copy_event_for_main,
     should_create_busy_block,
     can_user_edit_event,
@@ -286,12 +287,13 @@ async def sync_main_event_to_clients(
     elif existing_client_origin:
         mapping_id = existing_client_origin["id"]
 
-    # Get all active client calendars
+    # Get all active client calendars (exclude personal -- they are read-only)
     cursor = await db.execute(
         """SELECT cc.*, ot.google_account_email
            FROM client_calendars cc
            JOIN oauth_tokens ot ON cc.oauth_token_id = ot.id
-           WHERE cc.user_id = ? AND cc.is_active = TRUE""",
+           WHERE cc.user_id = ? AND cc.is_active = TRUE
+             AND cc.calendar_type = 'client'""",
         (user_id,)
     )
     client_calendars = await cursor.fetchall()
@@ -738,3 +740,337 @@ async def handle_deleted_main_event(
         await db.execute("DELETE FROM event_mappings WHERE id = ?", (mapping["id"],))
 
     await db.commit()
+
+
+# ------------------------------------------------------------------ #
+# Personal calendar sync rules                                        #
+# ------------------------------------------------------------------ #
+
+
+async def sync_personal_event_to_all(
+    personal_client: GoogleCalendarClient,
+    main_client: GoogleCalendarClient,
+    event: dict,
+    user_id: int,
+    personal_calendar_id: int,
+    main_calendar_id: str,
+    user_email: str,
+) -> Optional[str]:
+    """
+    Sync a personal calendar event to all calendars as busy blocks.
+
+    Unlike client events which get full copies on the main calendar,
+    personal events create ONLY busy blocks everywhere:
+    - A busy block on the main calendar (stored as main_event_id)
+    - Busy blocks on ALL client calendars (stored in busy_blocks table)
+
+    Personal calendars never receive busy blocks -- they are read-only
+    sources of availability information.
+
+    Returns the main busy block event ID if created/updated.
+    """
+    db = await get_database()
+
+    # Skip events we created (our own busy blocks)
+    if personal_client.is_our_event(event):
+        logger.debug(f"Skipping our own event on personal: {event.get('id')}")
+        return None
+
+    # Skip cancelled events
+    if event.get("status") == "cancelled":
+        return None
+
+    # Skip events that shouldn't create busy blocks (declined, free all-day, etc.)
+    if not should_create_busy_block(event):
+        logger.debug(f"Skipping personal event (no busy block needed): {event.get('id')}")
+        return None
+
+    event_id = event["id"]
+    recurring_event_id = event.get("recurringEventId")
+
+    # Parse event times
+    start = event.get("start", {})
+    end = event.get("end", {})
+    is_all_day = "date" in start
+
+    if is_all_day:
+        event_start = start.get("date")
+        event_end = end.get("date")
+    else:
+        event_start = start.get("dateTime")
+        event_end = end.get("dateTime")
+
+    is_recurring = "recurrence" in event or recurring_event_id is not None
+
+    # Check for existing mapping
+    cursor = await db.execute(
+        """SELECT * FROM event_mappings
+           WHERE user_id = ? AND origin_calendar_id = ? AND origin_event_id = ?""",
+        (user_id, personal_calendar_id, event_id)
+    )
+    existing = await cursor.fetchone()
+
+    # Build the personal busy block for the main calendar
+    busy_block_data = create_personal_busy_block(start, end, is_all_day)
+    if "recurrence" in event:
+        busy_block_data["recurrence"] = event["recurrence"]
+
+    if existing:
+        # Update existing mapping
+        main_event_id = existing["main_event_id"]
+
+        if main_event_id:
+            try:
+                main_client.update_event(main_calendar_id, main_event_id, busy_block_data)
+                logger.info(f"Updated personal busy block {main_event_id} on main calendar")
+            except HttpError as e:
+                if e.resp.status in (404, 410):
+                    logger.warning(f"Personal busy block {main_event_id} gone, recreating")
+                    result = main_client.create_event(main_calendar_id, busy_block_data)
+                    main_event_id = result["id"]
+                else:
+                    raise
+            except Exception:
+                raise
+
+        await db.execute(
+            """UPDATE event_mappings SET
+               main_event_id = ?, event_start = ?, event_end = ?,
+               is_all_day = ?, is_recurring = ?, updated_at = ?
+               WHERE id = ?""",
+            (main_event_id, event_start, event_end, is_all_day, is_recurring,
+             datetime.utcnow().isoformat(), existing["id"])
+        )
+        await db.commit()
+
+        mapping_id = existing["id"]
+    else:
+        # Create the busy block on the main calendar
+        try:
+            result = main_client.create_event(main_calendar_id, busy_block_data)
+            main_event_id = result["id"]
+            logger.info(f"Created personal busy block {main_event_id} on main calendar")
+        except Exception as e:
+            logger.error(f"Failed to create personal busy block on main: {e}")
+            return None
+
+        # Create mapping with origin_type='personal'
+        cursor = await db.execute(
+            """INSERT INTO event_mappings
+               (user_id, origin_type, origin_calendar_id, origin_event_id,
+                origin_recurring_event_id, main_event_id, event_start, event_end,
+                is_all_day, is_recurring, user_can_edit)
+               VALUES (?, 'personal', ?, ?, ?, ?, ?, ?, ?, ?, FALSE)
+               RETURNING id""",
+            (user_id, personal_calendar_id, event_id, recurring_event_id,
+             main_event_id, event_start, event_end, is_all_day, is_recurring)
+        )
+        row = await cursor.fetchone()
+        mapping_id = row["id"]
+        await db.commit()
+
+    # Create/update busy blocks on all CLIENT calendars only (not personal calendars).
+    # Personal calendars are read-only sources -- they never receive busy blocks.
+    cursor = await db.execute(
+        """SELECT cc.*, ot.google_account_email
+           FROM client_calendars cc
+           JOIN oauth_tokens ot ON cc.oauth_token_id = ot.id
+           WHERE cc.user_id = ? AND cc.is_active = TRUE
+             AND cc.calendar_type = 'client'""",
+        (user_id,)
+    )
+    client_calendars = await cursor.fetchall()
+
+    client_busy_block = create_personal_busy_block(start, end, is_all_day)
+    if "recurrence" in event:
+        client_busy_block["recurrence"] = event["recurrence"]
+
+    for cal in client_calendars:
+        cursor = await db.execute(
+            """SELECT * FROM busy_blocks
+               WHERE event_mapping_id = ? AND client_calendar_id = ?""",
+            (mapping_id, cal["id"])
+        )
+        existing_block = await cursor.fetchone()
+
+        try:
+            from app.auth.google import get_valid_access_token
+            client_token = await get_valid_access_token(user_id, cal["google_account_email"])
+            cal_client = GoogleCalendarClient(client_token)
+
+            if existing_block:
+                try:
+                    cal_client.update_event(
+                        cal["google_calendar_id"],
+                        existing_block["busy_block_event_id"],
+                        client_busy_block
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to update personal busy block, recreating: {e}")
+                    try:
+                        replacement = cal_client.create_event(
+                            cal["google_calendar_id"], client_busy_block
+                        )
+                        await db.execute(
+                            "UPDATE busy_blocks SET busy_block_event_id = ? WHERE id = ?",
+                            (replacement["id"], existing_block["id"])
+                        )
+                        await db.commit()
+                    except Exception as create_error:
+                        logger.error(f"Failed to recreate personal busy block: {create_error}")
+            else:
+                result = cal_client.create_event(cal["google_calendar_id"], client_busy_block)
+                await db.execute(
+                    """INSERT INTO busy_blocks (event_mapping_id, client_calendar_id, busy_block_event_id)
+                       VALUES (?, ?, ?)""",
+                    (mapping_id, cal["id"], result["id"])
+                )
+                await db.commit()
+                logger.info(f"Created personal busy block on client calendar {cal['id']}")
+
+        except Exception as e:
+            logger.error(f"Failed to sync personal busy block to calendar {cal['id']}: {e}")
+
+    return main_event_id
+
+
+async def handle_deleted_personal_event(
+    user_id: int,
+    personal_calendar_id: int,
+    event_id: str,
+    main_calendar_id: str,
+    main_client: GoogleCalendarClient,
+    recurring_event_id: Optional[str] = None,
+    original_start_time: Optional[dict] = None,
+) -> None:
+    """Handle deletion of an event from a personal calendar.
+
+    Deletes the corresponding busy blocks from the main calendar and all
+    client calendars.
+    """
+    db = await get_database()
+
+    # Single-instance cancellation of a recurring series
+    if recurring_event_id:
+        if original_start_time:
+            cursor = await db.execute(
+                """SELECT * FROM event_mappings
+                   WHERE user_id = ? AND origin_calendar_id = ? AND origin_event_id = ?""",
+                (user_id, personal_calendar_id, recurring_event_id)
+            )
+            parent_mapping = await cursor.fetchone()
+
+            if parent_mapping:
+                await _handle_cancelled_recurring_instance(
+                    user_id=user_id,
+                    mapping=parent_mapping,
+                    original_start_time=original_start_time,
+                    main_calendar_id=main_calendar_id,
+                    main_client=main_client,
+                )
+
+        # Clean up forked instance mapping if it exists
+        cursor = await db.execute(
+            """SELECT * FROM event_mappings
+               WHERE user_id = ? AND origin_calendar_id = ? AND origin_event_id = ?""",
+            (user_id, personal_calendar_id, event_id)
+        )
+        instance_mapping = await cursor.fetchone()
+
+        if instance_mapping:
+            if instance_mapping["main_event_id"]:
+                try:
+                    main_client.delete_event(main_calendar_id, instance_mapping["main_event_id"])
+                except Exception as e:
+                    logger.error(f"Failed to delete forked personal busy block from main: {e}")
+
+            cursor = await db.execute(
+                """SELECT bb.*, cc.google_calendar_id, ot.google_account_email
+                   FROM busy_blocks bb
+                   JOIN client_calendars cc ON bb.client_calendar_id = cc.id
+                   JOIN oauth_tokens ot ON cc.oauth_token_id = ot.id
+                   WHERE bb.event_mapping_id = ?""",
+                (instance_mapping["id"],)
+            )
+            forked_blocks = await cursor.fetchall()
+            deleted_ids: set[int] = set()
+            for block in forked_blocks:
+                try:
+                    from app.auth.google import get_valid_access_token
+                    token = await get_valid_access_token(user_id, block["google_account_email"])
+                    cal_client = GoogleCalendarClient(token)
+                    cal_client.delete_event(block["google_calendar_id"], block["busy_block_event_id"])
+                    deleted_ids.add(block["id"])
+                except Exception as e:
+                    logger.error(f"Failed to delete forked personal busy block: {e}")
+
+            if deleted_ids:
+                placeholders = ",".join("?" * len(deleted_ids))
+                await db.execute(
+                    f"DELETE FROM busy_blocks WHERE id IN ({placeholders})",
+                    tuple(deleted_ids)
+                )
+            await db.execute("DELETE FROM event_mappings WHERE id = ?", (instance_mapping["id"],))
+            await db.commit()
+
+        return
+
+    # Full deletion of a non-instance event
+    cursor = await db.execute(
+        """SELECT * FROM event_mappings
+           WHERE user_id = ? AND origin_calendar_id = ? AND origin_event_id = ?""",
+        (user_id, personal_calendar_id, event_id)
+    )
+    mapping = await cursor.fetchone()
+
+    if not mapping:
+        logger.debug(f"No mapping found for deleted personal event {event_id}")
+        return
+
+    # Delete the busy block from the main calendar
+    if mapping["main_event_id"]:
+        try:
+            main_client.delete_event(main_calendar_id, mapping["main_event_id"])
+            logger.info(f"Deleted personal busy block {mapping['main_event_id']} from main")
+        except Exception as e:
+            logger.error(f"Failed to delete personal busy block from main: {e}")
+
+    # Delete busy blocks from all client calendars
+    cursor = await db.execute(
+        """SELECT bb.*, cc.google_calendar_id, ot.google_account_email
+           FROM busy_blocks bb
+           JOIN client_calendars cc ON bb.client_calendar_id = cc.id
+           JOIN oauth_tokens ot ON cc.oauth_token_id = ot.id
+           WHERE bb.event_mapping_id = ?""",
+        (mapping["id"],)
+    )
+    personal_busy_blocks = await cursor.fetchall()
+
+    deleted_block_ids: set[int] = set()
+    for block in personal_busy_blocks:
+        try:
+            from app.auth.google import get_valid_access_token
+            token = await get_valid_access_token(user_id, block["google_account_email"])
+            client = GoogleCalendarClient(token)
+            client.delete_event(block["google_calendar_id"], block["busy_block_event_id"])
+            deleted_block_ids.add(block["id"])
+        except Exception as e:
+            logger.error(f"Failed to delete personal busy block: {e}")
+
+    if deleted_block_ids:
+        placeholders = ",".join("?" * len(deleted_block_ids))
+        await db.execute(
+            f"DELETE FROM busy_blocks WHERE id IN ({placeholders})",
+            tuple(deleted_block_ids),
+        )
+
+    if mapping["is_recurring"]:
+        await db.execute(
+            "UPDATE event_mappings SET deleted_at = ? WHERE id = ?",
+            (datetime.utcnow().isoformat(), mapping["id"])
+        )
+    else:
+        await db.execute("DELETE FROM event_mappings WHERE id = ?", (mapping["id"],))
+
+    await db.commit()
+    logger.info(f"Cleaned up mapping for deleted personal event {event_id}")

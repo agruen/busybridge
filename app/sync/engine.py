@@ -14,6 +14,8 @@ from app.sync.rules import (
     sync_main_event_to_clients,
     handle_deleted_client_event,
     handle_deleted_main_event,
+    sync_personal_event_to_all,
+    handle_deleted_personal_event,
 )
 
 logger = logging.getLogger(__name__)
@@ -410,8 +412,191 @@ async def _sync_main_calendar(user_id: int) -> None:
         await db.commit()
 
 
+async def trigger_sync_for_personal_calendar(personal_calendar_id: int) -> None:
+    """Trigger sync for a specific personal calendar."""
+    if await is_sync_paused():
+        logger.info("Sync is paused, skipping personal calendar sync")
+        return
+
+    lock = await _get_calendar_lock(f"personal:{personal_calendar_id}")
+    if lock.locked():
+        logger.info(f"Sync already in progress for personal calendar {personal_calendar_id}, skipping")
+        return
+
+    async with lock:
+        await _sync_personal_calendar(personal_calendar_id)
+
+
+async def _sync_personal_calendar(personal_calendar_id: int) -> None:
+    """Internal: perform sync for a personal calendar (must be called under lock).
+
+    Reads events from the personal calendar and creates busy blocks (with no
+    details) on the main calendar and on every active client calendar.
+    """
+    db = await get_database()
+
+    # Get calendar info
+    cursor = await db.execute(
+        """SELECT cc.*, ot.google_account_email, u.email as user_email,
+                  u.main_calendar_id, css.sync_token
+           FROM client_calendars cc
+           JOIN oauth_tokens ot ON cc.oauth_token_id = ot.id
+           JOIN users u ON cc.user_id = u.id
+           LEFT JOIN calendar_sync_state css ON cc.id = css.client_calendar_id
+           WHERE cc.id = ? AND cc.is_active = TRUE AND cc.calendar_type = 'personal'""",
+        (personal_calendar_id,)
+    )
+    calendar = await cursor.fetchone()
+
+    if not calendar:
+        logger.warning(f"Personal calendar {personal_calendar_id} not found or inactive")
+        return
+
+    if not calendar["main_calendar_id"]:
+        logger.warning(f"User {calendar['user_id']} has no main calendar configured")
+        return
+
+    user_id = calendar["user_id"]
+    personal_email = calendar["google_account_email"]
+    main_calendar_id = calendar["main_calendar_id"]
+    user_email = calendar["user_email"]
+
+    event_errors = []
+
+    try:
+        from app.auth.google import get_valid_access_token
+
+        personal_token = await get_valid_access_token(user_id, personal_email)
+        main_token = await get_valid_access_token(user_id, user_email)
+
+        personal_client = GoogleCalendarClient(personal_token)
+        main_client = GoogleCalendarClient(main_token)
+
+        # Fetch events from personal calendar
+        sync_token = calendar["sync_token"]
+        result = personal_client.list_events(calendar["google_calendar_id"], sync_token=sync_token)
+
+        if result.get("sync_token_expired"):
+            logger.info(f"Sync token expired for personal calendar {personal_calendar_id}, doing full sync")
+            result = personal_client.list_events(calendar["google_calendar_id"])
+
+        events = result["events"]
+        new_sync_token = result.get("next_sync_token")
+
+        logger.info(f"Syncing {len(events)} events from personal calendar {personal_calendar_id}")
+
+        synced_count = 0
+        deleted_count = 0
+
+        for event in events:
+            try:
+                if event.get("status") == "cancelled":
+                    await handle_deleted_personal_event(
+                        user_id=user_id,
+                        personal_calendar_id=personal_calendar_id,
+                        event_id=event["id"],
+                        main_calendar_id=main_calendar_id,
+                        main_client=main_client,
+                        recurring_event_id=event.get("recurringEventId"),
+                        original_start_time=event.get("originalStartTime"),
+                    )
+                    deleted_count += 1
+                else:
+                    main_event_id = await sync_personal_event_to_all(
+                        personal_client=personal_client,
+                        main_client=main_client,
+                        event=event,
+                        user_id=user_id,
+                        personal_calendar_id=personal_calendar_id,
+                        main_calendar_id=main_calendar_id,
+                        user_email=user_email,
+                    )
+                    if main_event_id:
+                        synced_count += 1
+
+            except Exception as e:
+                logger.error(f"Error processing personal event {event.get('id')}: {e}")
+                event_errors.append(f"{event.get('id')}: {e}")
+
+        if event_errors:
+            raise RuntimeError(
+                f"{len(event_errors)} event(s) failed while syncing personal calendar {personal_calendar_id}. "
+                f"First error: {event_errors[0]}"
+            )
+
+        # Update sync state
+        now = datetime.utcnow().isoformat()
+        if sync_token:
+            await db.execute(
+                """UPDATE calendar_sync_state SET
+                   sync_token = ?, last_incremental_sync = ?,
+                   consecutive_failures = 0, last_error = NULL
+                   WHERE client_calendar_id = ?""",
+                (new_sync_token, now, personal_calendar_id)
+            )
+        else:
+            await db.execute(
+                """UPDATE calendar_sync_state SET
+                   sync_token = ?, last_full_sync = ?, last_incremental_sync = ?,
+                   consecutive_failures = 0, last_error = NULL
+                   WHERE client_calendar_id = ?""",
+                (new_sync_token, now, now, personal_calendar_id)
+            )
+        await db.commit()
+
+        await db.execute(
+            """INSERT INTO sync_log (user_id, calendar_id, action, status, details)
+               VALUES (?, ?, 'sync_personal', 'success', ?)""",
+            (
+                user_id,
+                personal_calendar_id,
+                json.dumps({"synced": synced_count, "deleted": deleted_count}),
+            )
+        )
+        await db.commit()
+
+        logger.info(f"Personal calendar sync completed for {personal_calendar_id}: {synced_count} synced, {deleted_count} deleted")
+
+    except Exception as e:
+        logger.exception(f"Personal calendar sync failed for {personal_calendar_id}: {e}")
+
+        await db.execute(
+            """UPDATE calendar_sync_state SET
+               consecutive_failures = consecutive_failures + 1,
+               last_error = ?
+               WHERE client_calendar_id = ?""",
+            (str(e), personal_calendar_id)
+        )
+        await db.commit()
+
+        await db.execute(
+            """INSERT INTO sync_log (user_id, calendar_id, action, status, details)
+               VALUES (?, ?, 'sync_personal', 'failure', ?)""",
+            (
+                user_id,
+                personal_calendar_id,
+                json.dumps({"error": str(e), "failed_events": event_errors}),
+            )
+        )
+        await db.commit()
+
+        cursor = await db.execute(
+            "SELECT consecutive_failures FROM calendar_sync_state WHERE client_calendar_id = ?",
+            (personal_calendar_id,)
+        )
+        row = await cursor.fetchone()
+        if row and row["consecutive_failures"] >= 5:
+            from app.alerts.email import queue_alert
+            await queue_alert(
+                alert_type="sync_failures",
+                user_id=user_id,
+                calendar_id=personal_calendar_id,
+                details=f"Personal calendar sync has failed {row['consecutive_failures']} consecutive times. Last error: {str(e)}"
+            )
+
+
 async def trigger_sync_for_user(user_id: int) -> None:
-    """Trigger sync for all of a user's calendars."""
+    """Trigger sync for all of a user's calendars (client, personal, and main)."""
     if await is_sync_paused():
         logger.info("Sync is paused, skipping user sync")
         return
@@ -420,15 +605,18 @@ async def trigger_sync_for_user(user_id: int) -> None:
 
     # Get all active client calendars
     cursor = await db.execute(
-        """SELECT id FROM client_calendars
+        """SELECT id, calendar_type FROM client_calendars
            WHERE user_id = ? AND is_active = TRUE""",
         (user_id,)
     )
     calendars = await cursor.fetchall()
 
-    # Sync each client calendar
+    # Sync each calendar using the appropriate handler
     for cal in calendars:
-        await trigger_sync_for_calendar(cal["id"])
+        if cal["calendar_type"] == "personal":
+            await trigger_sync_for_personal_calendar(cal["id"])
+        else:
+            await trigger_sync_for_calendar(cal["id"])
 
     # Sync main calendar
     await trigger_sync_for_main_calendar(user_id)
@@ -673,11 +861,12 @@ async def cleanup_managed_events_for_user(user_id: int) -> dict:
     cleaned_mapping_ids: set[int] = set()
     failed_mapping_ids: set[int] = set()
 
-    # Pass 1a: DB-driven cleanup of client-origin event copies on the main calendar.
+    # Pass 1a: DB-driven cleanup of event copies/busy-blocks on the main calendar.
+    # This includes both client-origin copies and personal-origin busy blocks.
     cursor = await db.execute(
         """SELECT id, main_event_id
            FROM event_mappings
-           WHERE user_id = ? AND origin_type = 'client'
+           WHERE user_id = ? AND origin_type IN ('client', 'personal')
            AND deleted_at IS NULL AND main_event_id IS NOT NULL""",
         (user_id,),
     )

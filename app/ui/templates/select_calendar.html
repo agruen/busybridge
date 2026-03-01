@@ -5,8 +5,13 @@
 {% block content %}
 <div class="px-4 sm:px-0">
     <div class="mb-6">
+        {% if calendar_type == 'personal' %}
+        <h1 class="text-2xl font-bold text-gray-900">Select a Personal Calendar</h1>
+        <p class="mt-2 text-gray-600">Choose which calendar from <strong>{{ email }}</strong> to sync as a personal calendar. Events will appear as busy blocks (no details) on your work and client calendars.</p>
+        {% else %}
         <h1 class="text-2xl font-bold text-gray-900">Select a Calendar to Sync</h1>
         <p class="mt-2 text-gray-600">Choose which calendar from <strong>{{ email }}</strong> you want to sync.</p>
+        {% endif %}
     </div>
 
     <div class="bg-white shadow rounded-lg">
@@ -14,7 +19,7 @@
         <ul class="divide-y divide-gray-200">
             {% for cal in calendars %}
             <li class="hover:bg-gray-50">
-                <form hx-post="/api/client-calendars" hx-swap="none" class="px-6 py-4 flex items-center justify-between">
+                <form hx-post="/api/{{ 'personal-calendars' if calendar_type == 'personal' else 'client-calendars' }}" hx-swap="none" class="px-6 py-4 flex items-center justify-between">
                     <input type="hidden" name="token_id" value="{{ token_id }}">
                     <input type="hidden" name="calendar_id" value="{{ cal['id'] }}">
                     <input type="hidden" name="display_name" value="{{ cal.get('summary', cal['id']) }}">
@@ -31,7 +36,7 @@
                             {% endif %}
                         </div>
                     </div>
-                    <button type="submit" class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700">
+                    <button type="submit" class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white {{ 'bg-purple-600 hover:bg-purple-700' if calendar_type == 'personal' else 'bg-indigo-600 hover:bg-indigo-700' }}">
                         Connect
                     </button>
                 </form>
@@ -41,8 +46,13 @@
         {% else %}
         <div class="text-center py-12">
             <i class="fas fa-exclamation-triangle text-yellow-500 text-4xl mb-4"></i>
+            {% if calendar_type == 'personal' %}
+            <h3 class="text-sm font-medium text-gray-900">No accessible calendars found</h3>
+            <p class="mt-1 text-sm text-gray-500">Make sure you're using an account with at least one calendar.</p>
+            {% else %}
             <h3 class="text-sm font-medium text-gray-900">No writable calendars found</h3>
             <p class="mt-1 text-sm text-gray-500">We need write access to sync events. Make sure you're using an account with at least one writable calendar.</p>
+            {% endif %}
             <div class="mt-6">
                 <a href="/app" class="inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50">
                     Back to Dashboard

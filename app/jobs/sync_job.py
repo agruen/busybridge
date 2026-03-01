@@ -24,19 +24,22 @@ async def run_periodic_sync() -> None:
     try:
         db = await get_database()
 
-        # Get all active client calendars
+        # Get all active calendars (client + personal)
         cursor = await db.execute(
-            """SELECT id FROM client_calendars WHERE is_active = TRUE"""
+            """SELECT id, calendar_type FROM client_calendars WHERE is_active = TRUE"""
         )
         calendars = await cursor.fetchall()
 
         logger.info(f"Running periodic sync for {len(calendars)} calendars")
 
-        from app.sync.engine import trigger_sync_for_calendar
+        from app.sync.engine import trigger_sync_for_calendar, trigger_sync_for_personal_calendar
 
         for cal in calendars:
             try:
-                await trigger_sync_for_calendar(cal["id"])
+                if cal["calendar_type"] == "personal":
+                    await trigger_sync_for_personal_calendar(cal["id"])
+                else:
+                    await trigger_sync_for_calendar(cal["id"])
             except Exception as e:
                 logger.error(f"Error syncing calendar {cal['id']}: {e}")
 

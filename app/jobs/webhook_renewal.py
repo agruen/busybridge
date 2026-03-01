@@ -110,7 +110,7 @@ async def register_webhooks_for_user(user_id: int) -> None:
     except Exception as e:
         logger.error(f"Failed to register main calendar webhook: {e}")
 
-    # Register for client calendars
+    # Register for client and personal calendars
     cursor = await db.execute(
         """SELECT cc.*, ot.google_account_email
            FROM client_calendars cc
@@ -122,14 +122,15 @@ async def register_webhooks_for_user(user_id: int) -> None:
 
     for cal in calendars:
         try:
+            cal_type = cal["calendar_type"] if "calendar_type" in cal.keys() else "client"
             access_token = await get_valid_access_token(user_id, cal["google_account_email"])
             await register_webhook_channel(
                 user_id=user_id,
-                calendar_type="client",
+                calendar_type=cal_type,
                 calendar_id=cal["google_calendar_id"],
                 client_calendar_id=cal["id"],
                 access_token=access_token,
             )
-            logger.info(f"Registered webhook for client calendar {cal['id']}")
+            logger.info(f"Registered webhook for {cal_type} calendar {cal['id']}")
         except Exception as e:
             logger.error(f"Failed to register webhook for calendar {cal['id']}: {e}")

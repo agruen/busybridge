@@ -5,6 +5,7 @@ A self-hosted, multi-user calendar synchronization service for consulting organi
 ## Features
 
 - **Bidirectional Sync**: Events from client calendars appear on your main calendar with full details, while your main calendar events appear as "Busy" blocks on client calendars
+- **Personal Calendar Sync**: Connect personal calendars (Workspace or Gmail) — events appear as privacy-preserving "Busy" blocks on your work and client calendars with no details exposed
 - **Multi-User Support**: Each user in your organization can manage their own calendar connections
 - **Recurring Event Support**: Full fidelity for recurring events, including single-instance modifications
 - **Smart Busy Blocks**: Only creates blocks for events that actually block time (respects "Free" vs "Busy" status)
@@ -60,6 +61,7 @@ A self-hosted, multi-user calendar synchronization service for consulting organi
    - Add redirect URIs:
      - `https://your-domain/auth/callback`
      - `https://your-domain/auth/connect-client/callback`
+     - `https://your-domain/auth/connect-personal/callback`
      - `https://your-domain/setup/step/3/callback`
 
 ## Appointment Workflow
@@ -115,14 +117,35 @@ BusyBridge copies it to your Main Calendar (with full details)
 
 You'll see the appointment on your main calendar with full details (title, description, attendees). Other clients only see "Busy" — no cross-client information is ever shared.
 
+### Personal Calendar Sync
+
+Connect a personal calendar (Google Workspace or Gmail) to keep your personal commitments reflected as busy time across all your work calendars — without exposing any event details.
+
+```
+Personal calendar event (e.g. "Doctor Appointment")
+         ↓
+BusyBridge detects it
+         ↓
+"[BusyBridge] Busy (Personal)" block on Main Calendar (no details)
+"[BusyBridge] Busy (Personal)" block on Client A calendar
+"[BusyBridge] Busy (Personal)" block on Client B calendar
+```
+
+Key behaviors:
+- **Privacy-first**: Only time is synced — no title, description, or attendees are copied
+- **Read-only source**: BusyBridge never writes anything back to your personal calendar
+- **Distinct labeling**: Personal busy blocks use `[BusyBridge] Busy (Personal)` to distinguish them from client-origin `[BusyBridge] Busy` blocks
+- **Full propagation**: Personal busy blocks appear on your main calendar AND all client calendars
+
 ### Viewing Your Schedule
 
 **Always view your main calendar** for your complete schedule. It contains:
 
 - Full details of all client-scheduled meetings (synced from client calendars)
 - All your own appointments (created directly on main)
+- "Busy (Personal)" blocks showing time reserved by personal calendar events
 
-Client calendars are not useful for your day-to-day viewing — they only show "Busy" blocks from your other commitments, which is the view your clients see.
+Client calendars are not useful for your day-to-day viewing — they only show "Busy" blocks from your other commitments, which is the view your clients see. For personal event details, view your personal calendar alongside your main calendar in Google Calendar.
 
 ### Summary
 
@@ -131,6 +154,7 @@ Client calendars are not useful for your day-to-day viewing — they only show "
 | Create a personal or internal appointment | Your **main calendar** |
 | Organize a meeting within a client's domain | That **client's calendar** |
 | View your full schedule | Your **main calendar** |
+| View personal event details | Your **personal calendar** (overlay in Google Calendar) |
 | See what a client sees | That **client's calendar** (shows "Busy" blocks) |
 | Accept a client meeting | Handled automatically — appears on main calendar |
 
@@ -148,6 +172,10 @@ The application runs as a single Docker container containing:
 Client Calendar Event → Main Calendar (with full details)
                       ↓
                       → Busy blocks on other Client Calendars
+
+Personal Calendar Event → Main Calendar (busy block only, no details)
+                        ↓
+                        → Busy blocks on ALL Client Calendars
 ```
 
 ### Key Components

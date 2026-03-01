@@ -1,4 +1,4 @@
-"""Calendar management API endpoints."""
+"""Personal calendar management API endpoints."""
 
 import logging
 from datetime import datetime
@@ -12,11 +12,11 @@ from app.auth.google import get_valid_access_token
 from app.database import get_database
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/client-calendars", tags=["calendars"])
+router = APIRouter(prefix="/personal-calendars", tags=["personal-calendars"])
 
 
-class ClientCalendarResponse(BaseModel):
-    """Client calendar response model."""
+class PersonalCalendarResponse(BaseModel):
+    """Personal calendar response model."""
     id: int
     google_calendar_id: str
     display_name: Optional[str] = None
@@ -27,15 +27,15 @@ class ClientCalendarResponse(BaseModel):
     consecutive_failures: int = 0
 
 
-class ConnectCalendarRequest(BaseModel):
-    """Request to connect a client calendar."""
+class ConnectPersonalCalendarRequest(BaseModel):
+    """Request to connect a personal calendar."""
     token_id: int
     calendar_id: str
     display_name: Optional[str] = None
 
 
-class CalendarStatusResponse(BaseModel):
-    """Detailed calendar status response."""
+class PersonalCalendarStatusResponse(BaseModel):
+    """Detailed personal calendar status response."""
     id: int
     google_calendar_id: str
     display_name: Optional[str] = None
@@ -49,9 +49,9 @@ class CalendarStatusResponse(BaseModel):
     busy_block_count: int = 0
 
 
-@router.get("", response_model=list[ClientCalendarResponse])
-async def list_client_calendars(user: User = Depends(get_current_user)):
-    """List connected client calendars for current user."""
+@router.get("", response_model=list[PersonalCalendarResponse])
+async def list_personal_calendars(user: User = Depends(get_current_user)):
+    """List connected personal calendars for current user."""
     db = await get_database()
 
     cursor = await db.execute(
@@ -60,7 +60,7 @@ async def list_client_calendars(user: User = Depends(get_current_user)):
            FROM client_calendars cc
            JOIN oauth_tokens ot ON cc.oauth_token_id = ot.id
            LEFT JOIN calendar_sync_state css ON cc.id = css.client_calendar_id
-           WHERE cc.user_id = ? AND cc.is_active = TRUE AND cc.calendar_type = 'client'
+           WHERE cc.user_id = ? AND cc.is_active = TRUE AND cc.calendar_type = 'personal'
            ORDER BY cc.created_at DESC""",
         (user.id,)
     )
@@ -71,42 +71,41 @@ async def list_client_calendars(user: User = Depends(get_current_user)):
     for row in rows:
         last_sync = row["last_incremental_sync"] or row["last_full_sync"]
 
-        # Determine sync status
-        status = "ok"
-        if row["consecutive_failures"] >= 5:
-            status = "error"
-        elif row["consecutive_failures"] >= 1:
-            status = "warning"
+        sync_status = "ok"
+        if row["consecutive_failures"] and row["consecutive_failures"] >= 5:
+            sync_status = "error"
+        elif row["consecutive_failures"] and row["consecutive_failures"] >= 1:
+            sync_status = "warning"
         elif not last_sync:
-            status = "pending"
+            sync_status = "pending"
 
-        calendars.append(ClientCalendarResponse(
+        calendars.append(PersonalCalendarResponse(
             id=row["id"],
             google_calendar_id=row["google_calendar_id"],
             display_name=row["display_name"],
             google_account_email=row["google_account_email"],
             is_active=bool(row["is_active"]),
             last_sync=last_sync,
-            sync_status=status,
+            sync_status=sync_status,
             consecutive_failures=row["consecutive_failures"] or 0,
         ))
 
     return calendars
 
 
-@router.post("", response_model=ClientCalendarResponse)
-async def connect_client_calendar(
-    request: ConnectCalendarRequest,
+@router.post("", response_model=PersonalCalendarResponse)
+async def connect_personal_calendar(
+    request: ConnectPersonalCalendarRequest,
     user: User = Depends(get_current_user)
 ):
-    """Connect a new client calendar."""
+    """Connect a new personal calendar."""
     db = await get_database()
 
-    # Verify token belongs to user (accept client or personal account_type
-    # so tokens can be shared if the same account is used for both)
+    # Verify token belongs to user (accept any account_type so we can reuse
+    # tokens that were originally stored for a different purpose)
     cursor = await db.execute(
         """SELECT * FROM oauth_tokens
-           WHERE id = ? AND user_id = ? AND account_type IN ('client', 'personal')""",
+           WHERE id = ? AND user_id = ?""",
         (request.token_id, user.id)
     )
     token = await cursor.fetchone()
@@ -130,16 +129,29 @@ async def connect_client_calendar(
         display_name = request.display_name or cal_info.get("summary", request.calendar_id)
 
     except Exception as e:
-        logger.error(f"Failed to verify calendar: {e}")
+        logger.error(f"Failed to verify personal calendar: {e}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Cannot access calendar: {str(e)}"
         )
 
-    # Check if already connected
+    # Prevent connecting the same calendar as the user's main calendar
+    cursor = await db.execute(
+        "SELECT main_calendar_id FROM users WHERE id = ?",
+        (user.id,)
+    )
+    user_row = await cursor.fetchone()
+    if user_row and user_row["main_calendar_id"] == request.calendar_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot connect your main calendar as a personal calendar"
+        )
+
+    # Check if already connected (as personal)
     cursor = await db.execute(
         """SELECT id FROM client_calendars
-           WHERE user_id = ? AND google_calendar_id = ? AND is_active = TRUE""",
+           WHERE user_id = ? AND google_calendar_id = ? AND is_active = TRUE
+             AND calendar_type = 'personal'""",
         (user.id, request.calendar_id)
     )
     existing = await cursor.fetchone()
@@ -147,27 +159,16 @@ async def connect_client_calendar(
     if existing:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Calendar already connected"
+            detail="Personal calendar already connected"
         )
 
-    # Auto-assign a color for this calendar (Google Calendar event colorIds 1-11)
-    cursor = await db.execute(
-        """SELECT color_id FROM client_calendars
-           WHERE user_id = ? AND is_active = TRUE AND color_id IS NOT NULL""",
-        (user.id,)
-    )
-    used_colors = {row["color_id"] for row in await cursor.fetchall()}
-    # Pick the first unused color, cycling through 1-11
-    all_colors = [str(i) for i in range(1, 12)]
-    color_id = next((c for c in all_colors if c not in used_colors), all_colors[0])
-
-    # Create the calendar connection
+    # Create the personal calendar connection
     cursor = await db.execute(
         """INSERT INTO client_calendars
-           (user_id, oauth_token_id, google_calendar_id, display_name, color_id)
-           VALUES (?, ?, ?, ?, ?)
+           (user_id, oauth_token_id, google_calendar_id, display_name, calendar_type)
+           VALUES (?, ?, ?, ?, 'personal')
            RETURNING id""",
-        (user.id, request.token_id, request.calendar_id, display_name, color_id)
+        (user.id, request.token_id, request.calendar_id, display_name)
     )
     row = await cursor.fetchone()
     calendar_id = row["id"]
@@ -183,20 +184,20 @@ async def connect_client_calendar(
     # Log the connection
     await db.execute(
         """INSERT INTO sync_log (user_id, calendar_id, action, status, details)
-           VALUES (?, ?, 'connect', 'success', ?)""",
+           VALUES (?, ?, 'connect_personal', 'success', ?)""",
         (user.id, calendar_id, f'{{"calendar_id": "{request.calendar_id}"}}')
     )
     await db.commit()
 
     # Trigger initial sync (in background)
-    from app.sync.engine import trigger_sync_for_calendar
+    from app.sync.engine import trigger_sync_for_personal_calendar
     from app.utils.tasks import create_background_task
     create_background_task(
-        trigger_sync_for_calendar(calendar_id),
-        f"initial_sync_calendar_{calendar_id}"
+        trigger_sync_for_personal_calendar(calendar_id),
+        f"initial_sync_personal_{calendar_id}"
     )
 
-    return ClientCalendarResponse(
+    return PersonalCalendarResponse(
         id=calendar_id,
         google_calendar_id=request.calendar_id,
         display_name=display_name,
@@ -207,17 +208,17 @@ async def connect_client_calendar(
 
 
 @router.delete("/{calendar_id}")
-async def disconnect_client_calendar(
+async def disconnect_personal_calendar(
     calendar_id: int,
     user: User = Depends(get_current_user)
 ):
-    """Disconnect a client calendar."""
+    """Disconnect a personal calendar."""
     db = await get_database()
 
-    # Verify calendar belongs to user
+    # Verify calendar belongs to user and is personal
     cursor = await db.execute(
         """SELECT * FROM client_calendars
-           WHERE id = ? AND user_id = ? AND is_active = TRUE""",
+           WHERE id = ? AND user_id = ? AND is_active = TRUE AND calendar_type = 'personal'""",
         (calendar_id, user.id)
     )
     calendar = await cursor.fetchone()
@@ -225,10 +226,10 @@ async def disconnect_client_calendar(
     if not calendar:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Calendar not found"
+            detail="Personal calendar not found"
         )
 
-    # Perform cleanup
+    # Perform cleanup (reuses the same mechanism as client calendars)
     from app.sync.engine import cleanup_disconnected_calendar
     await cleanup_disconnected_calendar(calendar_id, user.id)
 
@@ -244,26 +245,26 @@ async def disconnect_client_calendar(
     # Log the disconnection
     await db.execute(
         """INSERT INTO sync_log (user_id, calendar_id, action, status, details)
-           VALUES (?, ?, 'disconnect', 'success', NULL)""",
+           VALUES (?, ?, 'disconnect_personal', 'success', NULL)""",
         (user.id, calendar_id)
     )
     await db.commit()
 
-    return {"status": "ok", "message": "Calendar disconnected"}
+    return {"status": "ok", "message": "Personal calendar disconnected"}
 
 
 @router.post("/{calendar_id}/sync")
-async def trigger_calendar_sync(
+async def trigger_personal_calendar_sync(
     calendar_id: int,
     user: User = Depends(get_current_user)
 ):
-    """Trigger manual sync for a calendar."""
+    """Trigger manual sync for a personal calendar."""
     db = await get_database()
 
-    # Verify calendar belongs to user
+    # Verify calendar belongs to user and is personal
     cursor = await db.execute(
         """SELECT * FROM client_calendars
-           WHERE id = ? AND user_id = ? AND is_active = TRUE""",
+           WHERE id = ? AND user_id = ? AND is_active = TRUE AND calendar_type = 'personal'""",
         (calendar_id, user.id)
     )
     calendar = await cursor.fetchone()
@@ -271,35 +272,33 @@ async def trigger_calendar_sync(
     if not calendar:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Calendar not found"
+            detail="Personal calendar not found"
         )
 
-    # Trigger sync
-    from app.sync.engine import trigger_sync_for_calendar
+    from app.sync.engine import trigger_sync_for_personal_calendar
     from app.utils.tasks import create_background_task
     create_background_task(
-        trigger_sync_for_calendar(calendar_id),
-        f"manual_sync_calendar_{calendar_id}"
+        trigger_sync_for_personal_calendar(calendar_id),
+        f"manual_sync_personal_{calendar_id}"
     )
 
-    return {"status": "ok", "message": "Sync triggered"}
+    return {"status": "ok", "message": "Personal calendar sync triggered"}
 
 
-@router.get("/{calendar_id}/status", response_model=CalendarStatusResponse)
-async def get_calendar_status(
+@router.get("/{calendar_id}/status", response_model=PersonalCalendarStatusResponse)
+async def get_personal_calendar_status(
     calendar_id: int,
     user: User = Depends(get_current_user)
 ):
-    """Get detailed sync status for a calendar."""
+    """Get detailed sync status for a personal calendar."""
     db = await get_database()
 
-    # Get calendar with sync state
     cursor = await db.execute(
         """SELECT cc.*, css.sync_token, css.last_full_sync,
                   css.last_incremental_sync, css.consecutive_failures, css.last_error
            FROM client_calendars cc
            LEFT JOIN calendar_sync_state css ON cc.id = css.client_calendar_id
-           WHERE cc.id = ? AND cc.user_id = ?""",
+           WHERE cc.id = ? AND cc.user_id = ? AND cc.calendar_type = 'personal'""",
         (calendar_id, user.id)
     )
     calendar = await cursor.fetchone()
@@ -307,24 +306,26 @@ async def get_calendar_status(
     if not calendar:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Calendar not found"
+            detail="Personal calendar not found"
         )
 
-    # Count events and busy blocks
+    # Count events and busy blocks originating from this personal calendar
     cursor = await db.execute(
         """SELECT COUNT(*) FROM event_mappings
-           WHERE origin_calendar_id = ? AND deleted_at IS NULL""",
+           WHERE origin_calendar_id = ? AND origin_type = 'personal' AND deleted_at IS NULL""",
         (calendar_id,)
     )
     event_count = (await cursor.fetchone())[0]
 
     cursor = await db.execute(
-        """SELECT COUNT(*) FROM busy_blocks WHERE client_calendar_id = ?""",
+        """SELECT COUNT(*) FROM busy_blocks
+           JOIN event_mappings em ON busy_blocks.event_mapping_id = em.id
+           WHERE em.origin_calendar_id = ? AND em.origin_type = 'personal'""",
         (calendar_id,)
     )
     busy_block_count = (await cursor.fetchone())[0]
 
-    return CalendarStatusResponse(
+    return PersonalCalendarStatusResponse(
         id=calendar["id"],
         google_calendar_id=calendar["google_calendar_id"],
         display_name=calendar["display_name"],

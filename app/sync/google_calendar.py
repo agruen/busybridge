@@ -377,6 +377,42 @@ def create_busy_block(
     return event
 
 
+def create_personal_busy_block(
+    start: dict,
+    end: dict,
+    is_all_day: bool = False,
+) -> dict:
+    """
+    Create a busy block for a personal calendar event.
+
+    Uses the distinct personal title (e.g. "[BusyBridge] Busy (Personal)")
+    so these blocks are visually distinguishable from client-origin busy
+    blocks and can be identified during manual cleanup.
+    """
+    settings = get_settings()
+
+    summary = settings.personal_busy_block_title
+    prefix = (settings.managed_event_prefix or "").strip()
+    if prefix:
+        summary = f"{prefix} {summary}".strip()
+
+    event = {
+        "summary": summary,
+        "description": "",
+        "visibility": "private",
+        "transparency": "opaque",  # Show as busy
+    }
+
+    if is_all_day:
+        event["start"] = {"date": start.get("date")}
+        event["end"] = {"date": end.get("date")}
+    else:
+        event["start"] = _build_timed_dt(start)
+        event["end"] = _build_timed_dt(end)
+
+    return event
+
+
 def copy_event_for_main(
     source_event: dict,
     source_label: Optional[str] = None,

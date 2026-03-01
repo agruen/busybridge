@@ -38,20 +38,33 @@ async def dashboard(request: Request, error: Optional[str] = None):
 
     db = await get_database()
 
-    # Get connected calendars
+    # Get connected client calendars
     cursor = await db.execute(
         """SELECT cc.*, ot.google_account_email, css.last_incremental_sync,
                   css.last_full_sync, css.consecutive_failures
            FROM client_calendars cc
            JOIN oauth_tokens ot ON cc.oauth_token_id = ot.id
            LEFT JOIN calendar_sync_state css ON cc.id = css.client_calendar_id
-           WHERE cc.user_id = ? AND cc.is_active = TRUE
+           WHERE cc.user_id = ? AND cc.is_active = TRUE AND cc.calendar_type = 'client'
            ORDER BY cc.created_at DESC""",
         (user.id,)
     )
     calendars = await cursor.fetchall()
 
-    # Get sync status
+    # Get connected personal calendars
+    cursor = await db.execute(
+        """SELECT cc.*, ot.google_account_email, css.last_incremental_sync,
+                  css.last_full_sync, css.consecutive_failures
+           FROM client_calendars cc
+           JOIN oauth_tokens ot ON cc.oauth_token_id = ot.id
+           LEFT JOIN calendar_sync_state css ON cc.id = css.client_calendar_id
+           WHERE cc.user_id = ? AND cc.is_active = TRUE AND cc.calendar_type = 'personal'
+           ORDER BY cc.created_at DESC""",
+        (user.id,)
+    )
+    personal_calendars = await cursor.fetchall()
+
+    # Get sync status (includes both client and personal)
     cursor = await db.execute(
         """SELECT COUNT(*) as total,
                   SUM(CASE WHEN css.consecutive_failures >= 5 THEN 1 ELSE 0 END) as errors,
@@ -75,6 +88,7 @@ async def dashboard(request: Request, error: Optional[str] = None):
         "request": request,
         "user": user,
         "calendars": calendars,
+        "personal_calendars": personal_calendars,
         "status": status_row,
         "event_count": event_count,
         "managed_event_prefix": managed_event_prefix,
@@ -264,6 +278,60 @@ async def select_calendar_page(
         "token_id": token_id,
         "email": email,
         "calendars": calendars,
+        "calendar_type": "client",
+    })
+
+
+@router.get("/app/calendars/select-personal", response_class=HTMLResponse)
+async def select_personal_calendar_page(
+    request: Request,
+    token_id: int,
+    email: str,
+):
+    """Calendar selection page for personal calendar after OAuth."""
+    user = await get_current_user_optional(request)
+    if not user:
+        return RedirectResponse(url="/app/login", status_code=status.HTTP_302_FOUND)
+
+    db = await get_database()
+
+    # Verify token belongs to user
+    cursor = await db.execute(
+        "SELECT * FROM oauth_tokens WHERE id = ? AND user_id = ?",
+        (token_id, user.id)
+    )
+    token = await cursor.fetchone()
+
+    if not token:
+        return RedirectResponse(url="/app?error=invalid_token", status_code=status.HTTP_302_FOUND)
+
+    # Get calendars from the personal account
+    calendars = []
+    try:
+        from app.auth.google import get_valid_access_token
+        from googleapiclient.discovery import build
+        from google.oauth2.credentials import Credentials
+
+        access_token = await get_valid_access_token(user.id, email)
+        credentials = Credentials(token=access_token)
+        service = build("calendar", "v3", credentials=credentials)
+
+        result = service.calendarList().list().execute()
+        for cal in result.get("items", []):
+            if cal.get("accessRole") in ["owner", "writer", "reader"]:
+                calendars.append(cal)
+
+    except Exception as e:
+        logger.error(f"Failed to get personal calendars: {e}")
+        return RedirectResponse(url="/app?error=calendar_fetch_failed", status_code=status.HTTP_302_FOUND)
+
+    return templates.TemplateResponse("select_calendar.html", {
+        "request": request,
+        "user": user,
+        "token_id": token_id,
+        "email": email,
+        "calendars": calendars,
+        "calendar_type": "personal",
     })
 
 

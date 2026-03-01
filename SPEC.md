@@ -139,10 +139,19 @@ After wizard completion, store:
 - User authenticates separately to each client org
 - Contains: native events + “Busy” blocks representing main calendar events
 
+### Personal Calendars
+
+- User's personal calendar from a Workspace or Gmail account
+- Connected via separate OAuth flow (`/auth/connect-personal`)
+- Read-only source — BusyBridge never writes events back to personal calendars
+- Events sync as privacy-preserving busy blocks (no title, description, or attendees)
+- Stored in `client_calendars` table with `calendar_type = 'personal'`
+
 ### Event Origin
 
 - **Main-origin event**: Created directly on the main calendar (or synced there from a client and now living on main)
 - **Client-origin event**: Created on or invited to via a client calendar
+- **Personal-origin event**: An event on a connected personal calendar (synced as busy block only)
 
 -----
 
@@ -167,13 +176,36 @@ After wizard completion, store:
 |Event deleted on main calendar |Delete the “Busy” blocks from all client calendars                              |
 |All-day event on main calendar |Only create “Busy” blocks if the event’s “Show as” status is “Busy” (not “Free”)|
 
+### Personal Calendar → Main Calendar + Client Calendars
+
+|Scenario                                    |Behavior                                                                                    |
+|--------------------------------------------|--------------------------------------------------------------------------------------------|
+|New event on personal calendar              |Create “Busy (Personal)” block on main calendar AND on ALL connected client calendars        |
+|Event modified on personal calendar         |Update the “Busy (Personal)” blocks (time changes) on main and all client calendars          |
+|Event deleted on personal calendar          |Delete the “Busy (Personal)” blocks from main calendar and all client calendars              |
+|All-day event on personal calendar          |Create all-day “Busy (Personal)” blocks on main and all client calendars                     |
+|Recurring event on personal calendar        |Copy recurrence rule to “Busy (Personal)” blocks                                            |
+
+**Important**: Personal calendars are strictly read-only — BusyBridge never creates busy blocks on the personal calendar itself.
+
 ### Busy Block Properties
 
-- Title: “Busy”
+**Client-origin busy blocks:**
+
+- Title: “Busy” (prefixed with `MANAGED_EVENT_PREFIX`, e.g. “[BusyBridge] Busy”)
 - Description: Empty
 - Show as: Busy
 - Visibility: Private (if supported)
 - No attendees
+
+**Personal-origin busy blocks:**
+
+- Title: “Busy (Personal)” (prefixed with `MANAGED_EVENT_PREFIX`, e.g. “[BusyBridge] Busy (Personal)”)
+- Description: Empty
+- Show as: Busy
+- Visibility: Private (if supported)
+- No attendees
+- Distinct labeling allows manual identification and cleanup
 
 ### Cross-Client Sync
 
@@ -331,7 +363,7 @@ CREATE TABLE users (
 CREATE TABLE oauth_tokens (
     id INTEGER PRIMARY KEY,
     user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    account_type TEXT NOT NULL, -- 'home' or 'client'
+    account_type TEXT NOT NULL, -- 'home', 'client', or 'personal'
     google_account_email TEXT NOT NULL,
     access_token_encrypted BLOB NOT NULL,
     refresh_token_encrypted BLOB NOT NULL,
@@ -341,13 +373,14 @@ CREATE TABLE oauth_tokens (
     UNIQUE(user_id, google_account_email)
 );
 
--- Connected client calendars
+-- Connected client and personal calendars
 CREATE TABLE client_calendars (
     id INTEGER PRIMARY KEY,
     user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     oauth_token_id INTEGER NOT NULL REFERENCES oauth_tokens(id),
     google_calendar_id TEXT NOT NULL,
     display_name TEXT,
+    calendar_type TEXT NOT NULL DEFAULT 'client', -- 'client' or 'personal'
     is_active BOOLEAN DEFAULT TRUE,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     disconnected_at TIMESTAMP
@@ -371,7 +404,7 @@ CREATE TABLE event_mappings (
     user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     
     -- Origin info
-    origin_type TEXT NOT NULL, -- 'main' or 'client'
+    origin_type TEXT NOT NULL, -- 'main', 'client', or 'personal'
     origin_calendar_id INTEGER REFERENCES client_calendars(id), -- NULL if origin is main
     origin_event_id TEXT NOT NULL, -- Google Calendar event ID at origin
     origin_recurring_event_id TEXT, -- For instances of recurring events
@@ -634,11 +667,13 @@ POST /setup/step/:step              - OOBE wizard step submission
 ### Authentication Endpoints
 
 ```
-GET  /auth/login                    - Initiate Google OAuth for home org
-GET  /auth/callback                 - OAuth callback
-POST /auth/logout                   - Log out
-GET  /auth/connect-client           - Initiate OAuth for a client account
-GET  /auth/connect-client/callback  - Client OAuth callback
+GET  /auth/login                      - Initiate Google OAuth for home org
+GET  /auth/callback                   - OAuth callback
+POST /auth/logout                     - Log out
+GET  /auth/connect-client             - Initiate OAuth for a client account
+GET  /auth/connect-client/callback    - Client OAuth callback
+GET  /auth/connect-personal           - Initiate OAuth for a personal account
+GET  /auth/connect-personal/callback  - Personal OAuth callback
 ```
 
 ### User Endpoints (authenticated)
@@ -659,6 +694,16 @@ POST /api/client-calendars                  - Connect a new client calendar (aft
 DELETE /api/client-calendars/:id            - Disconnect a client calendar
 POST /api/client-calendars/:id/sync         - Trigger manual sync
 GET  /api/client-calendars/:id/status       - Get detailed sync status
+```
+
+### Personal Calendar Management (authenticated)
+
+```
+GET  /api/personal-calendars                - List connected personal calendars
+POST /api/personal-calendars                - Connect a new personal calendar (after OAuth)
+DELETE /api/personal-calendars/:id          - Disconnect a personal calendar
+POST /api/personal-calendars/:id/sync       - Trigger manual sync
+GET  /api/personal-calendars/:id/status     - Get detailed sync status
 ```
 
 ### Sync Status & Logs (authenticated)
@@ -736,6 +781,10 @@ POST /api/webhooks/google-calendar  - Receive Google Calendar push notifications
   - “Sync Now” button
   - “Disconnect” button (with confirmation)
 - “Connect Client Calendar” button
+- Personal Calendars section (purple-themed):
+  - List of connected personal calendars with sync status
+  - “Connect Personal Calendar” button
+  - “Sync Now” / “Disconnect” actions per calendar
 
 **Connect Client Calendar Flow**
 

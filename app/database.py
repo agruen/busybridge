@@ -63,7 +63,7 @@ CREATE TABLE IF NOT EXISTS oauth_tokens (
     UNIQUE(user_id, google_account_email)
 );
 
--- Connected client calendars
+-- Connected client and personal calendars
 CREATE TABLE IF NOT EXISTS client_calendars (
     id INTEGER PRIMARY KEY,
     user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -71,6 +71,7 @@ CREATE TABLE IF NOT EXISTS client_calendars (
     google_calendar_id TEXT NOT NULL,
     display_name TEXT,
     color_id TEXT,
+    calendar_type TEXT NOT NULL DEFAULT 'client',
     is_active BOOLEAN DEFAULT TRUE,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     disconnected_at TIMESTAMP
@@ -222,6 +223,7 @@ async def init_schema(db: aiosqlite.Connection) -> None:
     # so we swallow the "duplicate column" error instead.
     migrations = [
         "ALTER TABLE webhook_channels ADD COLUMN token TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE client_calendars ADD COLUMN calendar_type TEXT NOT NULL DEFAULT 'client'",
     ]
     for stmt in migrations:
         try:
