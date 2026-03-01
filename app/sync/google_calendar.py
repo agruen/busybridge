@@ -184,6 +184,7 @@ class GoogleCalendarClient:
             calendarId=calendar_id,
             body=event_data,
             sendNotifications=send_notifications,
+            conferenceDataVersion=1,
         ).execute()
 
     def update_event(
@@ -207,6 +208,7 @@ class GoogleCalendarClient:
             eventId=event_id,
             body=event_data,
             sendNotifications=send_notifications,
+            conferenceDataVersion=1,
         ).execute()
 
     def patch_event(
@@ -222,6 +224,7 @@ class GoogleCalendarClient:
             eventId=event_id,
             body=event_patch,
             sendNotifications=send_notifications,
+            conferenceDataVersion=1,
         ).execute()
 
     def delete_event(
@@ -423,6 +426,12 @@ def copy_event_for_main(
     # Copy recurrence rules if present
     if "recurrence" in source_event:
         event["recurrence"] = source_event["recurrence"]
+
+    # Copy conference/video call data (Google Meet, Zoom links, etc.)
+    if "conferenceData" in source_event:
+        event["conferenceData"] = source_event["conferenceData"]
+    if "hangoutLink" in source_event:
+        event["hangoutLink"] = source_event["hangoutLink"]
 
     # Copy attendees for reference (but don't actually invite them)
     if "attendees" in source_event:
