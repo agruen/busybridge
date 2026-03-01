@@ -423,17 +423,17 @@ def copy_event_for_main(
     # events can still be bulk-found/deleted in an emergency.
     footer_parts = []
 
+    prefix = (settings.managed_event_prefix or "").strip()
+    if prefix:
+        footer_parts.append(f"Managed by {prefix}")
+
     if "attendees" in source_event:
         attendee_list = [a.get("email", "") for a in source_event["attendees"]]
         if attendee_list:
             footer_parts.append(f"Original attendees: {', '.join(attendee_list)}")
 
     if source_display:
-        footer_parts.append(f"BusyBridge source: {source_display}")
-
-    prefix = (settings.managed_event_prefix or "").strip()
-    if prefix:
-        footer_parts.append(f"Managed by {prefix}")
+        footer_parts.append(f"Source: {source_display}")
 
     if footer_parts:
         footer = "\n".join(footer_parts)
