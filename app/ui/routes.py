@@ -9,7 +9,7 @@ from fastapi.templating import Jinja2Templates
 
 from app.auth.session import get_current_user, get_current_user_optional, User
 from app.config import get_settings, get_test_mode_home_allowlist
-from app.database import get_database, is_oobe_completed
+from app.database import get_database, get_setting, is_oobe_completed
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["ui"])
@@ -71,6 +71,9 @@ async def dashboard(request: Request, error: Optional[str] = None):
     event_count = (await cursor.fetchone())[0]
     managed_event_prefix = (get_settings().managed_event_prefix or "").strip()
 
+    paused_setting = await get_setting("sync_paused")
+    sync_paused = bool(paused_setting and paused_setting.get("value_plain") == "true")
+
     return templates.TemplateResponse("dashboard.html", {
         "request": request,
         "user": user,
@@ -78,6 +81,7 @@ async def dashboard(request: Request, error: Optional[str] = None):
         "status": status_row,
         "event_count": event_count,
         "managed_event_prefix": managed_event_prefix,
+        "sync_paused": sync_paused,
         "error": error,
     })
 
@@ -145,6 +149,25 @@ async def settings_page(request: Request):
         "request": request,
         "user": user,
         "calendars": calendars,
+    })
+
+
+@router.get("/app/settings/sync", response_class=HTMLResponse)
+async def sync_control_page(request: Request):
+    """Sync control page — cleanup, pause, and re-sync operations."""
+    user = await get_current_user_optional(request)
+    if not user:
+        return RedirectResponse(url="/app/login", status_code=status.HTTP_302_FOUND)
+
+    paused_setting = await get_setting("sync_paused")
+    sync_paused = bool(paused_setting and paused_setting.get("value_plain") == "true")
+    managed_event_prefix = (get_settings().managed_event_prefix or "").strip()
+
+    return templates.TemplateResponse("sync_control.html", {
+        "request": request,
+        "user": user,
+        "sync_paused": sync_paused,
+        "managed_event_prefix": managed_event_prefix,
     })
 
 

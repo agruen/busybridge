@@ -1,0 +1,164 @@
+{% extends "base.html" %}
+
+{% block title %}Sync Control - Calendar Sync{% endblock %}
+
+{% block content %}
+<div class="px-4 sm:px-0">
+    <div class="mb-6">
+        <a href="/app/settings" class="text-sm text-indigo-600 hover:text-indigo-500">
+            <i class="fas fa-arrow-left mr-1"></i>Back to Settings
+        </a>
+        <h1 class="text-2xl font-bold text-gray-900 mt-2">Sync Control</h1>
+        <p class="mt-1 text-sm text-gray-500">Manage sync operations, cleanup, and pause controls.</p>
+    </div>
+
+    <div class="space-y-6">
+        <!-- Sync Status Banner -->
+        {% if sync_paused %}
+        <div class="bg-red-50 border-2 border-red-200 rounded-lg p-6">
+            <div class="flex items-center justify-between">
+                <div>
+                    <h2 class="text-lg font-medium text-red-800">
+                        <i class="fas fa-pause-circle mr-2"></i>Syncing is Paused
+                    </h2>
+                    <p class="mt-1 text-sm text-red-700">
+                        No sync operations are running. New changes on your calendars will not be synced until you resume.
+                    </p>
+                </div>
+                <button
+                    hx-post="/api/sync/resume"
+                    hx-swap="none"
+                    class="inline-flex items-center px-5 py-2.5 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-green-600 hover:bg-green-700"
+                    onclick="setTimeout(function(){ window.location.reload(); }, 500)"
+                >
+                    <i class="fas fa-play mr-2"></i>
+                    Resume Syncing
+                </button>
+            </div>
+        </div>
+        {% else %}
+        <div class="bg-green-50 border border-green-200 rounded-lg p-6">
+            <div class="flex items-center">
+                <i class="fas fa-check-circle text-green-600 text-xl mr-3"></i>
+                <div>
+                    <h2 class="text-lg font-medium text-green-800">Syncing is Active</h2>
+                    <p class="mt-1 text-sm text-green-700">
+                        Calendars are syncing normally. Changes are picked up via webhooks and every 5 minutes.
+                    </p>
+                </div>
+            </div>
+        </div>
+        {% endif %}
+
+        <!-- Full Re-sync -->
+        <div class="bg-white shadow rounded-lg">
+            <div class="px-6 py-4 border-b border-gray-200">
+                <h2 class="text-lg font-medium text-gray-900">Full Re-sync</h2>
+            </div>
+            <div class="px-6 py-4">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <p class="text-sm text-gray-500">
+                            Re-sync all calendars from scratch. Clears sync tokens and re-processes every event.
+                            Use this if you notice missing or outdated events.
+                        </p>
+                    </div>
+                    <button
+                        hx-post="/api/sync/full"
+                        hx-swap="none"
+                        hx-confirm="This will re-sync all your calendars from scratch. Continue?"
+                        class="ml-4 flex-shrink-0 inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50"
+                    >
+                        <i class="fas fa-sync-alt mr-2"></i>
+                        Full Re-sync
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Cleanup & Re-sync -->
+        <div class="bg-white shadow rounded-lg border border-amber-200">
+            <div class="px-6 py-4 border-b border-amber-200 bg-amber-50">
+                <h2 class="text-lg font-medium text-amber-800">Cleanup & Re-sync</h2>
+            </div>
+            <div class="px-6 py-4">
+                <p class="text-sm text-gray-600 mb-1">
+                    Deletes all BusyBridge-managed events (copies on main, busy blocks on clients), then lets
+                    sync continue running. Events will be recreated from scratch on the next sync cycle.
+                </p>
+                <p class="text-sm text-gray-500 mb-4">
+                    Use this to fix events that got into a bad state.
+                    {% if managed_event_prefix %}
+                    Prefix: <code class="text-xs bg-gray-100 px-1 rounded">{{ managed_event_prefix }}</code>
+                    {% endif %}
+                </p>
+                <button
+                    hx-post="/api/sync/cleanup-managed"
+                    hx-swap="none"
+                    hx-confirm="This will delete ALL BusyBridge-managed events, then re-sync them. Continue?"
+                    class="inline-flex items-center px-4 py-2 border border-amber-300 text-sm font-medium rounded-md text-amber-900 bg-white hover:bg-amber-50"
+                >
+                    <i class="fas fa-broom mr-2"></i>
+                    Cleanup & Re-sync
+                </button>
+            </div>
+        </div>
+
+        <!-- Cleanup & Pause -->
+        <div class="bg-white shadow rounded-lg border-2 border-red-200">
+            <div class="px-6 py-4 border-b border-red-200 bg-red-50">
+                <h2 class="text-lg font-medium text-red-800">Cleanup & Pause</h2>
+            </div>
+            <div class="px-6 py-4">
+                <p class="text-sm text-gray-600 mb-1">
+                    Pauses all sync operations, then deletes all BusyBridge-managed events.
+                    Nothing will be recreated until you resume syncing.
+                </p>
+                <p class="text-sm text-gray-500 mb-4">
+                    Use this when you want to completely stop BusyBridge from managing your calendars
+                    without disconnecting accounts.
+                </p>
+                <button
+                    hx-post="/api/sync/cleanup-and-pause"
+                    hx-swap="none"
+                    hx-confirm="This will PAUSE syncing and DELETE all managed events. Nothing will sync until you resume. Are you sure?"
+                    class="inline-flex items-center px-4 py-2 border border-red-300 text-sm font-medium rounded-md text-red-700 bg-white hover:bg-red-50"
+                    onclick="setTimeout(function(){ window.location.reload(); }, 1000)"
+                >
+                    <i class="fas fa-stop-circle mr-2"></i>
+                    Cleanup & Pause
+                </button>
+            </div>
+        </div>
+
+        <!-- Pause Only (no cleanup) -->
+        {% if not sync_paused %}
+        <div class="bg-white shadow rounded-lg">
+            <div class="px-6 py-4 border-b border-gray-200">
+                <h2 class="text-lg font-medium text-gray-900">Pause Syncing</h2>
+            </div>
+            <div class="px-6 py-4">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <p class="text-sm text-gray-500">
+                            Temporarily stop all sync operations. Existing events stay in place.
+                            Resume at any time.
+                        </p>
+                    </div>
+                    <button
+                        hx-post="/api/sync/pause"
+                        hx-swap="none"
+                        hx-confirm="Pause all sync operations?"
+                        class="ml-4 flex-shrink-0 inline-flex items-center px-4 py-2 border border-yellow-300 text-sm font-medium rounded-md text-yellow-700 bg-white hover:bg-yellow-50"
+                        onclick="setTimeout(function(){ window.location.reload(); }, 500)"
+                    >
+                        <i class="fas fa-pause mr-2"></i>
+                        Pause
+                    </button>
+                </div>
+            </div>
+        </div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

@@ -31,6 +31,20 @@
     </div>
     {% endif %}
 
+    {% if sync_paused %}
+    <div class="mb-4 rounded-md bg-red-50 border border-red-200 p-4">
+        <div class="flex items-center justify-between">
+            <div class="flex items-center">
+                <i class="fas fa-pause-circle text-red-500 mr-3"></i>
+                <p class="text-sm font-medium text-red-800">Syncing is paused. Calendar changes are not being synced.</p>
+            </div>
+            <a href="/app/settings/sync" class="text-sm font-medium text-red-700 hover:text-red-600 whitespace-nowrap ml-4">
+                Manage <i class="fas fa-arrow-right ml-1"></i>
+            </a>
+        </div>
+    </div>
+    {% endif %}
+
     <!-- Status Overview -->
     <div class="mb-8">
         <h1 class="text-2xl font-bold text-gray-900 mb-4">Dashboard</h1>
@@ -88,31 +102,6 @@
             </a>
         </div>
         {% endif %}
-    </div>
-
-    <!-- Manual Cleanup -->
-    <div class="mb-8 bg-amber-50 border border-amber-200 shadow rounded-lg p-6">
-        <h2 class="text-lg font-medium text-gray-900 mb-2">Manual Cleanup</h2>
-        <p class="text-sm text-amber-900">
-            Deletes BusyBridge-managed events from your main and client calendars using both database mappings and a
-            prefix sweep.
-            {% if managed_event_prefix %}
-            Current prefix: <code class="text-xs">{{ managed_event_prefix }}</code>.
-            {% else %}
-            Prefix sweep is disabled because no <code class="text-xs">MANAGED_EVENT_PREFIX</code> is configured.
-            {% endif %}
-        </p>
-        <div class="mt-4">
-            <button
-                hx-post="/api/sync/cleanup-managed"
-                hx-confirm="Delete all BusyBridge-managed events now? This cannot be undone."
-                hx-swap="none"
-                class="inline-flex items-center px-4 py-2 border border-amber-300 text-sm font-medium rounded-md text-amber-900 bg-white hover:bg-amber-100"
-            >
-                <i class="fas fa-broom mr-2"></i>
-                Run Managed Cleanup
-            </button>
-        </div>
     </div>
 
     <!-- Connected Client Calendars -->

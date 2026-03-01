@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
 from app.auth.session import get_current_user, User
-from app.database import get_database, get_setting
+from app.database import get_database, get_setting, set_setting
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/sync", tags=["sync"])
@@ -230,6 +230,38 @@ async def trigger_full_resync(user: User = Depends(get_current_user)):
     return {"status": "ok", "message": "Full re-sync triggered"}
 
 
+@router.post("/pause")
+async def pause_sync(user: User = Depends(get_current_user)):
+    """Pause all sync operations."""
+    await set_setting("sync_paused", "true")
+
+    db = await get_database()
+    await db.execute(
+        """INSERT INTO sync_log (user_id, action, status, details)
+           VALUES (?, 'sync_pause', 'success', 'User paused sync')""",
+        (user.id,),
+    )
+    await db.commit()
+
+    return {"status": "ok", "sync_paused": True}
+
+
+@router.post("/resume")
+async def resume_sync(user: User = Depends(get_current_user)):
+    """Resume sync operations."""
+    await set_setting("sync_paused", "false")
+
+    db = await get_database()
+    await db.execute(
+        """INSERT INTO sync_log (user_id, action, status, details)
+           VALUES (?, 'sync_resume', 'success', 'User resumed sync')""",
+        (user.id,),
+    )
+    await db.commit()
+
+    return {"status": "ok", "sync_paused": False}
+
+
 @router.post("/cleanup-managed", response_model=ManagedCleanupResponse)
 async def cleanup_managed_events(user: User = Depends(get_current_user)):
     """Manually clean up BusyBridge-managed events for the current user."""
@@ -248,6 +280,48 @@ async def cleanup_managed_events(user: User = Depends(get_current_user)):
     await db.execute(
         """INSERT INTO sync_log (user_id, action, status, details)
            VALUES (?, 'managed_cleanup', ?, ?)""",
+        (
+            user.id,
+            status_value,
+            json.dumps(summary),
+        ),
+    )
+    await db.commit()
+
+    return ManagedCleanupResponse(
+        status=status_value,
+        message=message,
+        managed_event_prefix=summary.get("managed_event_prefix", ""),
+        db_main_events_deleted=summary.get("db_main_events_deleted", 0),
+        db_busy_blocks_deleted=summary.get("db_busy_blocks_deleted", 0),
+        prefix_calendars_scanned=summary.get("prefix_calendars_scanned", 0),
+        prefix_events_deleted=summary.get("prefix_events_deleted", 0),
+        local_mappings_deleted=summary.get("local_mappings_deleted", 0),
+        local_busy_blocks_deleted=summary.get("local_busy_blocks_deleted", 0),
+        errors=summary.get("errors", []),
+    )
+
+
+@router.post("/cleanup-and-pause", response_model=ManagedCleanupResponse)
+async def cleanup_and_pause(user: User = Depends(get_current_user)):
+    """Pause sync, then clean up all BusyBridge-managed events."""
+    # Pause first so no sync cycle can recreate events during cleanup
+    await set_setting("sync_paused", "true")
+
+    db = await get_database()
+    from app.sync.engine import cleanup_managed_events_for_user
+
+    summary = await cleanup_managed_events_for_user(user.id)
+    status_value = summary.get("status") or "ok"
+    message = (
+        "Sync paused and managed events cleaned up"
+        if status_value == "ok"
+        else "Sync paused, cleanup completed with warnings"
+    )
+
+    await db.execute(
+        """INSERT INTO sync_log (user_id, action, status, details)
+           VALUES (?, 'cleanup_and_pause', ?, ?)""",
         (
             user.id,
             status_value,
