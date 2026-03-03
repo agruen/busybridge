@@ -1,6 +1,7 @@
 """Main FastAPI application entry point."""
 
 import logging
+import logging.handlers
 import os
 import sys
 from contextlib import asynccontextmanager
@@ -18,10 +19,23 @@ from app.config import get_settings
 from app.database import close_database, get_database
 
 # Configure logging
+_log_format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+_log_handlers: list[logging.Handler] = [logging.StreamHandler(sys.stdout)]
+
+_log_dir = get_settings().log_dir
+os.makedirs(_log_dir, exist_ok=True)
+_file_handler = logging.handlers.TimedRotatingFileHandler(
+    os.path.join(_log_dir, "busybridge.log"),
+    when="midnight",
+    backupCount=14,
+)
+_file_handler.setFormatter(logging.Formatter(_log_format))
+_log_handlers.append(_file_handler)
+
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    handlers=[logging.StreamHandler(sys.stdout)],
+    format=_log_format,
+    handlers=_log_handlers,
 )
 logger = logging.getLogger(__name__)
 

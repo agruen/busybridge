@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     # Server
     public_url: str = "http://localhost:3000"
     log_level: str = "info"
+    log_dir: str = "/data/logs"
 
     # Session
     session_secret_key: Optional[str] = None  # Derived from encryption key if not set
@@ -53,6 +54,9 @@ class Settings(BaseSettings):
     recurring_soft_delete_days: int = 30
     audit_log_retention_days: int = 90
     disconnected_calendar_retention_days: int = 30
+
+    # Service account
+    service_account_key_file: Optional[str] = None
 
     # Google Calendar
     calendar_sync_tag: str = "calendarSyncEngine"
