@@ -714,3 +714,75 @@ async def export_database(admin: User = Depends(require_admin)):
         filename=f"calendar-sync-backup-{datetime.now().strftime('%Y%m%d-%H%M%S')}.db",
         media_type="application/octet-stream",
     )
+
+
+@router.get("/service-account")
+async def get_service_account_status(admin: User = Depends(require_admin)):
+    """Get service account configuration status."""
+    from app.auth.service_account import is_sa_configured, get_sa_email
+
+    configured = is_sa_configured()
+    email = get_sa_email() if configured else None
+
+    return {
+        "configured": configured,
+        "email": email,
+    }
+
+
+@router.post("/service-account/test/{user_id}")
+async def test_service_account_access(
+    user_id: int,
+    admin: User = Depends(require_admin),
+):
+    """Test SA access to a user's main calendar and set sa_tier on success."""
+    db = await get_database()
+
+    cursor = await db.execute(
+        "SELECT id, email, main_calendar_id FROM users WHERE id = ?", (user_id,)
+    )
+    user = await cursor.fetchone()
+
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found",
+        )
+
+    if not user["main_calendar_id"]:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="User has no main calendar configured",
+        )
+
+    from app.auth.service_account import is_sa_configured, get_sa_main_client, get_sa_email
+
+    if not is_sa_configured():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Service account key file not configured",
+        )
+
+    sa_client = get_sa_main_client(user["main_calendar_id"])
+    if sa_client is None:
+        # SA cannot access the calendar
+        await db.execute("UPDATE users SET sa_tier = 0 WHERE id = ?", (user_id,))
+        await db.commit()
+        sa_email = get_sa_email()
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                f"Service account cannot access calendar {user['main_calendar_id']}. "
+                f"Share the calendar with {sa_email} (Make changes to events)."
+            ),
+        )
+
+    # Success — set tier 2
+    await db.execute("UPDATE users SET sa_tier = 2 WHERE id = ?", (user_id,))
+    await db.commit()
+
+    return {
+        "status": "ok",
+        "sa_tier": 2,
+        "message": f"Service account can access {user['main_calendar_id']}",
+    }

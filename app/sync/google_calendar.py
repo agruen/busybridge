@@ -16,16 +16,22 @@ logger = logging.getLogger(__name__)
 class GoogleCalendarClient:
     """Wrapper around Google Calendar API."""
 
-    def __init__(self, access_token: str, settings=None, timeout: int = 30):
+    def __init__(self, access_token=None, *, credentials=None, settings=None, timeout: int = 30):
         """
-        Initialize with access token.
+        Initialize with access token or pre-built credentials.
 
         Args:
-            access_token: Google OAuth access token
+            access_token: Google OAuth access token (positional, for backward compat)
+            credentials: Pre-built credentials object (e.g. service account)
             settings: Settings object (optional, will use get_settings() if not provided)
             timeout: Request timeout in seconds (default: 30)
         """
-        self.credentials = Credentials(token=access_token)
+        if credentials is not None:
+            self.credentials = credentials
+        elif access_token is not None:
+            self.credentials = Credentials(token=access_token)
+        else:
+            raise ValueError("Either access_token or credentials must be provided")
         self.service = build("calendar", "v3", credentials=self.credentials)
         self.settings = settings or get_settings()
 
@@ -389,6 +395,7 @@ def copy_event_for_main(
     main_email: Optional[str] = None,
     current_rsvp_status: Optional[str] = None,
     user_can_edit: bool = True,
+    use_service_account: bool = False,
 ) -> dict:
     """
     Create a copy of an event suitable for the main calendar.
@@ -414,6 +421,16 @@ def copy_event_for_main(
         "transparency": source_event.get("transparency", "opaque"),
     }
 
+    # Service account mode: SA is organizer, so control editability via guestsCanModify
+    if use_service_account:
+        event["guestsCanModify"] = user_can_edit
+        # Ensure the user is an attendee so they see the event on their calendar
+        if main_email:
+            event["attendees"] = [{
+                "email": main_email,
+                "responseStatus": current_rsvp_status or "accepted",
+            }]
+
     # Apply color to distinguish events from different client calendars
     if color_id:
         event["colorId"] = color_id
@@ -431,7 +448,8 @@ def copy_event_for_main(
     # Inject main_email as sole attendee so Google shows native RSVP buttons.
     # Use current_rsvp_status (from DB) on updates to avoid resetting an
     # existing response back to needsAction.
-    if source_event.get("attendees") and main_email:
+    # Skip if SA mode already set attendees above.
+    if not use_service_account and source_event.get("attendees") and main_email:
         event["attendees"] = [{
             "email": main_email,
             "responseStatus": current_rsvp_status or "needsAction",

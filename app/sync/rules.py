@@ -30,6 +30,7 @@ async def sync_client_event_to_main(
     source_label: Optional[str] = None,
     color_id: Optional[str] = None,
     main_email: Optional[str] = None,
+    sa_main_client: Optional[GoogleCalendarClient] = None,
 ) -> Optional[str]:
     """
     Sync a client calendar event to the main calendar.
@@ -61,10 +62,20 @@ async def sync_client_event_to_main(
     # Determine if user can edit
     user_can_edit = can_user_edit_event(event, client_email)
 
-    # Prepare the event copy for main calendar.
-    # On updates, pass current_rsvp_status from DB to avoid resetting the
-    # user's RSVP response back to needsAction.
-    current_rsvp = existing["rsvp_status"] if existing else None
+    # Use SA client for main calendar writes when available
+    use_sa = sa_main_client is not None
+    write_client = sa_main_client if use_sa else main_client
+
+    # Determine the current RSVP status.  Prefer the live value from the
+    # client event's attendees (covers "accepted from email" etc.) and fall
+    # back to the DB value so we don't accidentally reset it.
+    client_rsvp = None
+    if event.get("attendees") and client_email:
+        for att in event["attendees"]:
+            if att.get("email", "").lower() == client_email.lower() or att.get("self"):
+                client_rsvp = att.get("responseStatus")
+                break
+    current_rsvp = client_rsvp or (existing["rsvp_status"] if existing else None)
     main_event_data = copy_event_for_main(
         event,
         source_label=source_label,
@@ -72,6 +83,7 @@ async def sync_client_event_to_main(
         main_email=main_email,
         current_rsvp_status=current_rsvp,
         user_can_edit=user_can_edit,
+        use_service_account=use_sa,
     )
 
     # Parse event times
@@ -94,13 +106,13 @@ async def sync_client_event_to_main(
 
         if main_event_id:
             try:
-                main_client.update_event(main_calendar_id, main_event_id, main_event_data)
+                write_client.update_event(main_calendar_id, main_event_id, main_event_data)
                 logger.info(f"Updated main event {main_event_id} from client event {event_id}")
             except HttpError as e:
                 if e.resp.status in (404, 410):
                     # Old event is gone -- safe to create a replacement
                     logger.warning(f"Main event {main_event_id} gone ({e.resp.status}), creating replacement")
-                    result = main_client.create_event(main_calendar_id, main_event_data)
+                    result = write_client.create_event(main_calendar_id, main_event_data)
                     main_event_id = result["id"]
                 else:
                     # Transient/server error -- re-raise so we don't create a duplicate
@@ -111,9 +123,9 @@ async def sync_client_event_to_main(
                 logger.error(f"Failed to update main event: {e}")
                 raise
 
-        # If the event transitioned to an invite (has attendees + main_email)
-        # and we weren't tracking RSVP yet, start tracking it.
-        new_rsvp = existing["rsvp_status"]
+        # Keep stored RSVP in sync: use client-side RSVP when available,
+        # otherwise preserve the DB value (or start tracking if newly an invite).
+        new_rsvp = client_rsvp or existing["rsvp_status"]
         if new_rsvp is None and event.get("attendees") and main_email:
             new_rsvp = "needsAction"
 
@@ -190,7 +202,7 @@ async def sync_client_event_to_main(
 
         # Create new standalone event on main calendar for this instance.
         try:
-            result = main_client.create_event(main_calendar_id, main_event_data)
+            result = write_client.create_event(main_calendar_id, main_event_data)
             main_event_id = result["id"]
             logger.info(f"Created main event {main_event_id} from client event {event_id}")
         except Exception as e:
@@ -198,7 +210,11 @@ async def sync_client_event_to_main(
             return None
 
         # Track RSVP status for events with attendees (invites).
-        initial_rsvp = "needsAction" if (event.get("attendees") and main_email) else None
+        # Use the live client RSVP (e.g. already "accepted") so we don't
+        # lose an RSVP that happened before the first sync.
+        initial_rsvp = current_rsvp if (event.get("attendees") and main_email) else None
+        if initial_rsvp is None and event.get("attendees") and main_email:
+            initial_rsvp = "needsAction"
 
         # Create mapping
         await db.execute(
@@ -472,6 +488,7 @@ async def handle_deleted_client_event(
     main_client: GoogleCalendarClient,
     recurring_event_id: Optional[str] = None,
     original_start_time: Optional[dict] = None,
+    sa_main_client: Optional[GoogleCalendarClient] = None,
 ) -> None:
     """Handle deletion of an event from a client calendar.
 
@@ -481,6 +498,9 @@ async def handle_deleted_client_event(
     leaving the rest of the series intact.
     """
     db = await get_database()
+
+    # Use SA client for main calendar writes when available
+    write_client = sa_main_client if sa_main_client is not None else main_client
 
     # ------------------------------------------------------------------ #
     # Single-instance cancellation of a recurring series                   #
@@ -503,7 +523,7 @@ async def handle_deleted_client_event(
                     mapping=parent_mapping,
                     original_start_time=original_start_time,
                     main_calendar_id=main_calendar_id,
-                    main_client=main_client,
+                    main_client=write_client,
                 )
                 handled = True
         else:
@@ -524,7 +544,7 @@ async def handle_deleted_client_event(
         if instance_mapping:
             if instance_mapping["main_event_id"]:
                 try:
-                    main_client.delete_event(main_calendar_id, instance_mapping["main_event_id"])
+                    write_client.delete_event(main_calendar_id, instance_mapping["main_event_id"])
                     logger.info(
                         f"Deleted forked instance main event {instance_mapping['main_event_id']}"
                     )
@@ -586,7 +606,7 @@ async def handle_deleted_client_event(
     # Delete the main calendar copy
     if mapping["main_event_id"]:
         try:
-            main_client.delete_event(main_calendar_id, mapping["main_event_id"])
+            write_client.delete_event(main_calendar_id, mapping["main_event_id"])
             logger.info(f"Deleted main event {mapping['main_event_id']}")
         except Exception as e:
             logger.error(f"Failed to delete main event: {e}")

@@ -118,6 +118,19 @@ async def _sync_client_calendar(client_calendar_id: int) -> None:
         client = GoogleCalendarClient(client_token)
         main_client = GoogleCalendarClient(main_token)
 
+        # Check if SA mode is active for this user
+        sa_main_client = None
+        cursor = await db.execute("SELECT sa_tier FROM users WHERE id = ?", (user_id,))
+        sa_row = await cursor.fetchone()
+        if sa_row and sa_row["sa_tier"] == 2:
+            from app.auth.service_account import get_sa_main_client
+            sa_main_client = get_sa_main_client(main_calendar_id)
+            if sa_main_client is None:
+                # SA access lost — reset tier and fall back
+                logger.warning(f"SA access lost for user {user_id}, resetting sa_tier to 0")
+                await db.execute("UPDATE users SET sa_tier = 0 WHERE id = ?", (user_id,))
+                await db.commit()
+
         # Fetch events from client calendar
         sync_token = calendar["sync_token"]
         result = client.list_events(calendar["google_calendar_id"], sync_token=sync_token)
@@ -148,6 +161,7 @@ async def _sync_client_calendar(client_calendar_id: int) -> None:
                         main_client=main_client,
                         recurring_event_id=event.get("recurringEventId"),
                         original_start_time=event.get("originalStartTime"),
+                        sa_main_client=sa_main_client,
                     )
                     deleted_count += 1
                 else:
@@ -163,6 +177,7 @@ async def _sync_client_calendar(client_calendar_id: int) -> None:
                         source_label=source_label,
                         color_id=color_id,
                         main_email=user_email,
+                        sa_main_client=sa_main_client,
                     )
 
                     if main_event_id:
@@ -378,6 +393,18 @@ async def _sync_main_calendar(user_id: int) -> None:
         main_token = await get_valid_access_token(user_id, user_email)
         main_client = GoogleCalendarClient(main_token)
 
+        # Check if SA mode is active for this user
+        sa_main_client = None
+        cursor = await db.execute("SELECT sa_tier FROM users WHERE id = ?", (user_id,))
+        sa_row = await cursor.fetchone()
+        if sa_row and sa_row["sa_tier"] == 2:
+            from app.auth.service_account import get_sa_main_client
+            sa_main_client = get_sa_main_client(main_calendar_id)
+            if sa_main_client is None:
+                logger.warning(f"SA access lost for user {user_id}, resetting sa_tier to 0")
+                await db.execute("UPDATE users SET sa_tier = 0 WHERE id = ?", (user_id,))
+                await db.commit()
+
         # Fetch events
         sync_token = sync_state["sync_token"] if sync_state else None
         is_full_sync = sync_token is None
@@ -413,9 +440,11 @@ async def _sync_main_calendar(user_id: int) -> None:
                     client_origin_mapping = await cursor.fetchone()
 
                     # Guard: revert time/location changes on non-editable events.
+                    # Use SA client for the revert patch when available.
                     if client_origin_mapping and not client_origin_mapping["user_can_edit"]:
+                        revert_client = sa_main_client if sa_main_client is not None else main_client
                         reverted = await _revert_if_moved(
-                            main_client, main_calendar_id, event, client_origin_mapping
+                            revert_client, main_calendar_id, event, dict(client_origin_mapping)
                         )
                         if reverted:
                             # We patched the main event back; skip further
@@ -604,12 +633,21 @@ async def cleanup_disconnected_calendar(client_calendar_id: int, user_id: int) -
                 main_token = await get_valid_access_token(user_id, calendar["user_email"])
                 main_client = GoogleCalendarClient(main_token)
 
+                # Use SA client for main calendar deletions when available
+                sa_main_client = None
+                cursor = await db.execute("SELECT sa_tier FROM users WHERE id = ?", (user_id,))
+                sa_row = await cursor.fetchone()
+                if sa_row and sa_row["sa_tier"] == 2:
+                    from app.auth.service_account import get_sa_main_client
+                    sa_main_client = get_sa_main_client(calendar["main_calendar_id"])
+                delete_client = sa_main_client if sa_main_client is not None else main_client
+
                 for mapping in mappings:
                     mapping_cleanup_ok = True
 
                     if mapping["main_event_id"]:
                         try:
-                            main_client.delete_event(calendar["main_calendar_id"], mapping["main_event_id"])
+                            delete_client.delete_event(calendar["main_calendar_id"], mapping["main_event_id"])
                         except Exception as e:
                             logger.warning(f"Failed to delete main event: {e}")
                             mapping_cleanup_ok = False
@@ -789,10 +827,18 @@ async def cleanup_managed_events_for_user(user_id: int) -> dict:
 
     if client_origin_mappings and user["main_calendar_id"]:
         main_client = await _get_client_for_email(user["email"])
-        if main_client:
+        # Use SA client for main calendar deletions when available
+        sa_delete_client = None
+        cursor = await db.execute("SELECT sa_tier FROM users WHERE id = ?", (user_id,))
+        sa_row = await cursor.fetchone()
+        if sa_row and sa_row["sa_tier"] == 2:
+            from app.auth.service_account import get_sa_main_client
+            sa_delete_client = get_sa_main_client(user["main_calendar_id"])
+        delete_client = sa_delete_client or main_client
+        if delete_client:
             for mapping in client_origin_mappings:
                 try:
-                    main_client.delete_event(user["main_calendar_id"], mapping["main_event_id"])
+                    delete_client.delete_event(user["main_calendar_id"], mapping["main_event_id"])
                     summary["db_main_events_deleted"] += 1
                     cleaned_mapping_ids.add(mapping["id"])
                 except Exception as e:

@@ -90,6 +90,19 @@ async def check_user_consistency(user_id: int, summary: dict, dry_run: bool = Fa
         logger.warning(f"Cannot get main calendar access for user {user_id}: {e}")
         return
 
+    # Use SA client for main calendar writes when available
+    sa_main_client = None
+    cursor = await db.execute("SELECT sa_tier FROM users WHERE id = ?", (user_id,))
+    sa_row = await cursor.fetchone()
+    if sa_row and sa_row["sa_tier"] == 2:
+        from app.auth.service_account import get_sa_main_client
+        sa_main_client = get_sa_main_client(user["main_calendar_id"])
+        if sa_main_client is None:
+            logger.warning(f"SA access lost for user {user_id} during consistency check")
+            await db.execute("UPDATE users SET sa_tier = 0 WHERE id = ?", (user_id,))
+            await db.commit()
+    write_client = sa_main_client if sa_main_client is not None else main_client
+
     # Check event mappings with client origins
     cursor = await db.execute(
         """SELECT em.*, cc.google_calendar_id, cc.display_name, ot.google_account_email
@@ -125,7 +138,7 @@ async def check_user_consistency(user_id: int, summary: dict, dry_run: bool = Fa
                         summary["orphaned_main_events_deleted"] += 1
                     else:
                         try:
-                            main_client.delete_event(user["main_calendar_id"], mapping["main_event_id"])
+                            write_client.delete_event(user["main_calendar_id"], mapping["main_event_id"])
                             summary["orphaned_main_events_deleted"] += 1
                             logger.info(f"Deleted orphaned main event {mapping['main_event_id']}")
                         except Exception:
@@ -195,15 +208,17 @@ async def check_user_consistency(user_id: int, summary: dict, dry_run: bool = Fa
                         })
                         summary["missing_copies_recreated"] += 1
                     else:
+                        use_sa = sa_main_client is not None
                         new_event_data = copy_event_for_main(
                             origin_event,
                             source_label=source_label,
                             main_email=user["email"],
                             current_rsvp_status=mapping["rsvp_status"],
                             user_can_edit=mapping["user_can_edit"],
+                            use_service_account=use_sa,
                         )
                         try:
-                            result = main_client.create_event(user["main_calendar_id"], new_event_data)
+                            result = write_client.create_event(user["main_calendar_id"], new_event_data)
                             await db.execute(
                                 "UPDATE event_mappings SET main_event_id = ?, updated_at = ? WHERE id = ?",
                                 (result["id"], datetime.utcnow().isoformat(), mapping["id"])
@@ -417,7 +432,15 @@ async def reconcile_calendar(client_calendar_id: int, dry_run: bool = False) -> 
                 try:
                     main_token = await get_valid_access_token(user_id, calendar["user_email"])
                     main_client = GoogleCalendarClient(main_token)
-                    main_client.delete_event(calendar["main_calendar_id"], mapping["main_event_id"])
+                    # Use SA client when available
+                    sa_del_client = None
+                    cursor = await db.execute("SELECT sa_tier FROM users WHERE id = ?", (user_id,))
+                    sa_row = await cursor.fetchone()
+                    if sa_row and sa_row["sa_tier"] == 2:
+                        from app.auth.service_account import get_sa_main_client
+                        sa_del_client = get_sa_main_client(calendar["main_calendar_id"])
+                    del_client = sa_del_client if sa_del_client is not None else main_client
+                    del_client.delete_event(calendar["main_calendar_id"], mapping["main_event_id"])
                 except Exception as e:
                     logger.warning(f"Failed to delete stale main event {mapping['main_event_id']}: {e}")
                     cleanup_ok = False

@@ -224,6 +224,7 @@ async def init_schema(db: aiosqlite.Connection) -> None:
     migrations = [
         "ALTER TABLE webhook_channels ADD COLUMN token TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE event_mappings ADD COLUMN rsvp_status TEXT",
+        "ALTER TABLE users ADD COLUMN sa_tier INTEGER DEFAULT 0",
     ]
     for stmt in migrations:
         try:

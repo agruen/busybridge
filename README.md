@@ -11,6 +11,7 @@ A self-hosted, multi-user calendar synchronization service for consulting organi
 - **Webhook Integration**: Real-time sync via Google Calendar push notifications
 - **Email Alerts**: Notifications for sync failures, token revocations, and other issues
 - **Manual Managed Cleanup**: One-click removal of BusyBridge-created events using DB mappings plus prefix sweep
+- **Service Account Mode**: Optional Google service account creates main calendar events, making non-editable events physically immovable in Google Calendar
 - **Admin Dashboard**: Manage users, view system health, and configure settings
 
 ## Quick Start
@@ -152,7 +153,7 @@ Client Calendar Event → Main Calendar (with full details)
 
 ### Key Components
 
-- `/app/auth/`: OAuth and session management
+- `/app/auth/`: OAuth, session management, and service account credentials
 - `/app/api/`: REST API endpoints
 - `/app/sync/`: Core sync engine and rules
 - `/app/jobs/`: Background job definitions
@@ -175,6 +176,46 @@ Client Calendar Event → Main Calendar (with full details)
 | `TEST_MODE_ALLOWED_HOME_EMAILS` | Comma-separated allowlist for home-login accounts in test mode | `` |
 | `TEST_MODE_ALLOWED_CLIENT_EMAILS` | Comma-separated allowlist for client-account connections in test mode | `` |
 | `MANAGED_EVENT_PREFIX` | Visible summary prefix added to BusyBridge-created events | `[BusyBridge]` |
+| `SERVICE_ACCOUNT_KEY_FILE` | Path to Google service account JSON key file (optional) | _(none)_ |
+
+### Service Account Mode (Immovable Events)
+
+When a third party invites a user to a meeting, that event syncs to the main calendar. Without a service account, the user could accidentally move the event on their main calendar even though they can't on the client calendar. BusyBridge has a revert mechanism (lock emoji + time restore), but the best fix is having a **service account (SA) create events on the main calendar** so the SA is the organizer and the user physically cannot drag-and-drop them in Google Calendar.
+
+#### How It Works
+
+- **SA mode (tier 2)**: The SA creates all main calendar events. Editable events get `guestsCanModify: true` so the user can still move those. Non-editable events are natively immovable because the SA owns them.
+- **Fallback (tier 0)**: Current behavior — user token creates events, with lock emoji + revert for non-editable events. Used when no SA is configured, or SA access fails.
+
+Existing events are not migrated. New and updated events transition naturally. If SA access is lost (key removed, sharing revoked), BusyBridge catches the error, resets the user to fallback mode, and logs a warning.
+
+#### Setup
+
+1. **Create a service account** in your Google Cloud project:
+   - Go to IAM & Admin → Service Accounts → Create Service Account
+   - Name it something like `busybridge-sync`
+   - No roles needed (it uses calendar sharing, not domain-wide delegation)
+   - Create a JSON key and download it
+
+2. **Place the key file** in the `secrets/` directory:
+   ```bash
+   cp ~/Downloads/busybridge-sa-key.json secrets/sa-key.json
+   ```
+
+3. **Configure the environment variable** in `docker-compose.yml` or `.env`:
+   ```
+   SERVICE_ACCOUNT_KEY_FILE=/secrets/sa-key.json
+   ```
+
+4. **Share each user's main calendar** with the service account email (shown in Admin → Service Account):
+   - Open Google Calendar → Settings → the main calendar → Share with specific people
+   - Add the SA email with "Make changes to events" permission
+
+5. **Activate SA mode** via the admin API:
+   ```bash
+   curl -X POST https://your-domain/api/admin/service-account/test/{user_id}
+   ```
+   This validates SA access and sets the user to tier 2. If the calendar isn't shared, it returns an error with the SA email to share with.
 
 ### Gmail Test Mode
 

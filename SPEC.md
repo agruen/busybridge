@@ -228,6 +228,27 @@ Before syncing an edit from main back to a client calendar:
 
 - In the UI, show which synced events are editable vs. read-only (where applicable)
 
+### Service Account Mode (Immovable Events)
+
+When a service account (SA) is configured and the user’s calendar is shared with it (`sa_tier = 2`), BusyBridge creates main calendar events using the SA’s credentials instead of the user’s token. Because the SA is the organizer:
+
+- **Non-editable events** are natively immovable — the user cannot drag-and-drop them in Google Calendar UI
+- **Editable events** get `guestsCanModify: true` so the user can still move them
+- The user is added as an attendee (with `responseStatus: accepted`) so the event appears on their calendar
+
+The lock emoji is retained on non-editable events regardless of mode as an informational marker.
+
+If the SA cannot access the user’s main calendar (key removed, sharing revoked, 403 error), BusyBridge automatically resets `sa_tier = 0` and falls back to user-token creation with the revert mechanism.
+
+**Tiers:**
+
+| `sa_tier` | Mode | Behavior |
+|-----------|------|----------|
+| 0 | Fallback | User token creates events; lock emoji + time revert for non-editable events |
+| 2 | SA as organizer | SA creates events; non-editable events are natively immovable |
+
+**Transition:** Existing events stay user-owned. New/updated events are created via SA. The calendar transitions naturally over time. No disruptive migration needed.
+
 -----
 
 ## All-Day Event Handling
@@ -323,6 +344,7 @@ CREATE TABLE users (
     display_name TEXT,
     main_calendar_id TEXT, -- Google Calendar ID, NULL until configured
     is_admin BOOLEAN DEFAULT FALSE,
+    sa_tier INTEGER DEFAULT 0, -- 0 = fallback, 2 = SA as organizer
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     last_login_at TIMESTAMP
 );
@@ -689,6 +711,8 @@ PUT  /api/admin/settings            - Update system settings
 POST /api/admin/settings/test-email - Send test email
 POST /api/admin/factory-reset       - Factory reset (requires confirmation token)
 GET  /api/admin/export              - Download database backup
+GET  /api/admin/service-account     - Service account config status + email
+POST /api/admin/service-account/test/:userId - Test SA access to user's main calendar, set sa_tier
 ```
 
 ### Webhook Endpoint
@@ -867,6 +891,7 @@ aiosqlite>=0.19.0
 |`PUBLIC_URL`         |Full public URL (e.g., `https://calendar-sync.example.com`)|Yes               |
 |`LOG_LEVEL`          |Logging level: debug, info, warning, error                 |No (default: info)|
 |`TZ`                 |Timezone for scheduled jobs                                |No (default: UTC) |
+|`SERVICE_ACCOUNT_KEY_FILE`|Path to SA JSON key file for immovable events         |No               |
 
 Note: Google OAuth credentials and SMTP settings are stored in the database after OOBE, not in environment variables.
 
@@ -1088,7 +1113,8 @@ calendar-sync/
 │   │   ├── __init__.py
 │   │   ├── routes.py           # OAuth endpoints
 │   │   ├── google.py           # Google OAuth helpers
-│   │   └── session.py          # Session management
+│   │   ├── session.py          # Session management
+│   │   └── service_account.py  # SA credential loading & client factory
 │   ├── api/
 │   │   ├── __init__.py
 │   │   ├── users.py            # User endpoints
