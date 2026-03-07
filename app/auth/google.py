@@ -36,6 +36,13 @@ CLIENT_SCOPES = [
     "https://www.googleapis.com/auth/calendar",
 ]
 
+PERSONAL_SCOPES = [
+    "openid",
+    "https://www.googleapis.com/auth/userinfo.email",
+    "https://www.googleapis.com/auth/userinfo.profile",
+    "https://www.googleapis.com/auth/calendar.readonly",
+]
+
 
 async def get_oauth_credentials() -> tuple[str, str]:
     """Get OAuth credentials from database."""

@@ -19,7 +19,7 @@ def test_create_busy_block_timed():
 
     block = create_busy_block(start, end, is_all_day=False)
 
-    expected = f"{get_settings().managed_event_prefix} Busy".strip()
+    expected = f"\U0001f510 {get_settings().managed_event_prefix} Busy".strip()
     assert block["summary"] == expected
     assert block["description"] == ""
     assert block["visibility"] == "private"
@@ -35,7 +35,7 @@ def test_create_busy_block_all_day():
 
     block = create_busy_block(start, end, is_all_day=True)
 
-    expected = f"{get_settings().managed_event_prefix} Busy".strip()
+    expected = f"\U0001f510 {get_settings().managed_event_prefix} Busy".strip()
     assert block["summary"] == expected
     assert "date" in block["start"]
     assert "date" in block["end"]

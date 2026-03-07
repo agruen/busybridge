@@ -6,10 +6,10 @@
 <div class="px-4 sm:px-0">
     <div class="sm:flex sm:items-center sm:justify-between mb-6">
         <h1 class="text-2xl font-bold text-gray-900">Sync Logs</h1>
-        <div class="mt-4 sm:mt-0 flex space-x-3">
+        <div class="mt-4 sm:mt-0 flex flex-col sm:flex-row gap-2 sm:gap-3">
             <select
                 onchange="window.location.href='/app/logs?calendar_id=' + this.value + '&status_filter={{ status_filter or '' }}'"
-                class="rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm py-2 px-3 border"
+                class="rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 text-sm py-2 px-3 border"
             >
                 <option value="">All Calendars</option>
                 {% for cal in calendars %}
@@ -18,7 +18,7 @@
             </select>
             <select
                 onchange="window.location.href='/app/logs?calendar_id={{ calendar_id or '' }}&status_filter=' + this.value"
-                class="rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm py-2 px-3 border"
+                class="rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 text-sm py-2 px-3 border"
             >
                 <option value="">All Statuses</option>
                 <option value="success" {% if status_filter == 'success' %}selected{% endif %}>Success</option>
@@ -30,6 +30,8 @@
 
     <div class="bg-white shadow rounded-lg overflow-hidden">
         {% if logs %}
+        <!-- Desktop table -->
+        <div class="hidden sm:block">
         <table class="min-w-full divide-y divide-gray-200">
             <thead class="bg-gray-50">
                 <tr>
@@ -66,6 +68,29 @@
                 {% endfor %}
             </tbody>
         </table>
+        </div>
+        <!-- Mobile cards -->
+        <ul class="sm:hidden divide-y divide-gray-200">
+            {% for log in logs %}
+            <li class="px-4 py-3">
+                <div class="flex items-center justify-between">
+                    <span class="text-xs text-gray-500">{{ log['created_at'] }}</span>
+                    {% if log['status'] == 'success' %}
+                    <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">Success</span>
+                    {% elif log['status'] == 'failure' %}
+                    <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-800">Failure</span>
+                    {% else %}
+                    <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-yellow-100 text-yellow-800">{{ log['status'] }}</span>
+                    {% endif %}
+                </div>
+                <p class="text-sm font-medium text-gray-900 mt-1">{{ log['calendar_name'] or '-' }}</p>
+                <p class="text-xs text-gray-500">{{ log['action'] }}</p>
+                {% if log['details'] %}
+                <p class="text-xs text-gray-400 mt-1 break-words">{{ log['details'] }}</p>
+                {% endif %}
+            </li>
+            {% endfor %}
+        </ul>
 
         <!-- Pagination -->
         {% if total_pages > 1 %}

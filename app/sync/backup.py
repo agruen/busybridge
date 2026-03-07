@@ -131,7 +131,7 @@ async def _snapshot_user(user: dict) -> dict:
     # Main calendar
     try:
         token = await get_valid_access_token(user_id, user["email"])
-        main_client = GoogleCalendarClient(token, settings)
+        main_client = GoogleCalendarClient(token, settings=settings)
         resp = main_client.list_events(user["main_calendar_id"], single_events=False)
         result["main_calendar_events"] = [
             _event_snapshot_fields(e)
@@ -165,7 +165,7 @@ async def _snapshot_user(user: dict) -> dict:
         }
         try:
             token = await get_valid_access_token(user_id, cal["google_account_email"])
-            client = GoogleCalendarClient(token, settings)
+            client = GoogleCalendarClient(token, settings=settings)
             resp = client.list_events(cal["google_calendar_id"], single_events=False)
             cal_entry["events"] = [
                 _event_snapshot_fields(e)
@@ -395,7 +395,7 @@ async def _fetch_current_busybridge_events(
 
     settings = get_settings()
     token = await get_valid_access_token(user_id, email)
-    client = GoogleCalendarClient(token, settings)
+    client = GoogleCalendarClient(token, settings=settings)
     resp = client.list_events(calendar_id, single_events=False)
     return [
         _event_snapshot_fields(e)
@@ -436,7 +436,7 @@ async def _apply_calendar_diff(
 
     settings = get_settings()
     token = await get_valid_access_token(user_id, email)
-    client = GoogleCalendarClient(token, settings)
+    client = GoogleCalendarClient(token, settings=settings)
     deleted = created = updated = 0
     errors: list[str] = []
     id_remaps: dict[str, str] = {}

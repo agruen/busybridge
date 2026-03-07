@@ -95,7 +95,7 @@ async def receive_google_calendar_webhook(
 
     # Trigger sync for the affected calendar
     try:
-        from app.sync.engine import trigger_sync_for_calendar, trigger_sync_for_main_calendar
+        from app.sync.engine import trigger_sync_for_calendar, trigger_sync_for_main_calendar, trigger_sync_for_personal_calendar
         from app.utils.tasks import create_background_task
 
         if channel["calendar_type"] == "main":
@@ -104,6 +104,13 @@ async def receive_google_calendar_webhook(
                 trigger_sync_for_main_calendar(channel["user_id"]),
                 f"sync_main_calendar_user_{channel['user_id']}"
             )
+        elif channel["calendar_type"] == "personal":
+            # Sync personal calendar
+            if channel["client_calendar_id"]:
+                create_background_task(
+                    trigger_sync_for_personal_calendar(channel["client_calendar_id"]),
+                    f"sync_personal_{channel['client_calendar_id']}"
+                )
         else:
             # Sync client calendar
             if channel["client_calendar_id"]:

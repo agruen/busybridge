@@ -3,7 +3,7 @@
 import asyncio
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from app.config import get_settings
@@ -15,6 +15,8 @@ from app.sync.rules import (
     handle_deleted_client_event,
     handle_deleted_main_event,
     propagate_rsvp_to_client,
+    sync_personal_event_to_all,
+    handle_deleted_personal_event,
 )
 
 logger = logging.getLogger(__name__)
@@ -165,6 +167,14 @@ async def _sync_client_calendar(client_calendar_id: int) -> None:
                     )
                     deleted_count += 1
                 else:
+                    # If this is a busy block we created and it was moved, revert it
+                    if client.is_our_event(event):
+                        await _revert_busy_block_on_client(
+                            client, client_calendar_id,
+                            calendar["google_calendar_id"], event,
+                        )
+                        continue
+
                     # Sync event to main
                     main_event_id = await sync_client_event_to_main(
                         client=client,
@@ -221,9 +231,6 @@ async def _sync_client_calendar(client_calendar_id: int) -> None:
                    WHERE client_calendar_id = ?""",
                 (new_sync_token, now, now, client_calendar_id)
             )
-        await db.commit()
-
-        # Log success
         await db.execute(
             """INSERT INTO sync_log (user_id, calendar_id, action, status, details)
                VALUES (?, ?, 'sync', 'success', ?)""",
@@ -294,16 +301,15 @@ async def trigger_sync_for_main_calendar(user_id: int) -> None:
 
 
 async def _revert_if_moved(
-    main_client: GoogleCalendarClient,
-    main_calendar_id: str,
+    cal_client: GoogleCalendarClient,
+    calendar_id: str,
     event: dict,
     mapping: dict,
 ) -> bool:
-    """Revert time/location changes on a main-calendar copy of a non-editable client event.
+    """Revert time changes on a managed event by comparing against stored mapping.
 
     Compares the current event start/end against the stored mapping values.
-    If they differ, patches the main event back to the original times and logs
-    a warning.
+    If they differ, patches the event back to the original times.
 
     Returns True if a revert was performed.
     """
@@ -321,12 +327,23 @@ async def _revert_if_moved(
     stored_start = mapping["event_start"]
     stored_end = mapping["event_end"]
 
-    if current_start == stored_start and current_end == stored_end:
+    # Compare as parsed datetimes to handle timezone offset differences.
+    # e.g. "2026-02-10T15:30:00-08:00" and "2026-02-10T18:30:00-05:00" are
+    # the same instant but differ as strings.
+    try:
+        times_match = (
+            datetime.fromisoformat(current_start) == datetime.fromisoformat(stored_start)
+            and datetime.fromisoformat(current_end) == datetime.fromisoformat(stored_end)
+        )
+    except (ValueError, TypeError):
+        # Fall back to string comparison for dates or unparseable values
+        times_match = current_start == stored_start and current_end == stored_end
+
+    if times_match:
         return False
 
-    # Time was changed on a non-editable event — revert it.
     logger.warning(
-        f"Reverting move on non-editable event {event['id']} "
+        f"Reverting move on managed event {event['id']} on {calendar_id} "
         f"(was {current_start}–{current_end}, restoring {stored_start}–{stored_end})"
     )
 
@@ -336,7 +353,6 @@ async def _revert_if_moved(
             "end": {"date": stored_end},
         }
     else:
-        # Preserve the original timezone if present in the event.
         tz = start.get("timeZone") or end.get("timeZone")
         patch_start = {"dateTime": stored_start}
         patch_end = {"dateTime": stored_end}
@@ -346,11 +362,160 @@ async def _revert_if_moved(
         patch = {"start": patch_start, "end": patch_end}
 
     try:
-        main_client.patch_event(main_calendar_id, event["id"], patch)
+        cal_client.patch_event(calendar_id, event["id"], patch)
         return True
     except Exception as e:
         logger.error(f"Failed to revert move on event {event['id']}: {e}")
         return False
+
+
+async def _revert_busy_block_on_client(
+    client: GoogleCalendarClient,
+    client_calendar_id: int,
+    google_calendar_id: str,
+    event: dict,
+) -> bool:
+    """Check if a client-calendar event is a busy block we own; if moved, revert it.
+
+    Looks up the event in busy_blocks. If found, compares times against the
+    source event_mapping and reverts if they differ.
+
+    Returns True if a revert was performed (caller should skip normal processing).
+    """
+    db = await get_database()
+    event_id = event.get("id")
+
+    cursor = await db.execute(
+        """SELECT bb.id, em.event_start, em.event_end, em.is_all_day
+           FROM busy_blocks bb
+           JOIN event_mappings em ON bb.event_mapping_id = em.id
+           WHERE bb.busy_block_event_id = ? AND bb.client_calendar_id = ?""",
+        (event_id, client_calendar_id),
+    )
+    row = await cursor.fetchone()
+    if not row:
+        return False
+
+    return await _revert_if_moved(
+        client, google_calendar_id, event, dict(row)
+    )
+
+
+async def _revert_personal_block_on_main(
+    main_client: GoogleCalendarClient,
+    main_calendar_id: str,
+    user_id: int,
+    event: dict,
+    sa_main_client: Optional[GoogleCalendarClient] = None,
+) -> bool:
+    """Check if a main-calendar event is a personal-origin busy block; if moved, revert.
+
+    Returns True if a revert was performed.
+    """
+    db = await get_database()
+    event_id = event.get("id")
+
+    cursor = await db.execute(
+        """SELECT em.event_start, em.event_end, em.is_all_day
+           FROM event_mappings em
+           WHERE em.user_id = ? AND em.main_event_id = ? AND em.origin_type = 'personal'""",
+        (user_id, event_id),
+    )
+    row = await cursor.fetchone()
+    if not row:
+        return False
+
+    write_client = sa_main_client if sa_main_client is not None else main_client
+    return await _revert_if_moved(
+        write_client, main_calendar_id, event, dict(row)
+    )
+
+
+async def _retry_missing_busy_blocks(
+    main_client: GoogleCalendarClient,
+    main_calendar_id: str,
+    user_id: int,
+    user_email: str,
+) -> int:
+    """Find event_mappings missing busy blocks on some client calendars and retry.
+
+    Returns the number of busy blocks successfully created.
+    """
+    db = await get_database()
+
+    # Get all active client calendars for this user
+    cursor = await db.execute(
+        """SELECT cc.id FROM client_calendars cc
+           WHERE cc.user_id = ? AND cc.is_active = TRUE AND cc.calendar_type = 'client'""",
+        (user_id,)
+    )
+    client_cal_rows = await cursor.fetchall()
+    client_cal_ids = {row["id"] for row in client_cal_rows}
+
+    if not client_cal_ids:
+        return 0
+
+    # Find event_mappings that are missing busy blocks on at least one client calendar.
+    # For client-origin mappings, the origin calendar is excluded (no self-block).
+    cursor = await db.execute(
+        """SELECT em.id, em.main_event_id, em.origin_type, em.origin_calendar_id
+           FROM event_mappings em
+           WHERE em.user_id = ? AND em.main_event_id IS NOT NULL AND em.deleted_at IS NULL""",
+        (user_id,)
+    )
+    mappings = await cursor.fetchall()
+
+    if not mappings:
+        return 0
+
+    # Build set of (mapping_id, client_calendar_id) pairs that already have busy blocks
+    cursor = await db.execute(
+        """SELECT bb.event_mapping_id, bb.client_calendar_id
+           FROM busy_blocks bb
+           JOIN event_mappings em ON bb.event_mapping_id = em.id
+           WHERE em.user_id = ?""",
+        (user_id,)
+    )
+    existing_pairs = {(row["event_mapping_id"], row["client_calendar_id"]) for row in await cursor.fetchall()}
+
+    # Find mappings with gaps
+    missing = []
+    for m in mappings:
+        expected_cals = client_cal_ids.copy()
+        # Client-origin events don't get a busy block on their origin calendar
+        if m["origin_type"] == "client" and m["origin_calendar_id"] in expected_cals:
+            expected_cals.discard(m["origin_calendar_id"])
+
+        for cal_id in expected_cals:
+            if (m["id"], cal_id) not in existing_pairs:
+                missing.append(m)
+                break  # only need to add mapping once
+
+    if not missing:
+        return 0
+
+    logger.info(f"Found {len(missing)} event(s) with missing busy blocks for user {user_id}, retrying")
+
+    created = 0
+    for m in missing:
+        try:
+            event = main_client.get_event(main_calendar_id, m["main_event_id"])
+            if event and event.get("status") != "cancelled":
+                blocks = await sync_main_event_to_clients(
+                    main_client=main_client,
+                    event=event,
+                    user_id=user_id,
+                    main_calendar_id=main_calendar_id,
+                    user_email=user_email,
+                )
+                created += len(blocks)
+        except Exception as e:
+            logger.warning(f"Retry failed for event {m['main_event_id']}: {e}")
+
+    if created:
+        logger.info(f"Retry created {created} missing busy block(s) for user {user_id}")
+
+    return created
 
 
 async def _sync_main_calendar(user_id: int) -> None:
@@ -429,6 +594,7 @@ async def _sync_main_calendar(user_id: int) -> None:
                         event["id"],
                         recurring_event_id=event.get("recurringEventId"),
                         original_start_time=event.get("originalStartTime"),
+                        is_full_sync=is_full_sync,
                     )
                 else:
                     # Check for client-origin mapping (used for RSVP and edit guards).
@@ -438,6 +604,21 @@ async def _sync_main_calendar(user_id: int) -> None:
                         (user_id, event["id"]),
                     )
                     client_origin_mapping = await cursor.fetchone()
+
+                    # Skip events that BusyBridge created on the main calendar
+                    # (personal busy blocks, etc.).  These are managed by their
+                    # origin sync flows and must NOT be re-synced as main-origin
+                    # events — doing so creates duplicate busy blocks on clients.
+                    # Client-origin events also have the sync tag but need RSVP/
+                    # edit-guard processing, so they are NOT skipped here.
+                    if not client_origin_mapping and main_client.is_our_event(event):
+                        # Still revert if someone moved a personal busy block.
+                        await _revert_personal_block_on_main(
+                            main_client, main_calendar_id, user_id, event,
+                            sa_main_client=sa_main_client,
+                        )
+                        logger.info(f"Skipping our own event on main calendar: {event.get('id')} ({event.get('summary', '')[:40]})")
+                        continue
 
                     # Guard: revert time/location changes on non-editable events.
                     # Use SA client for the revert patch when available.
@@ -485,6 +666,12 @@ async def _sync_main_calendar(user_id: int) -> None:
                 f"First error: {event_errors[0]}"
             )
 
+        # Retry missing busy blocks: find event_mappings that should have
+        # busy blocks on client calendars but don't (e.g. due to prior token failures).
+        retry_count = await _retry_missing_busy_blocks(
+            main_client, main_calendar_id, user_id, user_email
+        )
+
         # Update sync state
         now = datetime.utcnow().isoformat()
         if is_full_sync:
@@ -513,7 +700,11 @@ async def _sync_main_calendar(user_id: int) -> None:
                VALUES (?, 'sync_main', 'success', ?)""",
             (
                 user_id,
-                json.dumps({"events_processed": len(events), "is_full_sync": is_full_sync}),
+                json.dumps({
+                    "events_processed": len(events),
+                    "is_full_sync": is_full_sync,
+                    "busy_blocks_retried": retry_count,
+                }),
             )
         )
         await db.commit()
@@ -542,6 +733,179 @@ async def _sync_main_calendar(user_id: int) -> None:
         await db.commit()
 
 
+async def trigger_sync_for_personal_calendar(personal_calendar_id: int) -> None:
+    """Trigger sync for a specific personal calendar."""
+    if await is_sync_paused():
+        logger.info("Sync is paused, skipping personal calendar sync")
+        return
+
+    lock = await _get_calendar_lock(f"personal:{personal_calendar_id}")
+    if lock.locked():
+        logger.info(f"Sync already in progress for personal calendar {personal_calendar_id}, skipping")
+        return
+
+    async with lock:
+        await _sync_personal_calendar(personal_calendar_id)
+
+
+async def _sync_personal_calendar(personal_calendar_id: int) -> None:
+    """Internal: perform sync for a personal calendar (must be called under lock)."""
+    db = await get_database()
+
+    # Get calendar info
+    cursor = await db.execute(
+        """SELECT cc.*, ot.google_account_email, u.email as user_email,
+                  u.main_calendar_id, css.sync_token
+           FROM client_calendars cc
+           JOIN oauth_tokens ot ON cc.oauth_token_id = ot.id
+           JOIN users u ON cc.user_id = u.id
+           LEFT JOIN calendar_sync_state css ON cc.id = css.client_calendar_id
+           WHERE cc.id = ? AND cc.is_active = TRUE AND cc.calendar_type = 'personal'""",
+        (personal_calendar_id,)
+    )
+    calendar = await cursor.fetchone()
+
+    if not calendar:
+        logger.warning(f"Personal calendar {personal_calendar_id} not found or inactive")
+        return
+
+    if not calendar["main_calendar_id"]:
+        logger.warning(f"User {calendar['user_id']} has no main calendar configured")
+        return
+
+    user_id = calendar["user_id"]
+    personal_email = calendar["google_account_email"]
+    main_calendar_id = calendar["main_calendar_id"]
+    user_email = calendar["user_email"]
+
+    event_errors = []
+
+    try:
+        from app.auth.google import get_valid_access_token
+
+        personal_token = await get_valid_access_token(user_id, personal_email)
+        main_token = await get_valid_access_token(user_id, user_email)
+
+        personal_client = GoogleCalendarClient(personal_token)
+        main_client = GoogleCalendarClient(main_token)
+
+        # Check if SA mode is active
+        sa_main_client = None
+        cursor = await db.execute("SELECT sa_tier FROM users WHERE id = ?", (user_id,))
+        sa_row = await cursor.fetchone()
+        if sa_row and sa_row["sa_tier"] == 2:
+            from app.auth.service_account import get_sa_main_client
+            sa_main_client = get_sa_main_client(main_calendar_id)
+            if sa_main_client is None:
+                logger.warning(f"SA access lost for user {user_id}, resetting sa_tier to 0")
+                await db.execute("UPDATE users SET sa_tier = 0 WHERE id = ?", (user_id,))
+                await db.commit()
+
+        # Fetch events from personal calendar
+        sync_token = calendar["sync_token"]
+        result = personal_client.list_events(calendar["google_calendar_id"], sync_token=sync_token)
+
+        if result.get("sync_token_expired"):
+            logger.info(f"Sync token expired for personal calendar {personal_calendar_id}, doing full sync")
+            result = personal_client.list_events(calendar["google_calendar_id"])
+
+        events = result["events"]
+        new_sync_token = result.get("next_sync_token")
+
+        logger.info(f"Syncing {len(events)} events from personal calendar {personal_calendar_id}")
+
+        synced_count = 0
+        deleted_count = 0
+
+        for event in events:
+            try:
+                if event.get("status") == "cancelled":
+                    await handle_deleted_personal_event(
+                        user_id=user_id,
+                        personal_calendar_id=personal_calendar_id,
+                        event_id=event["id"],
+                        main_calendar_id=main_calendar_id,
+                        main_client=main_client,
+                        recurring_event_id=event.get("recurringEventId"),
+                        original_start_time=event.get("originalStartTime"),
+                        sa_main_client=sa_main_client,
+                    )
+                    deleted_count += 1
+                else:
+                    main_event_id = await sync_personal_event_to_all(
+                        personal_client=personal_client,
+                        main_client=main_client,
+                        event=event,
+                        user_id=user_id,
+                        personal_calendar_id=personal_calendar_id,
+                        main_calendar_id=main_calendar_id,
+                        user_email=user_email,
+                        sa_main_client=sa_main_client,
+                    )
+                    if main_event_id:
+                        synced_count += 1
+
+            except Exception as e:
+                logger.error(f"Error processing personal event {event.get('id')}: {e}")
+                event_errors.append(f"{event.get('id')}: {e}")
+
+        if event_errors:
+            raise RuntimeError(
+                f"{len(event_errors)} event(s) failed while syncing personal calendar {personal_calendar_id}. "
+                f"First error: {event_errors[0]}"
+            )
+
+        # Update sync state
+        now = datetime.utcnow().isoformat()
+        if sync_token:
+            await db.execute(
+                """UPDATE calendar_sync_state SET
+                   sync_token = ?, last_incremental_sync = ?,
+                   consecutive_failures = 0, last_error = NULL
+                   WHERE client_calendar_id = ?""",
+                (new_sync_token, now, personal_calendar_id)
+            )
+        else:
+            await db.execute(
+                """UPDATE calendar_sync_state SET
+                   sync_token = ?, last_full_sync = ?, last_incremental_sync = ?,
+                   consecutive_failures = 0, last_error = NULL
+                   WHERE client_calendar_id = ?""",
+                (new_sync_token, now, now, personal_calendar_id)
+            )
+        await db.commit()
+
+        await db.execute(
+            """INSERT INTO sync_log (user_id, calendar_id, action, status, details)
+               VALUES (?, ?, 'sync_personal', 'success', ?)""",
+            (user_id, personal_calendar_id,
+             json.dumps({"synced": synced_count, "deleted": deleted_count}))
+        )
+        await db.commit()
+
+        logger.info(f"Personal calendar sync completed for calendar {personal_calendar_id}: {synced_count} synced, {deleted_count} deleted")
+
+    except Exception as e:
+        logger.exception(f"Personal calendar sync failed for calendar {personal_calendar_id}: {e}")
+
+        await db.execute(
+            """UPDATE calendar_sync_state SET
+               consecutive_failures = consecutive_failures + 1,
+               last_error = ?
+               WHERE client_calendar_id = ?""",
+            (str(e), personal_calendar_id)
+        )
+        await db.commit()
+
+        await db.execute(
+            """INSERT INTO sync_log (user_id, calendar_id, action, status, details)
+               VALUES (?, ?, 'sync_personal', 'failure', ?)""",
+            (user_id, personal_calendar_id,
+             json.dumps({"error": str(e), "failed_events": event_errors}))
+        )
+        await db.commit()
+
+
 async def trigger_sync_for_user(user_id: int) -> None:
     """Trigger sync for all of a user's calendars."""
     if await is_sync_paused():
@@ -552,15 +916,18 @@ async def trigger_sync_for_user(user_id: int) -> None:
 
     # Get all active client calendars
     cursor = await db.execute(
-        """SELECT id FROM client_calendars
+        """SELECT id, calendar_type FROM client_calendars
            WHERE user_id = ? AND is_active = TRUE""",
         (user_id,)
     )
     calendars = await cursor.fetchall()
 
-    # Sync each client calendar
+    # Sync each calendar based on type
     for cal in calendars:
-        await trigger_sync_for_calendar(cal["id"])
+        if cal["calendar_type"] == "personal":
+            await trigger_sync_for_personal_calendar(cal["id"])
+        else:
+            await trigger_sync_for_calendar(cal["id"])
 
     # Sync main calendar
     await trigger_sync_for_main_calendar(user_id)

@@ -99,7 +99,11 @@ async def register_all_webhooks() -> None:
 
 
 async def register_webhooks_for_user(user_id: int) -> None:
-    """Register webhooks for all of a user's calendars."""
+    """Register webhooks for all of a user's calendars.
+
+    Stops and removes any existing channels for this user first to prevent
+    duplicate webhook floods.
+    """
     db = await get_database()
 
     # Get user info
@@ -110,7 +114,40 @@ async def register_webhooks_for_user(user_id: int) -> None:
         return
 
     from app.auth.google import get_valid_access_token
-    from app.api.webhooks import register_webhook_channel
+    from app.api.webhooks import register_webhook_channel, stop_webhook_channel
+
+    # Stop and remove all existing channels for this user before re-registering
+    cursor = await db.execute(
+        "SELECT * FROM webhook_channels WHERE user_id = ?", (user_id,)
+    )
+    old_channels = await cursor.fetchall()
+    for ch in old_channels:
+        try:
+            # Determine which token to use for stopping the channel
+            if ch["calendar_type"] == "main":
+                token = await get_valid_access_token(user_id, user["email"])
+            else:
+                # Look up the account email for this client calendar
+                c2 = await db.execute(
+                    """SELECT ot.google_account_email
+                       FROM client_calendars cc
+                       JOIN oauth_tokens ot ON cc.oauth_token_id = ot.id
+                       WHERE cc.id = ?""",
+                    (ch["client_calendar_id"],)
+                )
+                row = await c2.fetchone()
+                token = await get_valid_access_token(
+                    user_id, row["google_account_email"]
+                ) if row else None
+            if token:
+                await stop_webhook_channel(ch["channel_id"], ch["resource_id"], token)
+        except Exception as e:
+            logger.debug(f"Could not stop old channel {ch['channel_id']}: {e}")
+    # Delete all old channel records regardless of whether stop succeeded
+    await db.execute("DELETE FROM webhook_channels WHERE user_id = ?", (user_id,))
+    await db.commit()
+    if old_channels:
+        logger.info(f"Cleaned up {len(old_channels)} old webhook channels for user {user_id}")
 
     # Register for main calendar
     try:
@@ -125,7 +162,7 @@ async def register_webhooks_for_user(user_id: int) -> None:
     except Exception as e:
         logger.error(f"Failed to register main calendar webhook: {e}")
 
-    # Register for client calendars
+    # Register for client and personal calendars
     cursor = await db.execute(
         """SELECT cc.*, ot.google_account_email
            FROM client_calendars cc
@@ -136,15 +173,16 @@ async def register_webhooks_for_user(user_id: int) -> None:
     calendars = await cursor.fetchall()
 
     for cal in calendars:
+        cal_type = cal["calendar_type"] if "calendar_type" in cal.keys() else "client"
         try:
             access_token = await get_valid_access_token(user_id, cal["google_account_email"])
             await register_webhook_channel(
                 user_id=user_id,
-                calendar_type="client",
+                calendar_type=cal_type,
                 calendar_id=cal["google_calendar_id"],
                 client_calendar_id=cal["id"],
                 access_token=access_token,
             )
-            logger.info(f"Registered webhook for client calendar {cal['id']}")
+            logger.info(f"Registered webhook for {cal_type} calendar {cal['id']}")
         except Exception as e:
             logger.error(f"Failed to register webhook for calendar {cal['id']}: {e}")

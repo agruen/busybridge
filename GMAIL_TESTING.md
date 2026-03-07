@@ -39,6 +39,7 @@ Example:
 4. Add redirect URIs:
    - `https://<your-fqdn>/auth/callback`
    - `https://<your-fqdn>/auth/connect-client/callback`
+   - `https://<your-fqdn>/auth/connect-personal/callback`
    - `https://<your-fqdn>/setup/step/3/callback`
 
 To avoid periodic calendar re-consent:

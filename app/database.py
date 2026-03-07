@@ -205,7 +205,9 @@ async def get_database() -> aiosqlite.Connection:
     async with _db_lock:
         if _db_connection is None:
             settings = get_settings()
-            _db_connection = await aiosqlite.connect(settings.database_path)
+            _db_connection = await aiosqlite.connect(
+                settings.database_path, isolation_level=None
+            )
             _db_connection.row_factory = aiosqlite.Row
             await _db_connection.execute("PRAGMA foreign_keys = ON")
             await _db_connection.execute("PRAGMA journal_mode = WAL")
@@ -225,6 +227,7 @@ async def init_schema(db: aiosqlite.Connection) -> None:
         "ALTER TABLE webhook_channels ADD COLUMN token TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE event_mappings ADD COLUMN rsvp_status TEXT",
         "ALTER TABLE users ADD COLUMN sa_tier INTEGER DEFAULT 0",
+        "ALTER TABLE client_calendars ADD COLUMN calendar_type TEXT NOT NULL DEFAULT 'client'",
     ]
     for stmt in migrations:
         try:

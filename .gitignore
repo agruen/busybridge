@@ -108,6 +108,7 @@ venv.bak/
 # Project specific
 data/
 secrets/
+backups/
 *.db
 *.db-journal
 

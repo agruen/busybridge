@@ -57,6 +57,7 @@ Go to https://accounts.google.com/signup for each account.
 4. [ ] Click **Save and Continue**
 5. [ ] On the **Scopes** page, click **Add or Remove Scopes** and add:
    - `https://www.googleapis.com/auth/calendar`
+   - `https://www.googleapis.com/auth/calendar.readonly`
    - `https://www.googleapis.com/auth/userinfo.email`
    - `https://www.googleapis.com/auth/userinfo.profile`
    - `openid`
@@ -82,6 +83,7 @@ Go to https://accounts.google.com/signup for each account.
 ```
 http://localhost:3000/auth/callback
 http://localhost:3000/auth/connect-client/callback
+http://localhost:3000/auth/connect-personal/callback
 http://localhost:3000/setup/step/3/callback
 ```
 

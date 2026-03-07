@@ -355,6 +355,8 @@ def create_busy_block(
     start: dict,
     end: dict,
     is_all_day: bool = False,
+    use_service_account: bool = False,
+    main_email: Optional[str] = None,
 ) -> dict:
     """
     Create a busy block event structure.
@@ -363,6 +365,8 @@ def create_busy_block(
         start: Event start (dict with dateTime or date)
         end: Event end (dict with dateTime or date)
         is_all_day: Whether this is an all-day event
+        use_service_account: If True, add guestsCanModify=false and user as attendee
+        main_email: User's main calendar email (required when use_service_account=True)
     """
     settings = get_settings()
 
@@ -370,6 +374,8 @@ def create_busy_block(
     prefix = (settings.managed_event_prefix or "").strip()
     if prefix:
         summary = f"{prefix} {summary}".strip()
+    # Lock emoji — busy blocks are never user-editable
+    summary = f"\U0001f510 {summary}"
 
     event = {
         "summary": summary,
@@ -384,6 +390,54 @@ def create_busy_block(
     else:
         event["start"] = _build_timed_dt(start)
         event["end"] = _build_timed_dt(end)
+
+    if use_service_account:
+        event["guestsCanModify"] = False
+        if main_email:
+            event["attendees"] = [{"email": main_email, "responseStatus": "accepted"}]
+
+    return event
+
+
+def create_personal_busy_block(
+    start: dict,
+    end: dict,
+    is_all_day: bool = False,
+    use_service_account: bool = False,
+    main_email: Optional[str] = None,
+) -> dict:
+    """
+    Create a busy block event for a personal calendar event.
+
+    Uses the personal_busy_block_title setting for the summary.
+    """
+    settings = get_settings()
+
+    summary = settings.personal_busy_block_title
+    prefix = (settings.managed_event_prefix or "").strip()
+    if prefix:
+        summary = f"{prefix} {summary}".strip()
+    # Lock emoji — busy blocks are never user-editable
+    summary = f"\U0001f510 {summary}"
+
+    event = {
+        "summary": summary,
+        "description": "",
+        "visibility": "private",
+        "transparency": "opaque",
+    }
+
+    if is_all_day:
+        event["start"] = {"date": start.get("date")}
+        event["end"] = {"date": end.get("date")}
+    else:
+        event["start"] = _build_timed_dt(start)
+        event["end"] = _build_timed_dt(end)
+
+    if use_service_account:
+        event["guestsCanModify"] = False
+        if main_email:
+            event["attendees"] = [{"email": main_email, "responseStatus": "accepted"}]
 
     return event
 

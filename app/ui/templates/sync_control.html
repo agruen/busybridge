@@ -15,8 +15,8 @@
     <div class="space-y-6">
         <!-- Sync Status Banner -->
         {% if sync_paused %}
-        <div class="bg-red-50 border-2 border-red-200 rounded-lg p-6">
-            <div class="flex items-center justify-between">
+        <div class="bg-red-50 border-2 border-red-200 rounded-lg p-4 sm:p-6">
+            <div class="sm:flex sm:items-center sm:justify-between">
                 <div>
                     <h2 class="text-lg font-medium text-red-800">
                         <i class="fas fa-pause-circle mr-2"></i>Syncing is Paused
@@ -28,7 +28,7 @@
                 <button
                     hx-post="/api/sync/resume"
                     hx-swap="none"
-                    class="inline-flex items-center px-5 py-2.5 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-green-600 hover:bg-green-700"
+                    class="mt-3 sm:mt-0 sm:ml-4 flex-shrink-0 inline-flex items-center px-5 py-2.5 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-green-600 hover:bg-green-700"
                     onclick="setTimeout(function(){ window.location.reload(); }, 500)"
                 >
                     <i class="fas fa-play mr-2"></i>
@@ -37,9 +37,9 @@
             </div>
         </div>
         {% else %}
-        <div class="bg-green-50 border border-green-200 rounded-lg p-6">
-            <div class="flex items-center">
-                <i class="fas fa-check-circle text-green-600 text-xl mr-3"></i>
+        <div class="bg-green-50 border border-green-200 rounded-lg p-4 sm:p-6">
+            <div class="flex items-start sm:items-center">
+                <i class="fas fa-check-circle text-green-600 text-xl mr-3 mt-0.5 sm:mt-0"></i>
                 <div>
                     <h2 class="text-lg font-medium text-green-800">Syncing is Active</h2>
                     <p class="mt-1 text-sm text-green-700">
@@ -52,36 +52,32 @@
 
         <!-- Full Re-sync -->
         <div class="bg-white shadow rounded-lg">
-            <div class="px-6 py-4 border-b border-gray-200">
+            <div class="px-4 sm:px-6 py-4 border-b border-gray-200">
                 <h2 class="text-lg font-medium text-gray-900">Full Re-sync</h2>
             </div>
-            <div class="px-6 py-4">
-                <div class="flex items-center justify-between">
-                    <div>
-                        <p class="text-sm text-gray-500">
-                            Re-sync all calendars from scratch. Clears sync tokens and re-processes every event.
-                            Use this if you notice missing or outdated events.
-                        </p>
-                    </div>
-                    <button
-                        hx-post="/api/sync/full"
-                        hx-swap="none"
-                        hx-confirm="This will re-sync all your calendars from scratch. Continue?"
-                        class="ml-4 flex-shrink-0 inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50"
-                    >
-                        <i class="fas fa-sync-alt mr-2"></i>
-                        Full Re-sync
-                    </button>
-                </div>
+            <div class="px-4 sm:px-6 py-4">
+                <p class="text-sm text-gray-500">
+                    Re-sync all calendars from scratch. Clears sync tokens and re-processes every event.
+                    Use this if you notice missing or outdated events.
+                </p>
+                <button
+                    hx-post="/api/sync/full"
+                    hx-swap="none"
+                    hx-confirm="This will re-sync all your calendars from scratch. Continue?"
+                    class="mt-3 inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50"
+                >
+                    <i class="fas fa-sync-alt mr-2"></i>
+                    Full Re-sync
+                </button>
             </div>
         </div>
 
         <!-- Cleanup & Re-sync -->
         <div class="bg-white shadow rounded-lg border border-amber-200">
-            <div class="px-6 py-4 border-b border-amber-200 bg-amber-50">
+            <div class="px-4 sm:px-6 py-4 border-b border-amber-200 bg-amber-50">
                 <h2 class="text-lg font-medium text-amber-800">Cleanup & Re-sync</h2>
             </div>
-            <div class="px-6 py-4">
+            <div class="px-4 sm:px-6 py-4">
                 <p class="text-sm text-gray-600 mb-1">
                     Deletes all BusyBridge-managed events (copies on main, busy blocks on clients), then lets
                     sync continue running. Events will be recreated from scratch on the next sync cycle.
@@ -106,7 +102,7 @@
 
         <!-- Cleanup & Pause -->
         <div class="bg-white shadow rounded-lg border-2 border-red-200">
-            <div class="px-6 py-4 border-b border-red-200 bg-red-50">
+            <div class="px-4 sm:px-6 py-4 border-b border-red-200 bg-red-50">
                 <h2 class="text-lg font-medium text-red-800">Cleanup & Pause</h2>
             </div>
             <div class="px-6 py-4">
@@ -134,28 +130,24 @@
         <!-- Pause Only (no cleanup) -->
         {% if not sync_paused %}
         <div class="bg-white shadow rounded-lg">
-            <div class="px-6 py-4 border-b border-gray-200">
+            <div class="px-4 sm:px-6 py-4 border-b border-gray-200">
                 <h2 class="text-lg font-medium text-gray-900">Pause Syncing</h2>
             </div>
-            <div class="px-6 py-4">
-                <div class="flex items-center justify-between">
-                    <div>
-                        <p class="text-sm text-gray-500">
-                            Temporarily stop all sync operations. Existing events stay in place.
-                            Resume at any time.
-                        </p>
-                    </div>
-                    <button
-                        hx-post="/api/sync/pause"
-                        hx-swap="none"
-                        hx-confirm="Pause all sync operations?"
-                        class="ml-4 flex-shrink-0 inline-flex items-center px-4 py-2 border border-yellow-300 text-sm font-medium rounded-md text-yellow-700 bg-white hover:bg-yellow-50"
-                        onclick="setTimeout(function(){ window.location.reload(); }, 500)"
-                    >
-                        <i class="fas fa-pause mr-2"></i>
-                        Pause
-                    </button>
-                </div>
+            <div class="px-4 sm:px-6 py-4">
+                <p class="text-sm text-gray-500">
+                    Temporarily stop all sync operations. Existing events stay in place.
+                    Resume at any time.
+                </p>
+                <button
+                    hx-post="/api/sync/pause"
+                    hx-swap="none"
+                    hx-confirm="Pause all sync operations?"
+                    class="mt-3 inline-flex items-center px-4 py-2 border border-yellow-300 text-sm font-medium rounded-md text-yellow-700 bg-white hover:bg-yellow-50"
+                    onclick="setTimeout(function(){ window.location.reload(); }, 500)"
+                >
+                    <i class="fas fa-pause mr-2"></i>
+                    Pause
+                </button>
             </div>
         </div>
         {% endif %}

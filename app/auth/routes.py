@@ -11,6 +11,7 @@ from fastapi.responses import RedirectResponse
 from app.auth.google import (
     HOME_SCOPES,
     CLIENT_SCOPES,
+    PERSONAL_SCOPES,
     build_auth_url,
     exchange_code_for_tokens,
     get_oauth_token,
@@ -118,7 +119,7 @@ async def login(request: Request, next: Optional[str] = None):
         redirect_uri=redirect_uri,
         scopes=HOME_SCOPES,
         state=state,
-        prompt="select_account"
+        prompt="select_account consent"
     )
 
     return RedirectResponse(url=auth_url, status_code=status.HTTP_302_FOUND)
@@ -381,6 +382,104 @@ async def connect_client_callback(
         logger.exception(f"Client OAuth callback error: {e}")
         return RedirectResponse(
             url="/app?error=client_callback_failed",
+            status_code=status.HTTP_302_FOUND
+        )
+
+
+@router.get("/connect-personal")
+async def connect_personal(request: Request):
+    """Initiate OAuth for connecting a personal calendar."""
+    user = await get_current_user(request)
+
+    try:
+        client_id, _ = await get_oauth_credentials()
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="OAuth credentials not configured"
+        )
+
+    state = secrets.token_urlsafe(32)
+    await store_oauth_state(state, "personal", user_id=user.id)
+    await cleanup_expired_oauth_states()
+
+    redirect_uri = get_redirect_uri(request, "/auth/connect-personal/callback")
+    auth_url = build_auth_url(
+        client_id=client_id,
+        redirect_uri=redirect_uri,
+        scopes=PERSONAL_SCOPES,
+        state=state,
+        prompt="select_account consent"
+    )
+
+    return RedirectResponse(url=auth_url, status_code=status.HTTP_302_FOUND)
+
+
+@router.get("/connect-personal/callback")
+async def connect_personal_callback(
+    request: Request,
+    code: Optional[str] = None,
+    state: Optional[str] = None,
+    error: Optional[str] = None,
+    error_description: Optional[str] = None
+):
+    """Handle OAuth callback for personal calendar connection."""
+    if error:
+        logger.error(f"Personal OAuth error: {error} - {error_description}")
+        return RedirectResponse(
+            url=f"/app?error=personal_connect_failed&reason={error}",
+            status_code=status.HTTP_302_FOUND
+        )
+
+    state_data = await get_oauth_state(state)
+    if not state_data:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired state parameter"
+        )
+
+    if state_data.get("type") != "personal":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid state type"
+        )
+
+    user_id = state_data["user_id"]
+    redirect_uri = get_redirect_uri(request, "/auth/connect-personal/callback")
+
+    try:
+        tokens = await exchange_code_for_tokens(code, redirect_uri)
+        access_token = tokens["access_token"]
+        refresh_token = tokens.get("refresh_token", "")
+
+        if not refresh_token:
+            logger.warning("No refresh token received for personal account")
+            return RedirectResponse(
+                url="/app?error=no_refresh_token",
+                status_code=status.HTTP_302_FOUND
+            )
+
+        user_info = await get_user_info(access_token)
+        personal_email = user_info["email"].strip().lower()
+
+        token_id = await store_oauth_tokens(
+            user_id=user_id,
+            account_type="personal",
+            email=personal_email,
+            access_token=access_token,
+            refresh_token=refresh_token,
+            expires_in=tokens.get("expires_in")
+        )
+
+        return RedirectResponse(
+            url=f"/app/calendars/select?token_id={token_id}&email={personal_email}&calendar_type=personal",
+            status_code=status.HTTP_302_FOUND
+        )
+
+    except Exception as e:
+        logger.exception(f"Personal OAuth callback error: {e}")
+        return RedirectResponse(
+            url="/app?error=personal_callback_failed",
             status_code=status.HTTP_302_FOUND
         )
 

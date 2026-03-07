@@ -5,6 +5,7 @@ A self-hosted, multi-user calendar synchronization service for consulting organi
 ## Features
 
 - **Bidirectional Sync**: Events from client calendars appear on your main calendar with full details, while your main calendar events appear as "Busy" blocks on client calendars
+- **Personal Calendar Sync**: Connect personal Gmail/Workspace calendars as read-only sources — events create privacy-preserving "Busy (Personal)" blocks on your main and all client calendars
 - **Multi-User Support**: Each user in your organization can manage their own calendar connections
 - **Recurring Event Support**: Full fidelity for recurring events, including single-instance modifications
 - **Smart Busy Blocks**: Only creates blocks for events that actually block time (respects "Free" vs "Busy" status)
@@ -56,11 +57,12 @@ A self-hosted, multi-user calendar synchronization service for consulting organi
 3. Enable the Google Calendar API
 4. Configure OAuth consent screen:
    - User Type: Internal (for Workspace) or External
-   - Scopes: `calendar`, `email`, `profile`, `openid`
+   - Scopes: `calendar`, `calendar.readonly`, `email`, `profile`, `openid`
 5. Create OAuth 2.0 credentials (Web application):
    - Add redirect URIs:
      - `https://your-domain/auth/callback`
      - `https://your-domain/auth/connect-client/callback`
+     - `https://your-domain/auth/connect-personal/callback`
      - `https://your-domain/setup/step/3/callback`
 
 ## Appointment Workflow
@@ -94,6 +96,21 @@ BusyBridge copies it to your Main Calendar (with full details)
 "Busy" block created on Client C calendar
 (no busy block on Client A — it already has the real event)
 ```
+
+### Personal Calendar Events
+
+Connect a personal calendar (any Gmail or Workspace account) to block off personal time across all your work calendars. Personal calendars are **read-only** — BusyBridge never writes back to them.
+
+```
+Personal calendar event (e.g. "Doctor Appointment")
+         ↓
+BusyBridge creates "Busy (Personal)" block on Main Calendar
+         ↓
+"Busy (Personal)" block created on Client A calendar
+"Busy (Personal)" block created on Client B calendar
+```
+
+No event details are shared — only "Busy (Personal)" is visible. When the personal event is deleted or cancelled, all blocks are cleaned up automatically.
 
 ### Recurring Meetings
 
@@ -131,6 +148,7 @@ Client calendars are not useful for your day-to-day viewing — they only show "
 |--------|-------|
 | Create a personal or internal appointment | Your **main calendar** |
 | Organize a meeting within a client's domain | That **client's calendar** |
+| Block personal time across all calendars | Connect a **personal calendar** (read-only) |
 | View your full schedule | Your **main calendar** |
 | See what a client sees | That **client's calendar** (shows "Busy" blocks) |
 | Accept a client meeting | Handled automatically — appears on main calendar |

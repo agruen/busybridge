@@ -27,13 +27,13 @@
     {% block body %}
     <div class="min-h-full">
         {% if user %}
-        <nav class="bg-indigo-600">
+        <nav class="bg-indigo-600" x-data="{ mobileOpen: false }">
             <div class="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
                 <div class="flex h-16 items-center justify-between">
                     <div class="flex items-center">
                         <div class="flex-shrink-0">
                             <span class="text-white font-bold text-xl">
-                                <i class="fas fa-calendar-alt mr-2"></i>Calendar Sync
+                                <i class="fas fa-calendar-alt mr-2"></i>BusyBridge
                             </span>
                         </div>
                         <div class="hidden md:block">
@@ -63,6 +63,28 @@
                             </a>
                         </div>
                     </div>
+                    <div class="md:hidden">
+                        <button @click="mobileOpen = !mobileOpen" class="text-indigo-100 hover:text-white p-2">
+                            <i class="fas" :class="mobileOpen ? 'fa-times' : 'fa-bars'" class="text-xl"></i>
+                        </button>
+                    </div>
+                </div>
+            </div>
+            <!-- Mobile menu -->
+            <div x-show="mobileOpen" x-cloak class="md:hidden border-t border-indigo-500">
+                <div class="space-y-1 px-4 pb-3 pt-2">
+                    <a href="/app" class="{% if request.url.path == '/app' %}bg-indigo-700 text-white{% else %}text-indigo-100 hover:bg-indigo-500{% endif %} block rounded-md px-3 py-2 text-base font-medium">Dashboard</a>
+                    <a href="/app/settings" class="{% if '/settings' in request.url.path %}bg-indigo-700 text-white{% else %}text-indigo-100 hover:bg-indigo-500{% endif %} block rounded-md px-3 py-2 text-base font-medium">Settings</a>
+                    <a href="/app/logs" class="{% if '/logs' in request.url.path and '/admin' not in request.url.path %}bg-indigo-700 text-white{% else %}text-indigo-100 hover:bg-indigo-500{% endif %} block rounded-md px-3 py-2 text-base font-medium">Logs</a>
+                    {% if user.is_admin %}
+                    <a href="/admin" class="{% if '/admin' in request.url.path %}bg-indigo-700 text-white{% else %}text-indigo-100 hover:bg-indigo-500{% endif %} block rounded-md px-3 py-2 text-base font-medium">Admin</a>
+                    {% endif %}
+                </div>
+                <div class="border-t border-indigo-500 px-4 py-3">
+                    <p class="text-sm text-indigo-200 truncate">{{ user.email }}</p>
+                    <a href="/auth/logout" class="mt-2 block text-sm text-indigo-100 hover:text-white">
+                        <i class="fas fa-sign-out-alt mr-1"></i>Logout
+                    </a>
                 </div>
             </div>
         </nav>

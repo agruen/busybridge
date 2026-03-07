@@ -1,0 +1,130 @@
+{% extends "base.html" %}
+
+{% block title %}Calendar Exports - Calendar Sync{% endblock %}
+
+{% block content %}
+<div class="px-4 sm:px-0">
+    <div class="mb-6">
+        <a href="/app/settings" class="text-sm text-indigo-600 hover:text-indigo-500">
+            <i class="fas fa-arrow-left mr-1"></i>Back to Settings
+        </a>
+        <h1 class="text-2xl font-bold text-gray-900 mt-2">Calendar Exports</h1>
+        <p class="mt-1 text-sm text-gray-500">
+            ICS backups of all your calendars, exported directly from Google Calendar.
+            Backups run automatically on the same schedule as database backups (daily at 23:00).
+        </p>
+    </div>
+
+    <!-- Create on-demand -->
+    <div class="mb-6">
+        <button type="button" onclick="createIcsBackup()" id="createBtn"
+                class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700">
+            <i class="fas fa-download mr-2"></i>
+            Create Export Now
+        </button>
+        <span id="createStatus" class="ml-3 text-sm text-gray-500"></span>
+    </div>
+
+    <!-- Backup list -->
+    <div class="bg-white shadow rounded-lg">
+        <div class="px-6 py-4 border-b border-gray-200">
+            <h2 class="text-lg font-medium text-gray-900">Available Exports</h2>
+        </div>
+
+        {% if backups %}
+        <ul class="divide-y divide-gray-200">
+            {% for backup in backups %}
+            <li class="px-4 sm:px-6 py-4">
+                <div class="sm:flex sm:items-center sm:justify-between">
+                    <div>
+                        <p class="text-sm font-medium text-gray-900">
+                            {{ backup.created_at[:10] }} {{ backup.created_at[11:19] }}
+                        </p>
+                        <p class="text-xs text-gray-500 mt-1">
+                            Full: {{ (backup.full_size_bytes / 1024) | round(1) }}KB
+                            &middot;
+                            Clean: {{ (backup.clean_size_bytes / 1024) | round(1) }}KB
+                        </p>
+                    </div>
+                    <div class="mt-3 sm:mt-0 flex flex-wrap items-center gap-2 sm:gap-3">
+                        {% if backup.full_backup_id %}
+                        <a href="/api/admin/backup/ics/{{ backup.full_backup_id }}/download"
+                           class="inline-flex items-center px-3 py-1.5 border border-gray-300 text-xs font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50"
+                           title="All events including BusyBridge-managed ones">
+                            <i class="fas fa-file-archive mr-1.5"></i>All Events
+                        </a>
+                        {% endif %}
+                        {% if backup.clean_backup_id %}
+                        <a href="/api/admin/backup/ics/{{ backup.clean_backup_id }}/download"
+                           class="inline-flex items-center px-3 py-1.5 border border-transparent text-xs font-medium rounded-md text-white bg-green-600 hover:bg-green-700"
+                           title="Your events only, BusyBridge events removed — ready to import elsewhere">
+                            <i class="fas fa-file-download mr-1.5"></i>Without BusyBridge
+                        </a>
+                        {% endif %}
+                        <button onclick="deleteIcsBackup('{{ backup.timestamp }}')"
+                                class="text-gray-400 hover:text-red-500 p-1" title="Delete">
+                            <i class="fas fa-trash-alt text-xs"></i>
+                        </button>
+                    </div>
+                </div>
+            </li>
+            {% endfor %}
+        </ul>
+        {% else %}
+        <div class="text-center py-12">
+            <i class="fas fa-file-export text-gray-300 text-4xl mb-4"></i>
+            <h3 class="text-sm font-medium text-gray-900">No exports yet</h3>
+            <p class="mt-1 text-sm text-gray-500">Create your first export using the button above, or wait for the next scheduled backup.</p>
+        </div>
+        {% endif %}
+    </div>
+
+    <div class="mt-4 text-sm text-gray-500">
+        <p><strong>All Events</strong> — Raw ICS export from Google Calendar, includes everything.</p>
+        <p><strong>Without BusyBridge</strong> — Same export but with BusyBridge-managed events (busy blocks, synced copies) removed. Safe to import into another calendar app.</p>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    async function createIcsBackup() {
+        const btn = document.getElementById('createBtn');
+        const status = document.getElementById('createStatus');
+        btn.disabled = true;
+        btn.classList.add('opacity-50');
+        status.textContent = 'Creating export...';
+
+        try {
+            const resp = await fetch('/api/admin/backup/ics', {method: 'POST'});
+            if (resp.ok) {
+                status.textContent = 'Export created!';
+                setTimeout(() => window.location.reload(), 1000);
+            } else {
+                const data = await resp.json();
+                status.textContent = 'Error: ' + (data.detail || 'Failed');
+                btn.disabled = false;
+                btn.classList.remove('opacity-50');
+            }
+        } catch (err) {
+            status.textContent = 'Error: ' + err.message;
+            btn.disabled = false;
+            btn.classList.remove('opacity-50');
+        }
+    }
+
+    async function deleteIcsBackup(timestamp) {
+        if (!confirm('Delete this export?')) return;
+        try {
+            const resp = await fetch('/api/admin/backup/ics/' + timestamp, {method: 'DELETE'});
+            if (resp.ok) {
+                window.location.reload();
+            } else {
+                alert('Failed to delete export');
+            }
+        } catch (err) {
+            alert('Error: ' + err.message);
+        }
+    }
+</script>
+{% endblock %}

@@ -38,18 +38,31 @@ async def dashboard(request: Request, error: Optional[str] = None):
 
     db = await get_database()
 
-    # Get connected calendars
+    # Get connected client calendars
     cursor = await db.execute(
         """SELECT cc.*, ot.google_account_email, css.last_incremental_sync,
                   css.last_full_sync, css.consecutive_failures
            FROM client_calendars cc
            JOIN oauth_tokens ot ON cc.oauth_token_id = ot.id
            LEFT JOIN calendar_sync_state css ON cc.id = css.client_calendar_id
-           WHERE cc.user_id = ? AND cc.is_active = TRUE
+           WHERE cc.user_id = ? AND cc.is_active = TRUE AND cc.calendar_type = 'client'
            ORDER BY cc.created_at DESC""",
         (user.id,)
     )
     calendars = await cursor.fetchall()
+
+    # Get connected personal calendars
+    cursor = await db.execute(
+        """SELECT cc.*, ot.google_account_email, css.last_incremental_sync,
+                  css.last_full_sync, css.consecutive_failures
+           FROM client_calendars cc
+           JOIN oauth_tokens ot ON cc.oauth_token_id = ot.id
+           LEFT JOIN calendar_sync_state css ON cc.id = css.client_calendar_id
+           WHERE cc.user_id = ? AND cc.is_active = TRUE AND cc.calendar_type = 'personal'
+           ORDER BY cc.created_at DESC""",
+        (user.id,)
+    )
+    personal_calendars = await cursor.fetchall()
 
     # Get sync status
     cursor = await db.execute(
@@ -78,6 +91,7 @@ async def dashboard(request: Request, error: Optional[str] = None):
         "request": request,
         "user": user,
         "calendars": calendars,
+        "personal_calendars": personal_calendars,
         "status": status_row,
         "event_count": event_count,
         "managed_event_prefix": managed_event_prefix,
@@ -171,6 +185,23 @@ async def sync_control_page(request: Request):
     })
 
 
+@router.get("/app/settings/exports", response_class=HTMLResponse)
+async def exports_page(request: Request):
+    """ICS calendar export downloads."""
+    user = await get_current_user_optional(request)
+    if not user:
+        return RedirectResponse(url="/app/login", status_code=status.HTTP_302_FOUND)
+
+    from app.sync.ics_export import list_ics_backups
+    backups = list_ics_backups()
+
+    return templates.TemplateResponse("exports.html", {
+        "request": request,
+        "user": user,
+        "backups": backups,
+    })
+
+
 @router.get("/app/logs", response_class=HTMLResponse)
 async def logs_page(
     request: Request,
@@ -242,6 +273,7 @@ async def select_calendar_page(
     request: Request,
     token_id: int,
     email: str,
+    calendar_type: str = "client",
 ):
     """Calendar selection page after OAuth."""
     user = await get_current_user_optional(request)
@@ -260,7 +292,7 @@ async def select_calendar_page(
     if not token:
         return RedirectResponse(url="/app?error=invalid_token", status_code=status.HTTP_302_FOUND)
 
-    # Get calendars from the client account
+    # Get calendars from the account
     calendars = []
     try:
         from app.auth.google import get_valid_access_token
@@ -272,14 +304,27 @@ async def select_calendar_page(
         service = build("calendar", "v3", credentials=credentials)
 
         result = service.calendarList().list().execute()
-        # Filter to calendars where user has write access
         for cal in result.get("items", []):
-            if cal.get("accessRole") in ["owner", "writer"]:
-                calendars.append(cal)
+            if calendar_type == "personal":
+                # Personal calendars: show all readable calendars
+                if cal.get("accessRole") in ["owner", "writer", "reader", "freeBusyReader"]:
+                    calendars.append(cal)
+            else:
+                # Client calendars: need write access
+                if cal.get("accessRole") in ["owner", "writer"]:
+                    calendars.append(cal)
 
     except Exception as e:
         logger.error(f"Failed to get calendars: {e}")
         return RedirectResponse(url="/app?error=calendar_fetch_failed", status_code=status.HTTP_302_FOUND)
+
+    # Find already-connected calendar IDs for this user
+    cursor = await db.execute(
+        """SELECT google_calendar_id FROM client_calendars
+           WHERE user_id = ? AND is_active = TRUE""",
+        (user.id,)
+    )
+    connected_ids = {row["google_calendar_id"] for row in await cursor.fetchall()}
 
     return templates.TemplateResponse("select_calendar.html", {
         "request": request,
@@ -287,6 +332,8 @@ async def select_calendar_page(
         "token_id": token_id,
         "email": email,
         "calendars": calendars,
+        "calendar_type": calendar_type,
+        "connected_ids": connected_ids,
     })
 
 
