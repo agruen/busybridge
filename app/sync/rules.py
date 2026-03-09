@@ -256,18 +256,24 @@ async def sync_main_event_to_clients(
     event_id = event["id"]
     recurring_event_id = event.get("recurringEventId")
 
-    # Check if this event originated from a client (skip if so - we don't double-sync)
+    # Check if this event originated from a client or personal sync (skip personal entirely)
     cursor = await db.execute(
         """SELECT * FROM event_mappings
-           WHERE user_id = ? AND main_event_id = ? AND origin_type = 'client'""",
+           WHERE user_id = ? AND main_event_id = ? AND origin_type IN ('client', 'personal')""",
         (user_id, event_id)
     )
-    existing_client_origin = await cursor.fetchone()
+    existing_origin = await cursor.fetchone()
 
-    if existing_client_origin:
+    if existing_origin and existing_origin["origin_type"] == "personal":
+        # This event is a personal busy block we created on main — skip entirely
+        # (the personal sync path already created busy blocks on client calendars)
+        logger.debug(f"Skipping personal-origin event on main: {event_id}")
+        return []
+
+    if existing_origin:
         # This event came from a client calendar, need to create busy blocks
         # on OTHER client calendars (not the origin)
-        origin_calendar_id = existing_client_origin["origin_calendar_id"]
+        origin_calendar_id = existing_origin["origin_calendar_id"]
     else:
         # This is a native main calendar event
         origin_calendar_id = None
@@ -293,7 +299,7 @@ async def sync_main_event_to_clients(
 
     is_recurring = "recurrence" in event or recurring_event_id is not None
 
-    if not mapping and not existing_client_origin:
+    if not mapping and not existing_origin:
         # Create mapping for main-origin event
         cursor = await db.execute(
             """INSERT INTO event_mappings
@@ -317,8 +323,8 @@ async def sync_main_event_to_clients(
             (event_start, event_end, is_all_day, datetime.utcnow().isoformat(), mapping_id)
         )
         await db.commit()
-    elif existing_client_origin:
-        mapping_id = existing_client_origin["id"]
+    elif existing_origin:
+        mapping_id = existing_origin["id"]
 
     # Get all active client calendars (exclude personal calendars — they are read-only)
     cursor = await db.execute(

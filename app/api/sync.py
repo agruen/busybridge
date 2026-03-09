@@ -45,20 +45,6 @@ class SyncLogResponse(BaseModel):
     page_size: int
 
 
-class ManagedCleanupResponse(BaseModel):
-    """Response for manual managed-event cleanup."""
-    status: str
-    message: str
-    managed_event_prefix: str
-    db_main_events_deleted: int
-    db_busy_blocks_deleted: int
-    prefix_calendars_scanned: int
-    prefix_events_deleted: int
-    local_mappings_deleted: int
-    local_busy_blocks_deleted: int
-    errors: list[str]
-
-
 @router.get("/status", response_model=SyncStatusResponse)
 async def get_sync_status(user: User = Depends(get_current_user)):
     """Get overall sync status for current user."""
@@ -262,83 +248,103 @@ async def resume_sync(user: User = Depends(get_current_user)):
     return {"status": "ok", "sync_paused": False}
 
 
-@router.post("/cleanup-managed", response_model=ManagedCleanupResponse)
-async def cleanup_managed_events(user: User = Depends(get_current_user)):
-    """Manually clean up BusyBridge-managed events for the current user."""
+@router.get("/cleanup-progress")
+async def get_cleanup_progress(user: User = Depends(get_current_user)):
+    """Poll cleanup progress for the current user."""
+    from app.sync.engine import get_cleanup_progress as _get_progress, _cleanup_in_progress, _cleanup_progress
+    from app.utils.tasks import _background_tasks
+    progress = _get_progress(user.id)
+    if progress is None:
+        return {
+            "status": "idle",
+            "_debug_in_progress": list(_cleanup_in_progress),
+            "_debug_progress_keys": list(_cleanup_progress.keys()),
+            "_debug_bg_tasks": len(_background_tasks),
+        }
+    return progress
+
+
+async def _run_cleanup_and_resync(user_id: int) -> None:
+    """Background task: run cleanup, log results, then trigger resync."""
+    from app.sync.engine import cleanup_managed_events_for_user, trigger_sync_for_user
+    from app.utils.tasks import create_background_task
+
+    try:
+        summary = await cleanup_managed_events_for_user(user_id)
+    except Exception:
+        logger.exception("Cleanup failed for user %s", user_id)
+        return
+
     db = await get_database()
-
-    from app.sync.engine import cleanup_managed_events_for_user
-
-    summary = await cleanup_managed_events_for_user(user.id)
     status_value = summary.get("status") or "ok"
-    message = (
-        "Managed cleanup completed"
-        if status_value == "ok"
-        else "Managed cleanup completed with warnings"
-    )
-
     await db.execute(
         """INSERT INTO sync_log (user_id, action, status, details)
            VALUES (?, 'managed_cleanup', ?, ?)""",
-        (
-            user.id,
-            status_value,
-            json.dumps(summary),
-        ),
+        (user_id, status_value, json.dumps(summary)),
     )
     await db.commit()
 
-    return ManagedCleanupResponse(
-        status=status_value,
-        message=message,
-        managed_event_prefix=summary.get("managed_event_prefix", ""),
-        db_main_events_deleted=summary.get("db_main_events_deleted", 0),
-        db_busy_blocks_deleted=summary.get("db_busy_blocks_deleted", 0),
-        prefix_calendars_scanned=summary.get("prefix_calendars_scanned", 0),
-        prefix_events_deleted=summary.get("prefix_events_deleted", 0),
-        local_mappings_deleted=summary.get("local_mappings_deleted", 0),
-        local_busy_blocks_deleted=summary.get("local_busy_blocks_deleted", 0),
-        errors=summary.get("errors", []),
+    # Trigger a full re-sync so events are recreated from scratch.
+    create_background_task(
+        trigger_sync_for_user(user_id),
+        f"cleanup_resync_user_{user_id}",
     )
 
 
-@router.post("/cleanup-and-pause", response_model=ManagedCleanupResponse)
-async def cleanup_and_pause(user: User = Depends(get_current_user)):
-    """Pause sync, then clean up all BusyBridge-managed events."""
-    # Pause first so no sync cycle can recreate events during cleanup
-    await set_setting("sync_paused", "true")
-
-    db = await get_database()
+async def _run_cleanup_and_pause(user_id: int) -> None:
+    """Background task: pause sync, run cleanup, log results."""
     from app.sync.engine import cleanup_managed_events_for_user
 
-    summary = await cleanup_managed_events_for_user(user.id)
-    status_value = summary.get("status") or "ok"
-    message = (
-        "Sync paused and managed events cleaned up"
-        if status_value == "ok"
-        else "Sync paused, cleanup completed with warnings"
-    )
+    await set_setting("sync_paused", "true")
 
+    try:
+        summary = await cleanup_managed_events_for_user(user_id)
+    except Exception:
+        logger.exception("Cleanup failed for user %s", user_id)
+        return
+
+    db = await get_database()
+    status_value = summary.get("status") or "ok"
     await db.execute(
         """INSERT INTO sync_log (user_id, action, status, details)
            VALUES (?, 'cleanup_and_pause', ?, ?)""",
-        (
-            user.id,
-            status_value,
-            json.dumps(summary),
-        ),
+        (user_id, status_value, json.dumps(summary)),
     )
     await db.commit()
 
-    return ManagedCleanupResponse(
-        status=status_value,
-        message=message,
-        managed_event_prefix=summary.get("managed_event_prefix", ""),
-        db_main_events_deleted=summary.get("db_main_events_deleted", 0),
-        db_busy_blocks_deleted=summary.get("db_busy_blocks_deleted", 0),
-        prefix_calendars_scanned=summary.get("prefix_calendars_scanned", 0),
-        prefix_events_deleted=summary.get("prefix_events_deleted", 0),
-        local_mappings_deleted=summary.get("local_mappings_deleted", 0),
-        local_busy_blocks_deleted=summary.get("local_busy_blocks_deleted", 0),
-        errors=summary.get("errors", []),
+
+@router.post("/cleanup-managed")
+async def cleanup_managed_events(user: User = Depends(get_current_user)):
+    """Kick off cleanup + resync in the background. Returns immediately."""
+    from app.sync.engine import get_cleanup_progress as _get_progress
+    from app.utils.tasks import create_background_task
+
+    # Prevent double-start
+    progress = _get_progress(user.id)
+    if progress and progress.get("status") == "running":
+        return {"status": "already_running", "message": "Cleanup is already in progress."}
+
+    create_background_task(
+        _run_cleanup_and_resync(user.id),
+        f"cleanup_managed_user_{user.id}",
     )
+
+    return {"status": "started", "message": "Cleanup started. Events will re-sync automatically."}
+
+
+@router.post("/cleanup-and-pause")
+async def cleanup_and_pause(user: User = Depends(get_current_user)):
+    """Kick off pause + cleanup in the background. Returns immediately."""
+    from app.sync.engine import get_cleanup_progress as _get_progress
+    from app.utils.tasks import create_background_task
+
+    progress = _get_progress(user.id)
+    if progress and progress.get("status") == "running":
+        return {"status": "already_running", "message": "Cleanup is already in progress."}
+
+    create_background_task(
+        _run_cleanup_and_pause(user.id),
+        f"cleanup_pause_user_{user.id}",
+    )
+
+    return {"status": "started", "message": "Cleanup started. Sync will be paused."}

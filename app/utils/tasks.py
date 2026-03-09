@@ -6,11 +6,15 @@ from typing import Coroutine, Any
 
 logger = logging.getLogger(__name__)
 
+# Strong references to prevent GC of fire-and-forget tasks.
+_background_tasks: set[asyncio.Task] = set()
+
 
 def create_background_task(coro: Coroutine[Any, Any, Any], task_name: str = "background_task") -> asyncio.Task:
     """
     Create a background task with proper error handling.
 
+    Keeps a strong reference so the task isn't garbage-collected.
     Exceptions in the task will be logged instead of silently lost.
     """
     async def _wrapped_task():
@@ -20,4 +24,6 @@ def create_background_task(coro: Coroutine[Any, Any, Any], task_name: str = "bac
             logger.exception(f"Error in background task '{task_name}': {e}")
 
     task = asyncio.create_task(_wrapped_task())
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
     return task

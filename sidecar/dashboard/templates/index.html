@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BusyBridge Test Sidecar</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0f1117; color: #e1e4e8; }
+  .header { background: #161b22; padding: 16px 24px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #30363d; }
+  .header h1 { font-size: 20px; font-weight: 600; }
+  .header .status { display: flex; align-items: center; gap: 8px; font-size: 14px; }
+  .status-dot { width: 10px; height: 10px; border-radius: 50%; background: #3fb950; animation: pulse 2s infinite; }
+  .status-dot.stopped { background: #f85149; animation: none; }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+  .container { max-width: 1400px; margin: 0 auto; padding: 24px; }
+  .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 24px; }
+  .stat-card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 20px; }
+  .stat-card .label { font-size: 13px; color: #8b949e; text-transform: uppercase; letter-spacing: 0.5px; }
+  .stat-card .value { font-size: 32px; font-weight: 700; margin-top: 4px; }
+  .stat-card .value.green { color: #3fb950; }
+  .stat-card .value.red { color: #f85149; }
+  .stat-card .value.yellow { color: #d29922; }
+  .suites { background: #161b22; border: 1px solid #30363d; border-radius: 8px; margin-bottom: 24px; }
+  .suites h2 { padding: 16px 20px; font-size: 16px; border-bottom: 1px solid #30363d; }
+  .suite-row { display: flex; align-items: center; padding: 12px 20px; border-bottom: 1px solid #21262d; gap: 16px; }
+  .suite-row:last-child { border-bottom: none; }
+  .suite-name { flex: 1; font-size: 14px; font-weight: 500; }
+  .suite-counts { font-size: 13px; color: #8b949e; min-width: 120px; }
+  .progress-bar { flex: 2; height: 6px; background: #21262d; border-radius: 3px; overflow: hidden; }
+  .progress-fill { height: 100%; background: #3fb950; border-radius: 3px; transition: width 0.3s; }
+  .progress-fill.has-failures { background: linear-gradient(90deg, #3fb950 var(--pass-pct), #f85149 var(--pass-pct)); }
+  .filters { display: flex; gap: 12px; margin-bottom: 16px; align-items: center; }
+  .filters select, .filters input { background: #0d1117; border: 1px solid #30363d; color: #e1e4e8; padding: 8px 12px; border-radius: 6px; font-size: 14px; }
+  .filters input { flex: 1; max-width: 300px; }
+  table { width: 100%; border-collapse: collapse; background: #161b22; border: 1px solid #30363d; border-radius: 8px; overflow: hidden; }
+  thead th { background: #161b22; padding: 12px 16px; text-align: left; font-size: 13px; color: #8b949e; text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 1px solid #30363d; }
+  tbody tr { border-bottom: 1px solid #21262d; cursor: pointer; transition: background 0.15s; }
+  tbody tr:hover { background: #1c2128; }
+  tbody tr.failed { background: rgba(248, 81, 73, 0.08); }
+  tbody tr.error { background: rgba(210, 153, 34, 0.08); }
+  tbody td { padding: 10px 16px; font-size: 14px; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 12px; font-weight: 600; }
+  .badge.passed { background: rgba(63, 185, 80, 0.2); color: #3fb950; }
+  .badge.failed { background: rgba(248, 81, 73, 0.2); color: #f85149; }
+  .badge.error { background: rgba(210, 153, 34, 0.2); color: #d29922; }
+  .badge.skipped { background: rgba(139, 148, 158, 0.2); color: #8b949e; }
+  .expandable { display: none; background: #0d1117; padding: 16px; font-size: 13px; white-space: pre-wrap; word-break: break-word; color: #f85149; }
+  .expandable.show { display: table-row; }
+  .footer { text-align: center; padding: 24px; color: #484f58; font-size: 13px; }
+  @media (max-width: 768px) {
+    .stats { grid-template-columns: repeat(2, 1fr); }
+    .filters { flex-wrap: wrap; }
+    .suite-row { flex-wrap: wrap; }
+    .progress-bar { flex-basis: 100%; }
+  }
+</style>
+</head>
+<body>
+<div class="header">
+  <h1>BusyBridge Test Sidecar</h1>
+  <div class="status">
+    <div class="status-dot" id="statusDot"></div>
+    <span id="statusText">Running</span>
+    <span style="color:#484f58;margin-left:12px" id="uptime"></span>
+  </div>
+</div>
+<div class="container">
+  <div class="stats">
+    <div class="stat-card"><div class="label">Total Runs</div><div class="value" id="totalRuns">0</div></div>
+    <div class="stat-card"><div class="label">Passed</div><div class="value green" id="totalPassed">0</div></div>
+    <div class="stat-card"><div class="label">Failed</div><div class="value red" id="totalFailed">0</div></div>
+    <div class="stat-card"><div class="label">Error Rate</div><div class="value yellow" id="errorRate">0%</div></div>
+  </div>
+  <div class="suites" id="suitesSection">
+    <h2>Per-Suite Breakdown</h2>
+    <div id="suitesList"></div>
+  </div>
+  <div class="filters">
+    <select id="filterSuite"><option value="">All Suites</option></select>
+    <select id="filterStatus">
+      <option value="">All Status</option>
+      <option value="passed">Passed</option>
+      <option value="failed">Failed</option>
+      <option value="error">Error</option>
+    </select>
+    <input type="text" id="filterSearch" placeholder="Search test name...">
+  </div>
+  <table>
+    <thead><tr><th>Time</th><th>Suite</th><th>Test</th><th>Status</th><th>Duration</th><th>Error</th></tr></thead>
+    <tbody id="resultsBody"></tbody>
+  </table>
+</div>
+<div class="footer" id="footerInfo">BusyBridge Test Sidecar</div>
+
+<script>
+let allResults = [];
+let knownSuites = new Set();
+
+function formatDuration(s) { return s < 1 ? s.toFixed(2) + 's' : s < 60 ? s.toFixed(1) + 's' : Math.floor(s/60) + 'm ' + Math.round(s%60) + 's'; }
+function formatTime(iso) { try { return new Date(iso).toLocaleTimeString(); } catch { return iso; } }
+function formatUptime(s) { const h = Math.floor(s/3600), m = Math.floor((s%3600)/60); return h > 0 ? h + 'h ' + m + 'm' : m + 'm'; }
+
+async function refresh() {
+  try {
+    const [summaryRes, resultsRes] = await Promise.all([
+      fetch('/api/summary'), fetch('/api/results?limit=500')
+    ]);
+    const summary = await summaryRes.json();
+    const data = await resultsRes.json();
+    allResults = data.results || [];
+
+    document.getElementById('totalRuns').textContent = summary.total;
+    document.getElementById('totalPassed').textContent = summary.passed;
+    document.getElementById('totalFailed').textContent = summary.failed + (summary.errored || 0);
+    document.getElementById('errorRate').textContent = summary.error_rate + '%';
+    document.getElementById('uptime').textContent = formatUptime(summary.uptime);
+
+    const dot = document.getElementById('statusDot');
+    const txt = document.getElementById('statusText');
+    if (summary.current_test) { dot.className = 'status-dot'; txt.textContent = 'Running: ' + summary.current_test; }
+    else { dot.className = 'status-dot stopped'; txt.textContent = 'Idle'; }
+
+    // Suites
+    const sl = document.getElementById('suitesList');
+    sl.innerHTML = '';
+    const select = document.getElementById('filterSuite');
+    for (const [name, s] of Object.entries(summary.by_suite || {})) {
+      if (!knownSuites.has(name)) { knownSuites.add(name); const o = document.createElement('option'); o.value = name; o.textContent = name; select.appendChild(o); }
+      const pct = s.total ? Math.round(s.passed / s.total * 100) : 0;
+      const row = document.createElement('div'); row.className = 'suite-row';
+      row.innerHTML = '<div class="suite-name">' + name + '</div>' +
+        '<div class="suite-counts">' + s.passed + '/' + s.total + ' passed</div>' +
+        '<div class="progress-bar"><div class="progress-fill' + (s.failed || s.error ? ' has-failures' : '') +
+        '" style="width:100%;--pass-pct:' + pct + '%"></div></div>';
+      sl.appendChild(row);
+    }
+
+    renderTable();
+  } catch (e) { console.error('Refresh error:', e); }
+}
+
+function renderTable() {
+  const suite = document.getElementById('filterSuite').value;
+  const status = document.getElementById('filterStatus').value;
+  const search = document.getElementById('filterSearch').value.toLowerCase();
+  let filtered = allResults;
+  if (suite) filtered = filtered.filter(r => r.suite === suite);
+  if (status) filtered = filtered.filter(r => r.status === status);
+  if (search) filtered = filtered.filter(r => r.test_name.toLowerCase().includes(search));
+
+  const tbody = document.getElementById('resultsBody');
+  tbody.innerHTML = '';
+  for (const r of filtered.slice(0, 200)) {
+    const tr = document.createElement('tr');
+    tr.className = r.status === 'failed' ? 'failed' : r.status === 'error' ? 'error' : '';
+    const errShort = r.error ? r.error.split('\n')[0].substring(0, 80) : '';
+    tr.innerHTML = '<td>' + formatTime(r.timestamp) + '</td><td>' + r.suite + '</td><td>' + r.test_name +
+      '</td><td><span class="badge ' + r.status + '">' + r.status + '</span></td><td>' +
+      formatDuration(r.duration) + '</td><td>' + errShort + '</td>';
+    if (r.error) {
+      tr.addEventListener('click', () => {
+        const next = tr.nextElementSibling;
+        if (next && next.classList.contains('expandable')) { next.classList.toggle('show'); }
+        else {
+          const detail = document.createElement('tr');
+          detail.className = 'expandable show';
+          detail.innerHTML = '<td colspan="6">' + r.error.replace(/</g,'&lt;') + '</td>';
+          tr.after(detail);
+        }
+      });
+    }
+    tbody.appendChild(tr);
+  }
+}
+
+document.getElementById('filterSuite').addEventListener('change', renderTable);
+document.getElementById('filterStatus').addEventListener('change', renderTable);
+document.getElementById('filterSearch').addEventListener('input', renderTable);
+
+refresh();
+setInterval(refresh, 10000);
+</script>
+</body>
+</html>

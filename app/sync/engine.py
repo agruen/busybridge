@@ -25,6 +25,24 @@ logger = logging.getLogger(__name__)
 _calendar_locks: dict[str, asyncio.Lock] = {}
 _calendar_locks_guard = asyncio.Lock()
 
+# Set of user IDs currently running cleanup.  While set, the main-calendar
+# sync must treat any "cancelled" events as a full-sync (no cascade deletes).
+_cleanup_in_progress: set[int] = set()
+
+# Cleanup progress tracking — keyed by user_id.
+_cleanup_progress: dict[int, dict] = {}
+
+
+def get_cleanup_progress(user_id: int) -> Optional[dict]:
+    """Return the current cleanup progress for a user, or None."""
+    return _cleanup_progress.get(user_id)
+
+
+def _update_cleanup_progress(user_id: int, **kwargs) -> None:
+    """Update cleanup progress for a user."""
+    if user_id in _cleanup_progress:
+        _cleanup_progress[user_id].update(kwargs)
+
 
 async def _get_calendar_lock(key: str) -> asyncio.Lock:
     """Get or create an asyncio lock for a specific calendar sync key."""
@@ -37,19 +55,30 @@ async def _get_calendar_lock(key: str) -> asyncio.Lock:
 def _event_has_managed_prefix(event: dict, prefix: str) -> bool:
     """Check whether an event is BusyBridge-managed.
 
-    Matches if the prefix appears at the start of the summary (busy blocks)
-    OR anywhere in the description (main-calendar copies store metadata there).
+    Matches if the prefix appears anywhere in the summary (busy blocks may
+    have a leading lock emoji 🔐) OR anywhere in the description (main-
+    calendar copies store metadata there).  Also matches events that carry
+    our extended-property sync tag.
     """
     normalized_prefix = (prefix or "").strip().lower()
     if not normalized_prefix:
         return False
 
     summary = (event.get("summary") or "").strip().lower()
-    if summary.startswith(normalized_prefix):
+    if normalized_prefix in summary:
         return True
 
     description = (event.get("description") or "").lower()
-    return normalized_prefix in description
+    if normalized_prefix in description:
+        return True
+
+    # Belt-and-suspenders: also match on the sync engine tag
+    ext = event.get("extendedProperties", {}).get("private", {})
+    settings = get_settings()
+    if ext.get(settings.calendar_sync_tag) == "true":
+        return True
+
+    return False
 
 
 async def is_sync_paused() -> bool:
@@ -589,12 +618,15 @@ async def _sync_main_calendar(user_id: int) -> None:
         for event in events:
             try:
                 if event.get("status") == "cancelled":
+                    # If cleanup is in progress, treat as full sync to
+                    # prevent cascading deletes to client calendars.
+                    effective_full_sync = is_full_sync or (user_id in _cleanup_in_progress)
                     await handle_deleted_main_event(
                         user_id,
                         event["id"],
                         recurring_event_id=event.get("recurringEventId"),
                         original_start_time=event.get("originalStartTime"),
-                        is_full_sync=is_full_sync,
+                        is_full_sync=effective_full_sync,
                     )
                 else:
                     # Check for client-origin mapping (used for RSVP and edit guards).
@@ -1141,6 +1173,42 @@ async def cleanup_managed_events_for_user(user_id: int) -> dict:
         "errors": [],
     }
 
+    _cleanup_progress[user_id] = {
+        "status": "running",
+        "started_at": datetime.now(timezone.utc).isoformat(),
+        "step": "clearing_tokens",
+        "step_label": "Clearing sync tokens...",
+        "current": 0,
+        "total": 0,
+        "summary": None,
+    }
+
+    _cleanup_in_progress.add(user_id)
+    try:
+        result = await _cleanup_managed_events_impl(user_id, db, managed_prefix, summary)
+        _cleanup_progress[user_id].update(
+            status="completed",
+            step="done",
+            step_label="Cleanup complete.",
+            summary=result,
+        )
+        return result
+    except Exception:
+        _cleanup_progress[user_id].update(
+            status="error",
+            step="error",
+            step_label="Cleanup failed with an error.",
+            summary=summary,
+        )
+        raise
+    finally:
+        _cleanup_in_progress.discard(user_id)
+
+
+async def _cleanup_managed_events_impl(
+    user_id: int, db, managed_prefix: str, summary: dict
+) -> dict:
+    """Inner implementation — runs while _cleanup_in_progress flag is set."""
     cursor = await db.execute(
         "SELECT id, email, main_calendar_id FROM users WHERE id = ?",
         (user_id,),
@@ -1152,9 +1220,39 @@ async def cleanup_managed_events_for_user(user_id: int) -> dict:
         return summary
 
     from app.auth.google import get_valid_access_token
+    from googleapiclient.errors import HttpError
 
     client_cache: dict[str, GoogleCalendarClient] = {}
     token_failures: set[str] = set()
+
+    async def _throttled_delete(
+        client: GoogleCalendarClient, calendar_id: str, event_id: str,
+    ) -> None:
+        """Delete with retry on rate limits and a small delay between calls."""
+        for attempt in range(4):
+            try:
+                await asyncio.wait_for(
+                    asyncio.to_thread(client.delete_event, calendar_id, event_id),
+                    timeout=15,
+                )
+                await asyncio.sleep(0.15)  # ~6 req/s, well under Google's limits
+                return
+            except asyncio.TimeoutError:
+                logger.warning("Delete timed out for %s (attempt %d)", event_id[:20], attempt + 1)
+                if attempt == 3:
+                    raise
+            except HttpError as e:
+                if e.resp.status == 403 and "rateLimitExceeded" in str(e):
+                    wait = 2 ** attempt  # 1, 2, 4, 8 seconds
+                    logger.info("Rate limited, waiting %ds before retry (%s)", wait, event_id[:20])
+                    await asyncio.sleep(wait)
+                else:
+                    raise
+        # Final attempt — let it raise
+        await asyncio.wait_for(
+            asyncio.to_thread(client.delete_event, calendar_id, event_id),
+            timeout=15,
+        )
 
     async def _get_client_for_email(email: str) -> Optional[GoogleCalendarClient]:
         normalized_email = (email or "").strip().lower()
@@ -1176,23 +1274,57 @@ async def cleanup_managed_events_for_user(user_id: int) -> dict:
             logger.warning(f"Failed to get token for cleanup user={user_id}, email={email}: {e}")
             return None
 
+    # ------------------------------------------------------------------ #
+    # Pass 0: Clear all sync tokens BEFORE deleting any remote events.    #
+    # When cleanup deletes events from Google, webhooks fire immediately   #
+    # and can trigger a sync.  If that sync runs with an incremental      #
+    # token it will see the deletions and cascade-delete the original     #
+    # client events -- catastrophic data loss.  By clearing tokens first, #
+    # any racing sync will be a *full* sync, which has safe logic that    #
+    # never cascades deletes back to client calendars.                    #
+    # ------------------------------------------------------------------ #
+    cursor = await db.execute(
+        """SELECT id FROM client_calendars WHERE user_id = ? AND is_active = TRUE""",
+        (user_id,),
+    )
+    active_cal_ids = [row["id"] for row in await cursor.fetchall()]
+    if active_cal_ids:
+        placeholders = ",".join("?" * len(active_cal_ids))
+        await db.execute(
+            f"UPDATE calendar_sync_state SET sync_token = NULL WHERE client_calendar_id IN ({placeholders})",
+            tuple(active_cal_ids),
+        )
+    await db.execute(
+        "UPDATE main_calendar_sync_state SET sync_token = NULL WHERE user_id = ?",
+        (user_id,),
+    )
+    await db.commit()
+    logger.info("Cleanup: cleared all sync tokens for user %s before remote deletions", user_id)
+
     # Track which mappings/blocks were successfully cleaned remotely so we only
     # delete DB records for those -- otherwise we lose tracking for retry.
     cleaned_mapping_ids: set[int] = set()
     failed_mapping_ids: set[int] = set()
 
-    # Pass 1a: DB-driven cleanup of client-origin event copies on the main calendar.
+    logger.info("Cleanup: starting Pass 1a (main calendar events) for user %s", user_id)
+    # Pass 1a: DB-driven cleanup of BusyBridge-created events on the main calendar.
+    # This covers:
+    #   - client-origin copies (events synced FROM client calendars TO main)
+    #   - personal-origin busy blocks (privacy blocks for personal events)
+    # EXCLUDES main-origin events — those are the user's own events on the
+    # main calendar; we only created busy blocks FOR them on client calendars
+    # (handled by Pass 1b).  Deleting them would destroy user data.
     cursor = await db.execute(
-        """SELECT id, main_event_id
+        """SELECT id, main_event_id, origin_type
            FROM event_mappings
-           WHERE user_id = ? AND origin_type = 'client'
+           WHERE user_id = ? AND origin_type IN ('client', 'personal')
            AND deleted_at IS NULL AND main_event_id IS NOT NULL""",
         (user_id,),
     )
-    client_origin_mappings = await cursor.fetchall()
-    summary["db_client_mappings_checked"] = len(client_origin_mappings)
+    main_cal_mappings = await cursor.fetchall()
+    summary["db_client_mappings_checked"] = len(main_cal_mappings)
 
-    if client_origin_mappings and user["main_calendar_id"]:
+    if main_cal_mappings and user["main_calendar_id"]:
         main_client = await _get_client_for_email(user["email"])
         # Use SA client for main calendar deletions when available
         sa_delete_client = None
@@ -1203,9 +1335,18 @@ async def cleanup_managed_events_for_user(user_id: int) -> dict:
             sa_delete_client = get_sa_main_client(user["main_calendar_id"])
         delete_client = sa_delete_client or main_client
         if delete_client:
-            for mapping in client_origin_mappings:
+            _update_cleanup_progress(
+                user_id, step="deleting_main_events",
+                step_label="Deleting managed events from main calendar...",
+                current=0, total=len(main_cal_mappings),
+            )
+            for i, mapping in enumerate(main_cal_mappings):
                 try:
-                    delete_client.delete_event(user["main_calendar_id"], mapping["main_event_id"])
+                    await _throttled_delete(
+                        delete_client,
+                        user["main_calendar_id"],
+                        mapping["main_event_id"],
+                    )
                     summary["db_main_events_deleted"] += 1
                     cleaned_mapping_ids.add(mapping["id"])
                 except Exception as e:
@@ -1217,10 +1358,20 @@ async def cleanup_managed_events_for_user(user_id: int) -> dict:
                         mapping["main_event_id"],
                         e,
                     )
+                _update_cleanup_progress(user_id, current=i + 1)
+        else:
+            # No client available — mark ALL mappings as failed so their
+            # DB records are retained for retry.
+            for mapping in main_cal_mappings:
+                failed_mapping_ids.add(mapping["id"])
+            summary["errors"].append("main_calendar_token_unavailable")
 
+    logger.info("Cleanup: Pass 1a done (%d deleted, %d failed). Starting Pass 1b (busy blocks) for user %s",
+                summary["db_main_events_deleted"], len(failed_mapping_ids), user_id)
     # Pass 1b: DB-driven cleanup of busy blocks on client calendars.
     cursor = await db.execute(
-        """SELECT bb.id, bb.busy_block_event_id, cc.google_calendar_id, ot.google_account_email
+        """SELECT bb.id, bb.event_mapping_id, bb.busy_block_event_id,
+                  cc.google_calendar_id, ot.google_account_email
            FROM busy_blocks bb
            JOIN event_mappings em ON bb.event_mapping_id = em.id
            JOIN client_calendars cc ON bb.client_calendar_id = cc.id
@@ -1231,15 +1382,30 @@ async def cleanup_managed_events_for_user(user_id: int) -> dict:
     busy_blocks = await cursor.fetchall()
     summary["db_busy_blocks_checked"] = len(busy_blocks)
 
-    for block in busy_blocks:
+    _update_cleanup_progress(
+        user_id, step="deleting_busy_blocks",
+        step_label="Deleting busy blocks from client calendars...",
+        current=0, total=len(busy_blocks),
+    )
+    for i, block in enumerate(busy_blocks):
         client = await _get_client_for_email(block["google_account_email"])
         if not client:
+            failed_mapping_ids.add(block["event_mapping_id"])
+            summary["errors"].append(
+                f"busy_block_token_unavailable:{block['busy_block_event_id']}"
+            )
+            _update_cleanup_progress(user_id, current=i + 1)
             continue
 
         try:
-            client.delete_event(block["google_calendar_id"], block["busy_block_event_id"])
+            await _throttled_delete(
+                client,
+                block["google_calendar_id"],
+                block["busy_block_event_id"],
+            )
             summary["db_busy_blocks_deleted"] += 1
         except Exception as e:
+            failed_mapping_ids.add(block["event_mapping_id"])
             summary["errors"].append(
                 f"busy_block_delete:{block['busy_block_event_id']}:{type(e).__name__}"
             )
@@ -1249,7 +1415,10 @@ async def cleanup_managed_events_for_user(user_id: int) -> dict:
                 block["busy_block_event_id"],
                 e,
             )
+        _update_cleanup_progress(user_id, current=i + 1)
 
+    logger.info("Cleanup: Pass 1b done (%d deleted). Starting Pass 2 (prefix sweep) for user %s",
+                summary["db_busy_blocks_deleted"], user_id)
     # Pass 2: Prefix sweep across visible calendars for extra coverage.
     if managed_prefix:
         seen_calendars: set[tuple[str, str]] = set()
@@ -1269,8 +1438,15 @@ async def cleanup_managed_events_for_user(user_id: int) -> dict:
                 return
 
             try:
-                events = client.search_events(calendar_id, managed_prefix)
+                events = await asyncio.wait_for(
+                    asyncio.to_thread(client.search_events, calendar_id, managed_prefix),
+                    timeout=30,
+                )
                 summary["prefix_calendars_scanned"] += 1
+            except asyncio.TimeoutError:
+                summary["errors"].append(f"prefix_scan_timeout:{label}")
+                logger.warning("Prefix sweep timed out for user=%s calendar=%s", user_id, calendar_id)
+                return
             except Exception as e:
                 summary["errors"].append(f"prefix_scan:{label}:{type(e).__name__}")
                 logger.warning(
@@ -1291,7 +1467,7 @@ async def cleanup_managed_events_for_user(user_id: int) -> dict:
 
                 summary["prefix_matches_found"] += 1
                 try:
-                    client.delete_event(calendar_id, event_id)
+                    await _throttled_delete(client, calendar_id, event_id)
                     summary["prefix_events_deleted"] += 1
                 except Exception as e:
                     summary["errors"].append(f"prefix_delete:{event_id}:{type(e).__name__}")
@@ -1303,15 +1479,13 @@ async def cleanup_managed_events_for_user(user_id: int) -> dict:
                         e,
                     )
 
+        # Build list of calendars to sweep so we can report progress.
+        sweep_list: list[tuple[str, str, str]] = []  # (cal_id, email, label)
         if user["main_calendar_id"]:
-            await _sweep_calendar(
-                calendar_id=user["main_calendar_id"],
-                account_email=user["email"],
-                label="main",
-            )
+            sweep_list.append((user["main_calendar_id"], user["email"], "main"))
 
         cursor = await db.execute(
-            """SELECT cc.google_calendar_id, ot.google_account_email
+            """SELECT cc.google_calendar_id, cc.display_name, ot.google_account_email
                FROM client_calendars cc
                JOIN oauth_tokens ot ON cc.oauth_token_id = ot.id
                WHERE cc.user_id = ?""",
@@ -1319,13 +1493,37 @@ async def cleanup_managed_events_for_user(user_id: int) -> dict:
         )
         client_calendars = await cursor.fetchall()
         for calendar in client_calendars:
-            await _sweep_calendar(
-                calendar_id=calendar["google_calendar_id"],
-                account_email=calendar["google_account_email"],
-                label=f"client:{calendar['google_calendar_id']}",
+            cal_label = calendar["display_name"] or calendar["google_calendar_id"][:20]
+            sweep_list.append((
+                calendar["google_calendar_id"],
+                calendar["google_account_email"],
+                cal_label,
+            ))
+
+        for sweep_i, (cal_id, cal_email, cal_label) in enumerate(sweep_list):
+            _update_cleanup_progress(
+                user_id, step="sweeping_prefix",
+                step_label=f"Scanning {cal_label} for leftover events...",
+                current=sweep_i, total=len(sweep_list),
             )
+            await _sweep_calendar(
+                calendar_id=cal_id,
+                account_email=cal_email,
+                label=cal_label,
+            )
+        _update_cleanup_progress(
+            user_id, step="sweeping_prefix",
+            step_label="Calendar scan complete.",
+            current=len(sweep_list), total=len(sweep_list),
+        )
     else:
         summary["errors"].append("managed_event_prefix_not_configured")
+
+    _update_cleanup_progress(
+        user_id, step="cleaning_db",
+        step_label="Cleaning up database records...",
+        current=0, total=0,
+    )
 
     # Local reset: only delete mappings whose remote events were successfully cleaned up.
     # Retain mappings that failed so they can be retried or cleaned manually.

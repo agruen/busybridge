@@ -32,3 +32,29 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
+
+  test-sidecar:
+    build:
+      context: ./sidecar
+      network: host
+    container_name: busybridge-test-sidecar
+    profiles: ["test"]
+    ports:
+      - "8100:8100"
+    environment:
+      - APP_BASE_URL=http://calendar-sync:3000
+      - DATABASE_PATH=/data/calendar-sync.db
+      - ENCRYPTION_KEY_FILE=/secrets/encryption.key
+      - TEST_LOG_DIR=/data/test-logs
+      - DASHBOARD_PORT=8100
+      - TZ=America/New_York
+      - SOAK_MIN_DELAY=10
+      - SOAK_MAX_DELAY=300
+      - SYNC_WAIT_TIMEOUT=120
+      - POLL_INTERVAL=3
+    volumes:
+      - ./data:/data
+      - ./secrets:/secrets
+    depends_on:
+      calendar-sync:
+        condition: service_healthy
