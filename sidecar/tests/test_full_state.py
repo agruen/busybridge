@@ -98,55 +98,6 @@ class FullStateAfterMainEvent(TestCase):
             ctx.cleanup.track(cal["client"], cal["google_calendar_id"], busy["id"])
 
 
-class FullStateAfterPersonalEvent(TestCase):
-    name = "FullStateAfterPersonalEvent"
-    suite = SUITE
-    timing = TestTiming.SLOW
-
-    async def run(self, ctx: TestContext) -> None:
-        acct = ctx.accounts[0]
-        personal_cals = [
-            c for c in acct["calendars"] if c["calendar_type"] == "personal"
-        ]
-        if not personal_cals:
-            return
-        personal_cal = personal_cals[0]
-        client_cals = [c for c in acct["calendars"] if c["calendar_type"] == "client"]
-        main_client = acct["main_client"]
-        main_cal_id = acct["main_calendar_id"]
-
-        original_title = ctx.factory.make_summary("fs-personal")
-        start, end = ctx.factory.future_time_slot(hours_from_now=3)
-
-        event = personal_cal["client"].create_event(
-            personal_cal["google_calendar_id"], original_title, start, end,
-        )
-        ctx.cleanup.track(
-            personal_cal["client"], personal_cal["google_calendar_id"], event["id"]
-        )
-
-        await ctx.api.trigger_user_sync(acct["user_id"])
-
-        # Main: "Busy (Personal)" block
-        main_block = await ctx.waiter.wait_for_event(
-            main_client, main_cal_id,
-            lambda e: "Personal" in e.get("summary", "") and "BusyBridge" in e.get("summary", ""),
-            time_min=start, time_max=end,
-            description="personal block on main",
-        )
-        ctx.cleanup.track(main_client, main_cal_id, main_block["id"])
-        assert original_title not in main_block.get("summary", ""), "Title leaked"
-
-        for cal in client_cals:
-            block = await ctx.waiter.wait_for_event(
-                cal["client"], cal["google_calendar_id"],
-                lambda e: "Personal" in e.get("summary", "") and "BusyBridge" in e.get("summary", ""),
-                time_min=start, time_max=end,
-                description=f"personal block on {cal['google_calendar_id'][:20]}",
-            )
-            ctx.cleanup.track(cal["client"], cal["google_calendar_id"], block["id"])
-
-
 class FullStateAfterDelete(TestCase):
     name = "FullStateAfterDelete"
     suite = SUITE
@@ -403,7 +354,6 @@ class FullStateConsistencyCheck(TestCase):
 TESTS = [
     FullStateAfterClientEvent(),
     FullStateAfterMainEvent(),
-    FullStateAfterPersonalEvent(),
     FullStateAfterDelete(),
     FullStateMultipleEvents(),
     FullStateAfterEditableMove(),

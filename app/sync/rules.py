@@ -733,6 +733,114 @@ async def propagate_rsvp_to_client(
         return False
 
 
+async def propagate_time_to_client(
+    user_id: int,
+    main_event: dict,
+    mapping: dict,
+) -> bool:
+    """Propagate a time/date change from the main calendar copy back to the client calendar.
+
+    When the user moves an editable event on the main calendar, this patches
+    the client origin event with the new start/end and updates the mapping DB
+    so future syncs don't bounce.
+
+    Returns True if the propagation succeeded.
+    """
+    db = await get_database()
+
+    start = main_event.get("start", {})
+    end = main_event.get("end", {})
+    is_all_day = "date" in start
+
+    if is_all_day:
+        current_start = start.get("date")
+        current_end = end.get("date")
+    else:
+        current_start = start.get("dateTime")
+        current_end = end.get("dateTime")
+
+    stored_start = mapping["event_start"]
+    stored_end = mapping["event_end"]
+
+    # Compare as parsed datetimes to handle timezone offset differences.
+    try:
+        times_match = (
+            datetime.fromisoformat(current_start) == datetime.fromisoformat(stored_start)
+            and datetime.fromisoformat(current_end) == datetime.fromisoformat(stored_end)
+        )
+    except (ValueError, TypeError):
+        times_match = current_start == stored_start and current_end == stored_end
+
+    if times_match:
+        return False
+
+    # Look up the client calendar and its OAuth credentials.
+    cursor = await db.execute(
+        """SELECT cc.google_calendar_id, ot.google_account_email
+           FROM client_calendars cc
+           JOIN oauth_tokens ot ON cc.oauth_token_id = ot.id
+           WHERE cc.id = ?""",
+        (mapping["origin_calendar_id"],)
+    )
+    cal = await cursor.fetchone()
+    if not cal:
+        logger.warning(
+            f"Cannot propagate time change: client calendar {mapping['origin_calendar_id']} not found"
+        )
+        return False
+
+    client_email = cal["google_account_email"]
+
+    try:
+        from app.auth.google import get_valid_access_token
+        token = await get_valid_access_token(user_id, client_email)
+        client = GoogleCalendarClient(token)
+
+        # Build the patch body with the new times.
+        if is_all_day:
+            patch = {
+                "start": {"date": current_start},
+                "end": {"date": current_end},
+            }
+        else:
+            tz = start.get("timeZone") or end.get("timeZone")
+            patch_start = {"dateTime": current_start}
+            patch_end = {"dateTime": current_end}
+            if tz:
+                patch_start["timeZone"] = tz
+                patch_end["timeZone"] = tz
+            patch = {"start": patch_start, "end": patch_end}
+
+        client.patch_event(
+            cal["google_calendar_id"],
+            mapping["origin_event_id"],
+            patch,
+            send_updates="none",
+        )
+
+        # Update stored times so future syncs don't re-trigger propagation.
+        await db.execute(
+            """UPDATE event_mappings
+               SET event_start = ?, event_end = ?, is_all_day = ?, updated_at = ?
+               WHERE id = ?""",
+            (current_start, current_end, is_all_day, datetime.utcnow().isoformat(), mapping["id"]),
+        )
+        await db.commit()
+
+        logger.info(
+            f"Propagated time change to client event {mapping['origin_event_id']} "
+            f"on calendar {cal['google_calendar_id']} "
+            f"({stored_start} -> {current_start})"
+        )
+        return True
+
+    except Exception as e:
+        logger.error(
+            f"Failed to propagate time change to client event {mapping['origin_event_id']}: {e}"
+        )
+        return False
+
+
 async def handle_deleted_main_event(
     user_id: int,
     event_id: str,

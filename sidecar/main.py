@@ -182,6 +182,9 @@ async def main() -> None:
                 (acct["main_client"], acct["main_calendar_id"])
             )
         for ci in acct["calendars"]:
+            # Skip personal calendars — sidecar only has read access
+            if ci.get("calendar_type") == "personal":
+                continue
             all_cal_clients.append(
                 (ci["client"], ci["google_calendar_id"])
             )

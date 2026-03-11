@@ -15,6 +15,7 @@ from app.sync.rules import (
     handle_deleted_client_event,
     handle_deleted_main_event,
     propagate_rsvp_to_client,
+    propagate_time_to_client,
     sync_personal_event_to_all,
     handle_deleted_personal_event,
 )
@@ -663,6 +664,14 @@ async def _sync_main_calendar(user_id: int) -> None:
                             # We patched the main event back; skip further
                             # sync so the stale times don't propagate.
                             continue
+
+                    # Propagate time changes on editable events back to the client calendar.
+                    if client_origin_mapping and client_origin_mapping["user_can_edit"]:
+                        await propagate_time_to_client(
+                            user_id=user_id,
+                            main_event=event,
+                            mapping=dict(client_origin_mapping),
+                        )
 
                     # Check for RSVP changes on client-origin events.
                     if client_origin_mapping and client_origin_mapping["rsvp_status"] is not None:
