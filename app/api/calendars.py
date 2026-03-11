@@ -284,6 +284,44 @@ async def trigger_calendar_sync(
     return {"status": "ok", "message": "Sync triggered"}
 
 
+@router.post("/{calendar_id}/resync")
+async def trigger_calendar_resync(
+    calendar_id: int,
+    user: User = Depends(get_current_user)
+):
+    """Clear sync token and trigger full re-sync for a single calendar."""
+    db = await get_database()
+
+    cursor = await db.execute(
+        """SELECT * FROM client_calendars
+           WHERE id = ? AND user_id = ? AND is_active = TRUE""",
+        (calendar_id, user.id)
+    )
+    calendar = await cursor.fetchone()
+
+    if not calendar:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Calendar not found"
+        )
+
+    await db.execute(
+        """UPDATE calendar_sync_state SET sync_token = NULL
+           WHERE client_calendar_id = ?""",
+        (calendar_id,)
+    )
+    await db.commit()
+
+    from app.sync.engine import trigger_sync_for_calendar
+    from app.utils.tasks import create_background_task
+    create_background_task(
+        trigger_sync_for_calendar(calendar_id),
+        f"resync_calendar_{calendar_id}"
+    )
+
+    return {"status": "ok", "message": "Full resync triggered"}
+
+
 @router.get("/{calendar_id}/status", response_model=CalendarStatusResponse)
 async def get_calendar_status(
     calendar_id: int,

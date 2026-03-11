@@ -110,12 +110,14 @@ class RapidCreateAndMove(TestCase):
 
         # Google Calendar API has cross-session eventual consistency: the
         # sidecar writes with one OAuth session, but the app reads with
-        # another.  Stale reads can persist for 15-30s.  Retry full
-        # re-syncs (which clear sync tokens) until the moved time appears.
+        # another.  Stale reads can persist for 15-30s.  Retry with
+        # per-calendar resync (clears only this calendar's sync token)
+        # until the moved time appears on main.
+        cal_db_id = client_cal["calendar"]["id"]
         main_event = None
         for attempt in range(3):
             await asyncio.sleep(15 if attempt == 0 else 10)
-            await ctx.api.trigger_full_sync()
+            await ctx.api.trigger_calendar_resync(cal_db_id)
             await asyncio.sleep(8)
 
             events = main_client.list_events(main_cal_id, q=summary)

@@ -43,6 +43,14 @@ class APIClient:
         resp.raise_for_status()
         return resp.json()
 
+    async def trigger_calendar_resync(self, calendar_id: int) -> dict:
+        """Clear sync token and trigger full re-sync for a single calendar."""
+        resp = await self._client.post(
+            f"/api/client-calendars/{calendar_id}/resync"
+        )
+        resp.raise_for_status()
+        return resp.json()
+
     async def trigger_full_sync(self) -> dict:
         resp = await self._client.post("/api/sync/full")
         resp.raise_for_status()
