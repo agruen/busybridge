@@ -87,6 +87,20 @@ async def dashboard(request: Request, error: Optional[str] = None):
     paused_setting = await get_setting("sync_paused")
     sync_paused = bool(paused_setting and paused_setting.get("value_plain") == "true")
 
+    # Integrity check status
+    cursor = await db.execute(
+        "SELECT * FROM integrity_status WHERE user_id = ?", (user.id,)
+    )
+    integrity_row = await cursor.fetchone()
+    integrity = None
+    if integrity_row:
+        integrity = {
+            "last_check_at": integrity_row["last_check_at"],
+            "unresolved_issues": integrity_row["unresolved_issues"] or 0,
+            "issues_auto_fixed": integrity_row["issues_auto_fixed"] or 0,
+            "consecutive_check_failures": integrity_row["consecutive_check_failures"] or 0,
+        }
+
     return templates.TemplateResponse("dashboard.html", {
         "request": request,
         "user": user,
@@ -96,6 +110,7 @@ async def dashboard(request: Request, error: Optional[str] = None):
         "event_count": event_count,
         "managed_event_prefix": managed_event_prefix,
         "sync_paused": sync_paused,
+        "integrity": integrity,
         "error": error,
     })
 

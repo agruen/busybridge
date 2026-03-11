@@ -678,6 +678,7 @@ async def factory_reset(
         "sync_log",
         "alert_queue",
         "oauth_states",
+        "integrity_status",
         "client_calendars",
         "oauth_tokens",
         "users",

@@ -7,7 +7,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from sidecar.framework.event_factory import TEST_EVENT_PREFIX
+from sidecar.framework.event_factory import SENTINEL_PREFIX, TEST_EVENT_PREFIX
 from sidecar.infra.calendar_client import CalendarTestClient
 
 logger = logging.getLogger(__name__)
@@ -62,6 +62,9 @@ class CleanupManager:
                     calendar_id, prefix, time_min=time_min, time_max=time_max
                 )
                 for event in events:
+                    # Skip sentinel events — they're long-lived and managed separately
+                    if (event.get("summary") or "").startswith(SENTINEL_PREFIX):
+                        continue
                     try:
                         client.delete_event(calendar_id, event["id"])
                         total_deleted += 1

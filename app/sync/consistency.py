@@ -50,6 +50,8 @@ async def run_consistency_check(dry_run: bool = False) -> dict:
         except Exception as e:
             logger.error(f"Consistency check failed for user {user['id']}: {e}")
             summary["errors"] += 1
+            if not dry_run:
+                await _record_check_failure(user["id"])
 
     logger.info(f"Consistency check completed: {summary}")
     return summary
@@ -320,6 +322,9 @@ async def check_user_consistency(user_id: int, summary: dict, dry_run: bool = Fa
         )
         await db.commit()
 
+        # Track integrity status
+        await _record_check_result(user_id, _delta)
+
 
 async def reconcile_calendar(client_calendar_id: int, dry_run: bool = False) -> dict:
     """
@@ -503,3 +508,99 @@ async def reconcile_calendar(client_calendar_id: int, dry_run: bool = False) -> 
         logger.exception(f"Reconciliation failed for calendar {client_calendar_id}: {e}")
 
     return summary
+
+
+# ── Integrity status tracking ─────────────────────────────────────────
+
+
+async def _record_check_result(user_id: int, delta: dict) -> None:
+    """Upsert integrity_status after a successful consistency check."""
+    db = await get_database()
+
+    issues_auto_fixed = (
+        delta.get("orphaned_main_events_deleted", 0)
+        + delta.get("missing_copies_recreated", 0)
+        + delta.get("orphaned_busy_blocks_deleted", 0)
+    )
+    unresolved = delta.get("errors", 0)
+    issues_found = issues_auto_fixed + unresolved
+
+    details = {
+        "orphaned_main_events_deleted": delta.get("orphaned_main_events_deleted", 0),
+        "missing_copies_recreated": delta.get("missing_copies_recreated", 0),
+        "orphaned_busy_blocks_deleted": delta.get("orphaned_busy_blocks_deleted", 0),
+        "errors": delta.get("errors", 0),
+        "mappings_checked": delta.get("mappings_checked", 0),
+    }
+
+    now = datetime.utcnow().isoformat()
+    await db.execute(
+        """INSERT INTO integrity_status
+               (user_id, last_check_at, issues_found, issues_auto_fixed,
+                unresolved_issues, consecutive_check_failures, details_json, updated_at)
+           VALUES (?, ?, ?, ?, ?, 0, ?, ?)
+           ON CONFLICT(user_id) DO UPDATE SET
+               last_check_at = excluded.last_check_at,
+               issues_found = excluded.issues_found,
+               issues_auto_fixed = excluded.issues_auto_fixed,
+               unresolved_issues = excluded.unresolved_issues,
+               consecutive_check_failures = 0,
+               details_json = excluded.details_json,
+               updated_at = excluded.updated_at""",
+        (user_id, now, issues_found, issues_auto_fixed, unresolved,
+         json.dumps(details), now),
+    )
+    await db.commit()
+
+    # Alert if unresolved issues (throttled to once per 24 hours)
+    if unresolved > 0:
+        await _maybe_alert_integrity(user_id, unresolved, details)
+
+
+async def _record_check_failure(user_id: int) -> None:
+    """Increment consecutive failure count when the check itself crashes."""
+    db = await get_database()
+    now = datetime.utcnow().isoformat()
+    await db.execute(
+        """INSERT INTO integrity_status
+               (user_id, last_check_at, consecutive_check_failures, updated_at)
+           VALUES (?, ?, 1, ?)
+           ON CONFLICT(user_id) DO UPDATE SET
+               consecutive_check_failures = integrity_status.consecutive_check_failures + 1,
+               last_check_at = excluded.last_check_at,
+               updated_at = excluded.updated_at""",
+        (user_id, now, now),
+    )
+    await db.commit()
+
+
+async def _maybe_alert_integrity(user_id: int, unresolved: int, details: dict) -> None:
+    """Queue an integrity alert if not sent in the last 24 hours."""
+    db = await get_database()
+
+    # Check if we already alerted recently
+    cursor = await db.execute(
+        """SELECT id FROM alert_queue
+           WHERE alert_type = 'integrity_issues'
+             AND recipient_email IN (SELECT email FROM users WHERE id = ?)
+             AND created_at > datetime('now', '-1 day')""",
+        (user_id,),
+    )
+    if await cursor.fetchone():
+        return
+
+    from app.alerts.email import queue_alert
+
+    detail_lines = [f"Unresolved issues: {unresolved}"]
+    if details.get("errors"):
+        detail_lines.append(f"Errors during check: {details['errors']}")
+    if details.get("orphaned_main_events_deleted"):
+        detail_lines.append(f"Orphaned events cleaned up: {details['orphaned_main_events_deleted']}")
+    if details.get("missing_copies_recreated"):
+        detail_lines.append(f"Missing copies recreated: {details['missing_copies_recreated']}")
+
+    await queue_alert(
+        alert_type="integrity_issues",
+        user_id=user_id,
+        details="\n".join(detail_lines),
+    )

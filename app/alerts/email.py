@@ -181,6 +181,7 @@ def generate_alert_content(
         "sync_failures": "Calendar Sync - Sync Failures Detected",
         "webhook_registration_failed": "Calendar Sync - Webhook Issue",
         "system_error": "Calendar Sync - System Error",
+        "integrity_issues": "Calendar Sync - Integrity Issues Detected",
     }
 
     subject = subjects.get(alert_type, f"Calendar Sync - {alert_type}")

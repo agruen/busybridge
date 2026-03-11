@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 TEST_EVENT_PREFIX = "[TEST-BB]"
+SENTINEL_PREFIX = "[TEST-BB-SENTINEL]"
 
 
 class EventFactory:

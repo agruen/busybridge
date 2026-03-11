@@ -170,6 +170,8 @@
 
 <script>
 let cleanupPollInterval = null;
+let lastCleanupUrl = '';
+let lastCleanupTitle = '';
 
 const STEP_LABELS = {
     clearing_tokens: 'Clearing sync tokens...',
@@ -183,6 +185,9 @@ const STEP_LABELS = {
 
 function startCleanup(url, title) {
     if (!confirm('This will delete ALL BusyBridge-managed events. Continue?')) return;
+
+    lastCleanupUrl = url;
+    lastCleanupTitle = title;
 
     // Show progress, disable buttons
     document.getElementById('cleanup-progress').classList.remove('hidden');
@@ -244,22 +249,88 @@ function checkProgress() {
             if (data.status === 'completed') {
                 clearInterval(cleanupPollInterval);
                 document.getElementById('cleanup-spinner').classList.add('hidden');
-                document.getElementById('cleanup-done-icon').classList.remove('hidden');
-                document.getElementById('cleanup-title').textContent = 'Cleanup complete!';
                 document.getElementById('cleanup-bar').style.width = '100%';
 
                 const s = data.summary || {};
+                const isPartial = s.status === 'partial';
                 const parts = [];
                 if (s.db_main_events_deleted) parts.push(s.db_main_events_deleted + ' main events deleted');
                 if (s.db_busy_blocks_deleted) parts.push(s.db_busy_blocks_deleted + ' busy blocks deleted');
                 if (s.prefix_events_deleted) parts.push(s.prefix_events_deleted + ' extra events cleaned');
-                if (s.errors && s.errors.length) parts.push(s.errors.length + ' errors');
-                document.getElementById('cleanup-detail').textContent =
-                    parts.join(' · ') || 'Done.';
-                document.getElementById('cleanup-step').textContent =
-                    'Re-syncing events now. Page will reload shortly.';
 
-                setTimeout(function() { window.location.reload(); }, 5000);
+                if (isPartial) {
+                    // Partial cleanup — warn the user and offer retry
+                    document.getElementById('cleanup-error-icon').classList.remove('hidden');
+                    document.getElementById('cleanup-title').textContent = 'Cleanup partially completed';
+
+                    const wrap = document.getElementById('cleanup-progress').querySelector('div');
+                    wrap.classList.remove('bg-indigo-50', 'border-indigo-200');
+                    wrap.classList.add('bg-amber-50', 'border-amber-300');
+
+                    const errorCount = (s.errors || []).length;
+                    const errorIcon = document.getElementById('cleanup-error-icon');
+                    errorIcon.classList.remove('text-red-600');
+                    errorIcon.classList.add('text-amber-600');
+
+                    if (errorCount) parts.push(errorCount + ' error' + (errorCount > 1 ? 's' : ''));
+                    document.getElementById('cleanup-detail').textContent = parts.join(' · ');
+
+                    // Show actionable message with error details
+                    const stepEl = document.getElementById('cleanup-step');
+                    stepEl.innerHTML = '';
+
+                    const msg = document.createElement('span');
+                    msg.textContent = 'Some events could not be deleted. Automatic re-sync was skipped to avoid creating duplicates.';
+                    stepEl.appendChild(msg);
+
+                    if (s.errors && s.errors.length) {
+                        const detailBtn = document.createElement('button');
+                        detailBtn.textContent = 'Show details';
+                        detailBtn.className = 'ml-1 text-amber-800 underline text-sm';
+                        detailBtn.onclick = function() {
+                            const pre = document.getElementById('cleanup-error-details');
+                            pre.classList.toggle('hidden');
+                            detailBtn.textContent = pre.classList.contains('hidden') ? 'Show details' : 'Hide details';
+                        };
+                        stepEl.appendChild(detailBtn);
+
+                        const pre = document.createElement('pre');
+                        pre.id = 'cleanup-error-details';
+                        pre.className = 'hidden mt-2 text-xs text-amber-900 bg-amber-100 rounded p-2 overflow-x-auto max-h-40 overflow-y-auto';
+                        pre.textContent = s.errors.join('\n');
+                        stepEl.parentNode.insertBefore(pre, stepEl.nextSibling);
+                    }
+
+                    // Connection status area (populated by check or retry)
+                    const connStatus = document.createElement('div');
+                    connStatus.id = 'conn-status';
+                    connStatus.className = 'mt-3';
+                    stepEl.parentNode.insertBefore(connStatus, (document.getElementById('cleanup-error-details') || stepEl).nextSibling);
+
+                    // Action buttons
+                    const actions = document.createElement('div');
+                    actions.id = 'partial-actions';
+                    actions.className = 'mt-3 flex flex-wrap gap-2';
+
+                    const retryBtn = document.createElement('button');
+                    retryBtn.className = 'inline-flex items-center px-4 py-2 border border-amber-300 text-sm font-medium rounded-md text-amber-900 bg-white hover:bg-amber-50';
+                    retryBtn.innerHTML = '<i class="fas fa-redo mr-2"></i>Retry Cleanup';
+                    retryBtn.onclick = function() { retryWithCheck(wrap, errorIcon); };
+                    actions.appendChild(retryBtn);
+
+                    connStatus.parentNode.insertBefore(actions, connStatus.nextSibling);
+
+                    document.querySelectorAll('#sync-controls button').forEach(b => b.disabled = false);
+                } else {
+                    // Full success
+                    document.getElementById('cleanup-done-icon').classList.remove('hidden');
+                    document.getElementById('cleanup-title').textContent = 'Cleanup complete!';
+                    document.getElementById('cleanup-detail').textContent =
+                        parts.join(' · ') || 'Done.';
+                    document.getElementById('cleanup-step').textContent =
+                        'Re-syncing events now. Page will reload shortly.';
+                    setTimeout(function() { window.location.reload(); }, 5000);
+                }
             }
 
             if (data.status === 'error') {
@@ -271,6 +342,86 @@ function checkProgress() {
             }
         })
         .catch(() => {});
+}
+
+function retryWithCheck(wrap, errorIcon) {
+    const connStatus = document.getElementById('conn-status');
+    const actions = document.getElementById('partial-actions');
+    if (!connStatus) return;
+
+    // Show checking state
+    connStatus.innerHTML = '<p class="text-sm text-amber-700"><i class="fas fa-spinner fa-spin mr-2"></i>Checking connections...</p>';
+    if (actions) actions.querySelectorAll('button').forEach(b => b.disabled = true);
+
+    fetch('/api/sync/check-connections', { credentials: 'same-origin' })
+        .then(r => r.json())
+        .then(result => {
+            connStatus.innerHTML = '';
+
+            const broken = (result.accounts || []).filter(a => a.status === 'error');
+            const healthy = (result.accounts || []).filter(a => a.status === 'ok');
+
+            if (broken.length === 0) {
+                // All connections healthy — proceed with retry
+                connStatus.innerHTML = '<p class="text-sm text-green-700 mb-2"><i class="fas fa-check-circle mr-1"></i>All connections healthy. Retrying cleanup...</p>';
+                setTimeout(function() {
+                    document.getElementById('cleanup-progress').classList.add('hidden');
+                    resetPartialUI(wrap, errorIcon);
+                    startCleanup(lastCleanupUrl, lastCleanupTitle);
+                }, 800);
+                return;
+            }
+
+            // Show which accounts are broken and how to fix them
+            let html = '<div class="bg-amber-100 rounded-md p-3">';
+            html += '<p class="text-sm font-medium text-amber-900 mb-2">' + broken.length + ' account' + (broken.length > 1 ? 's need' : ' needs') + ' attention before retrying:</p>';
+            html += '<ul class="space-y-2">';
+            for (const acct of broken) {
+                const typeLabel = acct.account_type === 'client' ? 'Client' : 'Personal';
+                const connectUrl = acct.account_type === 'client' ? '/auth/connect-client' : '/auth/connect-personal';
+                html += '<li class="flex items-start sm:items-center justify-between gap-2 text-sm">';
+                html += '<div><i class="fas fa-times-circle text-red-500 mr-1"></i>';
+                html += '<span class="font-medium">' + acct.email + '</span>';
+                html += ' <span class="text-amber-700">(' + typeLabel + ')</span>';
+                html += '<br class="sm:hidden"><span class="text-amber-800 text-xs ml-0 sm:ml-2">' + (acct.message || 'Connection error') + '</span>';
+                html += '</div>';
+                if (acct.fix === 'reconnect') {
+                    html += '<a href="' + connectUrl + '" class="flex-shrink-0 inline-flex items-center px-3 py-1.5 border border-amber-400 text-xs font-medium rounded-md text-amber-900 bg-white hover:bg-amber-50">';
+                    html += '<i class="fas fa-plug mr-1"></i>Reconnect</a>';
+                }
+                html += '</li>';
+            }
+            html += '</ul>';
+            if (healthy.length > 0) {
+                html += '<p class="mt-2 text-xs text-amber-700"><i class="fas fa-check-circle text-green-500 mr-1"></i>' + healthy.length + ' other account' + (healthy.length > 1 ? 's are' : ' is') + ' connected fine.</p>';
+            }
+            html += '</div>';
+            connStatus.innerHTML = html;
+
+            // Re-enable retry button
+            if (actions) actions.querySelectorAll('button').forEach(b => b.disabled = false);
+        })
+        .catch(() => {
+            connStatus.innerHTML = '<p class="text-sm text-red-700"><i class="fas fa-exclamation-triangle mr-1"></i>Could not check connections. You can still retry manually.</p>';
+            if (actions) actions.querySelectorAll('button').forEach(b => b.disabled = false);
+        });
+}
+
+function resetPartialUI(wrap, errorIcon) {
+    if (wrap) {
+        wrap.classList.remove('bg-amber-50', 'border-amber-300');
+        wrap.classList.add('bg-indigo-50', 'border-indigo-200');
+    }
+    if (errorIcon) {
+        errorIcon.classList.remove('text-amber-600');
+        errorIcon.classList.add('text-red-600');
+    }
+    const errDetails = document.getElementById('cleanup-error-details');
+    if (errDetails) errDetails.remove();
+    const connStatus = document.getElementById('conn-status');
+    if (connStatus) connStatus.remove();
+    const actions = document.getElementById('partial-actions');
+    if (actions) actions.remove();
 }
 
 // On page load, check if a cleanup is already running

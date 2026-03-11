@@ -150,6 +150,17 @@ async def get_result(run_id: str):
     return {"error": "not found"}
 
 
+@app.get("/api/sentinels")
+async def sentinel_status():
+    state_file = Path("/data/test-logs/sentinels.json")
+    if state_file.exists():
+        try:
+            return json.loads(state_file.read_text())
+        except Exception:
+            return {"error": "failed to read state file"}
+    return {"sentinels": []}
+
+
 @app.get("/", response_class=HTMLResponse)
 async def dashboard():
     template_path = Path(__file__).parent / "templates" / "index.html"

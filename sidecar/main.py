@@ -19,6 +19,7 @@ from sidecar.framework.base import TestContext, TestResult
 from sidecar.framework.cleanup import CleanupManager
 from sidecar.framework.event_factory import EventFactory
 from sidecar.framework.runner import SoakRunner
+from sidecar.framework.sentinel import SentinelManager
 from sidecar.framework.sync_waiter import SyncWaiter
 from sidecar.infra.api_client import APIClient
 from sidecar.infra.calendar_client import CalendarTestClient
@@ -252,20 +253,26 @@ async def main() -> None:
     # 15. Start soak runner
     runner_task = asyncio.create_task(runner.run())
 
+    # 16. Start sentinel manager
+    sentinel_mgr = SentinelManager(ctx, on_result=on_result)
+    sentinel_task = asyncio.create_task(sentinel_mgr.run())
+
     logger.info(
-        "Sidecar running: dashboard on :%d, %d tests loaded",
+        "Sidecar running: dashboard on :%d, %d tests loaded, sentinels active",
         config.DASHBOARD_PORT, len(tests),
     )
 
     # Wait for either to finish
     done, pending = await asyncio.wait(
-        [dashboard_task, runner_task, asyncio.create_task(shutdown_event.wait())],
+        [dashboard_task, runner_task, sentinel_task,
+         asyncio.create_task(shutdown_event.wait())],
         return_when=asyncio.FIRST_COMPLETED,
     )
 
     # Shutdown
     logger.info("Shutting down...")
     runner.request_shutdown()
+    sentinel_mgr.request_shutdown()
 
     # Wait for runner to finish current test (up to 5 min)
     try:

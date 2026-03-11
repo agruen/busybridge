@@ -53,8 +53,17 @@ class TokenManager:
         access_token = self._enc.decrypt(token_row["access_token_encrypted"])
         refresh_token = self._enc.decrypt(token_row["refresh_token_encrypted"])
 
-        # Check if expired
-        expiry = token_row.get("token_expiry")
+        # Check if expired — token_expiry is an ISO timestamp string in the DB
+        expiry_str = token_row.get("token_expiry")
+        if expiry_str:
+            from datetime import datetime, timezone
+            try:
+                expiry_dt = datetime.fromisoformat(expiry_str)
+                expiry = expiry_dt.timestamp()
+            except (ValueError, TypeError):
+                expiry = None
+        else:
+            expiry = None
         needs_refresh = not expiry or expiry < time.time()
 
         if needs_refresh and refresh_token:

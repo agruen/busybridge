@@ -24,6 +24,9 @@ class SyncStatusResponse(BaseModel):
     events_synced: int
     busy_blocks_created: int
     sync_paused: bool = False
+    integrity_status: Optional[str] = None
+    integrity_last_check: Optional[str] = None
+    integrity_unresolved: int = 0
 
 
 class SyncLogEntry(BaseModel):
@@ -100,6 +103,24 @@ async def get_sync_status(user: User = Depends(get_current_user)):
     paused_setting = await get_setting("sync_paused")
     sync_paused = bool(paused_setting and paused_setting.get("value_plain") == "true")
 
+    # Integrity status
+    integrity_status_val = None
+    integrity_last_check = None
+    integrity_unresolved = 0
+    cursor = await db.execute(
+        "SELECT * FROM integrity_status WHERE user_id = ?", (user.id,)
+    )
+    irow = await cursor.fetchone()
+    if irow:
+        integrity_last_check = irow["last_check_at"]
+        integrity_unresolved = irow["unresolved_issues"] or 0
+        if (irow["consecutive_check_failures"] or 0) >= 3:
+            integrity_status_val = "error"
+        elif integrity_unresolved > 0:
+            integrity_status_val = "warning"
+        elif irow["last_check_at"]:
+            integrity_status_val = "ok"
+
     return SyncStatusResponse(
         calendars_connected=total,
         calendars_healthy=healthy,
@@ -109,6 +130,9 @@ async def get_sync_status(user: User = Depends(get_current_user)):
         events_synced=events_synced,
         busy_blocks_created=busy_blocks,
         sync_paused=sync_paused,
+        integrity_status=integrity_status_val,
+        integrity_last_check=integrity_last_check,
+        integrity_unresolved=integrity_unresolved,
     )
 
 
@@ -264,6 +288,51 @@ async def get_cleanup_progress(user: User = Depends(get_current_user)):
     return progress
 
 
+@router.get("/integrity")
+async def get_integrity_status(user: User = Depends(get_current_user)):
+    """Get integrity check status for current user."""
+    db = await get_database()
+
+    cursor = await db.execute(
+        "SELECT * FROM integrity_status WHERE user_id = ?", (user.id,)
+    )
+    row = await cursor.fetchone()
+
+    if not row:
+        return {
+            "status": "unknown",
+            "last_check_at": None,
+            "issues_found": 0,
+            "issues_auto_fixed": 0,
+            "unresolved_issues": 0,
+            "consecutive_check_failures": 0,
+            "details": None,
+        }
+
+    if (row["consecutive_check_failures"] or 0) >= 3:
+        check_status = "error"
+    elif (row["unresolved_issues"] or 0) > 0:
+        check_status = "warning"
+    elif row["last_check_at"]:
+        check_status = "ok"
+    else:
+        check_status = "unknown"
+
+    details = None
+    if row["details_json"]:
+        details = json.loads(row["details_json"])
+
+    return {
+        "status": check_status,
+        "last_check_at": row["last_check_at"],
+        "issues_found": row["issues_found"] or 0,
+        "issues_auto_fixed": row["issues_auto_fixed"] or 0,
+        "unresolved_issues": row["unresolved_issues"] or 0,
+        "consecutive_check_failures": row["consecutive_check_failures"] or 0,
+        "details": details,
+    }
+
+
 async def _run_cleanup_and_resync(user_id: int) -> None:
     """Background task: run cleanup, log results, then trigger resync."""
     from app.sync.engine import cleanup_managed_events_for_user, trigger_sync_for_user
@@ -284,7 +353,18 @@ async def _run_cleanup_and_resync(user_id: int) -> None:
     )
     await db.commit()
 
-    # Trigger a full re-sync so events are recreated from scratch.
+    # Only trigger resync if cleanup was fully successful.
+    # A partial cleanup means some Google Calendar events weren't deleted
+    # (e.g. token failure).  Resyncing now would create duplicates because
+    # the DB mappings were removed but the orphaned calendar events survive.
+    if status_value == "partial":
+        logger.warning(
+            "Cleanup was partial for user %s — skipping automatic resync to avoid duplicates. "
+            "Fix the underlying issue and retry cleanup, or resync manually.",
+            user_id,
+        )
+        return
+
     create_background_task(
         trigger_sync_for_user(user_id),
         f"cleanup_resync_user_{user_id}",
@@ -311,6 +391,62 @@ async def _run_cleanup_and_pause(user_id: int) -> None:
         (user_id, status_value, json.dumps(summary)),
     )
     await db.commit()
+
+    if status_value == "partial":
+        logger.warning(
+            "Cleanup-and-pause was partial for user %s — sync is paused but some Google Calendar "
+            "events were not deleted. Resuming sync and resyncing may create duplicates. "
+            "Fix the underlying issue (e.g. broken OAuth token) and re-run cleanup before resuming.",
+            user_id,
+        )
+
+
+@router.get("/check-connections")
+async def check_connections(user: User = Depends(get_current_user)):
+    """Check if all OAuth tokens are valid and can be refreshed."""
+    from app.auth.google import get_valid_access_token
+
+    db = await get_database()
+    cursor = await db.execute(
+        """SELECT id, google_account_email, account_type, token_expiry
+           FROM oauth_tokens WHERE user_id = ?""",
+        (user.id,)
+    )
+    tokens = await cursor.fetchall()
+
+    accounts = []
+    all_ok = True
+    for tok in tokens:
+        email = tok["google_account_email"]
+        account_type = tok["account_type"]
+        try:
+            await get_valid_access_token(user.id, email)
+            accounts.append({
+                "email": email,
+                "account_type": account_type,
+                "status": "ok",
+            })
+        except Exception as e:
+            all_ok = False
+            error_str = str(e).lower()
+            if "invalid_grant" in error_str:
+                fix = "reconnect"
+                message = "Token has been revoked. Please reconnect this account."
+            elif "no token found" in error_str:
+                fix = "reconnect"
+                message = "No token on file. Please reconnect this account."
+            else:
+                fix = "retry"
+                message = f"Token refresh failed: {type(e).__name__}"
+            accounts.append({
+                "email": email,
+                "account_type": account_type,
+                "status": "error",
+                "message": message,
+                "fix": fix,
+            })
+
+    return {"status": "ok" if all_ok else "error", "accounts": accounts}
 
 
 @router.post("/cleanup-managed")

@@ -58,6 +58,24 @@ class APIClient:
         resp.raise_for_status()
         return resp.json()
 
+    async def get_cleanup_progress(self) -> dict:
+        resp = await self._client.get("/api/sync/cleanup-progress")
+        resp.raise_for_status()
+        return resp.json()
+
+    async def wait_for_cleanup(self, timeout: int = 120) -> dict:
+        """Poll cleanup-progress until complete or timeout. Returns final progress."""
+        import asyncio
+        import time
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            progress = await self.get_cleanup_progress()
+            status = progress.get("status", "idle")
+            if status in ("completed", "error", "idle"):
+                return progress
+            await asyncio.sleep(2)
+        raise TimeoutError(f"Cleanup did not complete within {timeout}s")
+
     # ── Sync control ──────────────────────────────────────────────
 
     async def pause_sync(self) -> dict:

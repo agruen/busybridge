@@ -195,6 +195,18 @@ CREATE TABLE IF NOT EXISTS oauth_states (
 );
 
 CREATE INDEX IF NOT EXISTS idx_oauth_states_expiry ON oauth_states(expires_at);
+
+-- Per-user integrity monitoring status (one row per user, upserted after each check)
+CREATE TABLE IF NOT EXISTS integrity_status (
+    user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    last_check_at TIMESTAMP,
+    issues_found INTEGER DEFAULT 0,
+    issues_auto_fixed INTEGER DEFAULT 0,
+    unresolved_issues INTEGER DEFAULT 0,
+    consecutive_check_failures INTEGER DEFAULT 0,
+    details_json TEXT,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 """
 
 

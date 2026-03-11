@@ -125,8 +125,21 @@ class CleanupAndResync(TestCase):
             search_query=summary,
         )
 
-        # Cleanup managed events
+        # Cleanup managed events (triggers resync automatically if cleanup succeeds)
         await ctx.api.cleanup_managed()
+
+        # Wait for cleanup to complete and check status
+        progress = await ctx.api.wait_for_cleanup(timeout=120)
+        cleanup_summary = progress.get("summary") or {}
+        cleanup_status = cleanup_summary.get("status", "ok")
+
+        if cleanup_status == "partial":
+            # Partial cleanup — skip resync to avoid creating duplicates.
+            # The endpoint itself also guards against this, but be explicit.
+            assert False, (
+                f"Cleanup was partial — cannot safely resync. "
+                f"Errors: {cleanup_summary.get('errors', [])}"
+            )
 
         # Wait for cleanup to take effect
         await ctx.waiter.wait_for_gone(
@@ -137,7 +150,7 @@ class CleanupAndResync(TestCase):
             timeout=60,
         )
 
-        # Trigger full re-sync
+        # Trigger full re-sync (safe because cleanup was complete)
         await ctx.api.trigger_full_sync()
 
         # Event should reappear
@@ -180,9 +193,24 @@ class CleanupAndPause(TestCase):
             search_query=summary1,
         )
 
+        cleanup_was_partial = False
         try:
             # Cleanup and pause
             await ctx.api.cleanup_and_pause()
+
+            # Wait for cleanup to complete and check status
+            progress = await ctx.api.wait_for_cleanup(timeout=120)
+            cleanup_summary = progress.get("summary") or {}
+            cleanup_status = cleanup_summary.get("status", "ok")
+
+            if cleanup_status == "partial":
+                # Partial cleanup — don't resume sync to avoid duplicates.
+                # Leave sync paused and fail the test so the issue is visible.
+                cleanup_was_partial = True
+                assert False, (
+                    f"Cleanup was partial — leaving sync paused to avoid duplicates. "
+                    f"Errors: {cleanup_summary.get('errors', [])}"
+                )
 
             await ctx.waiter.wait_for_gone(
                 main_client, main_cal_id,
@@ -208,7 +236,8 @@ class CleanupAndPause(TestCase):
             assert len(matches) == 0, "Event synced while paused after cleanup"
 
         finally:
-            await ctx.api.resume_sync()
+            if not cleanup_was_partial:
+                await ctx.api.resume_sync()
 
         # After resume, trigger sync
         await ctx.api.trigger_calendar_sync(client_cal["calendar"]["id"])
