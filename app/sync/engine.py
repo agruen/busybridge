@@ -88,17 +88,22 @@ async def is_sync_paused() -> bool:
     return setting and setting.get("value_plain") == "true"
 
 
-async def trigger_sync_for_calendar(client_calendar_id: int) -> None:
-    """Trigger sync for a specific client calendar."""
+async def trigger_sync_for_calendar(client_calendar_id: int, debounce: float = 0) -> None:
+    """Trigger sync for a specific client calendar.
+
+    Args:
+        debounce: seconds to wait before syncing, allowing rapid-fire
+                  updates to settle (avoids syncing stale snapshots when
+                  Google's eventual consistency hasn't caught up yet).
+    """
     if await is_sync_paused():
         logger.info("Sync is paused, skipping calendar sync")
         return
 
-    lock = await _get_calendar_lock(f"client:{client_calendar_id}")
-    if lock.locked():
-        logger.info(f"Sync already in progress for calendar {client_calendar_id}, skipping")
-        return
+    if debounce > 0:
+        await asyncio.sleep(debounce)
 
+    lock = await _get_calendar_lock(f"client:{client_calendar_id}")
     async with lock:
         await _sync_client_calendar(client_calendar_id)
 
@@ -174,6 +179,16 @@ async def _sync_client_calendar(client_calendar_id: int) -> None:
 
         events = result["events"]
         new_sync_token = result.get("next_sync_token")
+
+        # Deduplicate: if the same event appears multiple times (e.g. rapid
+        # create-then-move before sync runs), keep only the latest entry so we
+        # sync the final state rather than an intermediate snapshot.
+        seen: dict[str, int] = {}
+        for idx, ev in enumerate(events):
+            seen[ev["id"]] = idx
+        if len(seen) < len(events):
+            logger.info(f"Deduplicating {len(events)} events to {len(seen)} unique")
+            events = [events[i] for i in sorted(seen.values())]
 
         logger.info(f"Syncing {len(events)} events from client calendar {client_calendar_id}")
 
@@ -315,17 +330,16 @@ async def _sync_client_calendar(client_calendar_id: int) -> None:
             )
 
 
-async def trigger_sync_for_main_calendar(user_id: int) -> None:
+async def trigger_sync_for_main_calendar(user_id: int, debounce: float = 0) -> None:
     """Trigger sync for a user's main calendar."""
     if await is_sync_paused():
         logger.info("Sync is paused, skipping main calendar sync")
         return
 
-    lock = await _get_calendar_lock(f"main:{user_id}")
-    if lock.locked():
-        logger.info(f"Main calendar sync already in progress for user {user_id}, skipping")
-        return
+    if debounce > 0:
+        await asyncio.sleep(debounce)
 
+    lock = await _get_calendar_lock(f"main:{user_id}")
     async with lock:
         await _sync_main_calendar(user_id)
 
@@ -613,6 +627,14 @@ async def _sync_main_calendar(user_id: int) -> None:
         events = result["events"]
         new_sync_token = result.get("next_sync_token")
 
+        # Deduplicate: keep only the latest entry per event ID.
+        seen_main: dict[str, int] = {}
+        for idx, ev in enumerate(events):
+            seen_main[ev["id"]] = idx
+        if len(seen_main) < len(events):
+            logger.info(f"Deduplicating {len(events)} main events to {len(seen_main)} unique")
+            events = [events[i] for i in sorted(seen_main.values())]
+
         logger.info(f"Processing {len(events)} events from main calendar for user {user_id}")
 
         # Process events
@@ -774,17 +796,16 @@ async def _sync_main_calendar(user_id: int) -> None:
         await db.commit()
 
 
-async def trigger_sync_for_personal_calendar(personal_calendar_id: int) -> None:
+async def trigger_sync_for_personal_calendar(personal_calendar_id: int, debounce: float = 0) -> None:
     """Trigger sync for a specific personal calendar."""
     if await is_sync_paused():
         logger.info("Sync is paused, skipping personal calendar sync")
         return
 
-    lock = await _get_calendar_lock(f"personal:{personal_calendar_id}")
-    if lock.locked():
-        logger.info(f"Sync already in progress for personal calendar {personal_calendar_id}, skipping")
-        return
+    if debounce > 0:
+        await asyncio.sleep(debounce)
 
+    lock = await _get_calendar_lock(f"personal:{personal_calendar_id}")
     async with lock:
         await _sync_personal_calendar(personal_calendar_id)
 

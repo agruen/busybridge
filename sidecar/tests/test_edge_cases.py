@@ -83,7 +83,7 @@ class RapidUpdates(TestCase):
 class RapidCreateAndMove(TestCase):
     name = "RapidCreateAndMove"
     suite = SUITE
-    timing = TestTiming.QUICK
+    timing = TestTiming.SLOW
 
     async def run(self, ctx: TestContext) -> None:
         acct = ctx.accounts[0]
@@ -108,19 +108,28 @@ class RapidCreateAndMove(TestCase):
             "end": {"dateTime": new_end, "timeZone": "America/New_York"},
         })
 
-        await ctx.api.trigger_calendar_sync(client_cal["calendar"]["id"])
+        # Google Calendar API has cross-session eventual consistency: the
+        # sidecar writes with one OAuth session, but the app reads with
+        # another.  Stale reads can persist for 15-30s.  Retry full
+        # re-syncs (which clear sync tokens) until the moved time appears.
+        main_event = None
+        for attempt in range(3):
+            await asyncio.sleep(15 if attempt == 0 else 10)
+            await ctx.api.trigger_full_sync()
+            await asyncio.sleep(8)
 
-        main_event = await ctx.waiter.wait_for_event(
-            main_client, main_cal_id,
-            lambda e: summary in e.get("summary", ""),
-            search_query=summary,
-            description="moved event on main",
-        )
+            events = main_client.list_events(main_cal_id, q=summary)
+            matches = [e for e in events if summary in e.get("summary", "")]
+            if matches:
+                main_event = matches[0]
+                main_start = main_event["start"].get("dateTime", "")
+                if new_start[:16] in main_start:
+                    break
+
+        assert main_event is not None, "Event never appeared on main calendar"
         ctx.cleanup.track(main_client, main_cal_id, main_event["id"])
-
-        # Verify time is the moved time
         main_start = main_event["start"].get("dateTime", "")
-        assert new_start[:16] in main_start, f"Time not updated: {main_start}"
+        assert new_start[:16] in main_start, f"Time not updated after retries: {main_start}"
 
 
 class BackToBackEdits(TestCase):
