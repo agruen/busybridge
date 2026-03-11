@@ -108,30 +108,22 @@ class RapidCreateAndMove(TestCase):
             "end": {"dateTime": new_end, "timeZone": "America/New_York"},
         })
 
-        # Google Calendar API has cross-session eventual consistency: the
-        # sidecar writes with one OAuth session, but the app reads with
-        # another.  Stale reads can persist for 15-30s.  Retry with
-        # per-calendar resync (clears only this calendar's sync token)
-        # until the moved time appears on main.
-        cal_db_id = client_cal["calendar"]["id"]
-        main_event = None
-        for attempt in range(3):
-            await asyncio.sleep(15 if attempt == 0 else 10)
-            await ctx.api.trigger_calendar_resync(cal_db_id)
-            await asyncio.sleep(8)
+        # Trigger a sync as a fallback in case webhooks aren't firing.
+        # If cross-session consistency causes the first sync to read stale
+        # data, the engine's automatic verification resync (triggered by
+        # the webhook handler ~30s after the change) will correct it.
+        await asyncio.sleep(5)
+        await ctx.api.trigger_calendar_sync(client_cal["calendar"]["id"])
 
-            events = main_client.list_events(main_cal_id, q=summary)
-            matches = [e for e in events if summary in e.get("summary", "")]
-            if matches:
-                main_event = matches[0]
-                main_start = main_event["start"].get("dateTime", "")
-                if new_start[:16] in main_start:
-                    break
-
-        assert main_event is not None, "Event never appeared on main calendar"
+        main_event = await ctx.waiter.wait_for_event(
+            main_client, main_cal_id,
+            lambda e: (summary in e.get("summary", "")
+                       and new_start[:16] in e.get("start", {}).get("dateTime", "")),
+            search_query=summary,
+            description="moved event with correct time on main",
+            timeout=90,
+        )
         ctx.cleanup.track(main_client, main_cal_id, main_event["id"])
-        main_start = main_event["start"].get("dateTime", "")
-        assert new_start[:16] in main_start, f"Time not updated after retries: {main_start}"
 
 
 class BackToBackEdits(TestCase):

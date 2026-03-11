@@ -26,6 +26,9 @@ logger = logging.getLogger(__name__)
 _calendar_locks: dict[str, asyncio.Lock] = {}
 _calendar_locks_guard = asyncio.Lock()
 
+# Track pending verification resyncs so we don't stack duplicates.
+_pending_verification: set[str] = set()
+
 # Set of user IDs currently running cleanup.  While set, the main-calendar
 # sync must treat any "cancelled" events as a full-sync (no cascade deletes).
 _cleanup_in_progress: set[int] = set()
@@ -88,6 +91,49 @@ async def is_sync_paused() -> bool:
     return setting and setting.get("value_plain") == "true"
 
 
+_VERIFICATION_DELAY = 25  # seconds — long enough for cross-session consistency
+
+
+def _schedule_event_verification(
+    key: str,
+    sync_fn,
+    calendar_id: int,
+    event_ids: list[str],
+) -> None:
+    """Schedule targeted re-fetch of specific events after a webhook sync.
+
+    Google Calendar API has cross-session eventual consistency: reads from
+    one OAuth session can return stale data for 15-30s after a different
+    session writes.  Webhook-triggered syncs may consume stale snapshots,
+    advancing the sync token past the change permanently.
+
+    Instead of re-syncing the entire calendar, this re-fetches only the
+    events that were just processed (typically 1-3 from a webhook), waits
+    for consistency to settle, then re-processes them with fresh data.
+    """
+    if key in _pending_verification:
+        return
+    _pending_verification.add(key)
+
+    from app.utils.tasks import create_background_task
+
+    async def _do_verification():
+        try:
+            await asyncio.sleep(_VERIFICATION_DELAY)
+            if await is_sync_paused():
+                return
+            lock = await _get_calendar_lock(key)
+            async with lock:
+                await sync_fn(calendar_id, verify_ids=event_ids)
+        finally:
+            _pending_verification.discard(key)
+
+    create_background_task(
+        _do_verification(),
+        f"verify_{key}_{len(event_ids)}events",
+    )
+
+
 async def trigger_sync_for_calendar(client_calendar_id: int, debounce: float = 0) -> None:
     """Trigger sync for a specific client calendar.
 
@@ -105,11 +151,29 @@ async def trigger_sync_for_calendar(client_calendar_id: int, debounce: float = 0
 
     lock = await _get_calendar_lock(f"client:{client_calendar_id}")
     async with lock:
-        await _sync_client_calendar(client_calendar_id)
+        processed = await _sync_client_calendar(client_calendar_id)
+
+    if debounce > 0 and processed:
+        _schedule_event_verification(
+            f"client:{client_calendar_id}",
+            _sync_client_calendar,
+            client_calendar_id,
+            processed,
+        )
 
 
-async def _sync_client_calendar(client_calendar_id: int) -> None:
-    """Internal: perform sync for a client calendar (must be called under lock)."""
+async def _sync_client_calendar(
+    client_calendar_id: int,
+    verify_ids: list[str] | None = None,
+) -> list[str]:
+    """Internal: perform sync for a client calendar (must be called under lock).
+
+    When *verify_ids* is provided, re-fetches those specific events by ID
+    instead of doing an incremental list.  This is used for targeted
+    verification of events that may have been synced with stale data.
+
+    Returns the list of non-cancelled event IDs that were processed.
+    """
     db = await get_database()
 
     # Get calendar info
@@ -169,16 +233,33 @@ async def _sync_client_calendar(client_calendar_id: int) -> None:
                 await db.commit()
 
         # Fetch events from client calendar
-        sync_token = calendar["sync_token"]
-        result = client.list_events(calendar["google_calendar_id"], sync_token=sync_token)
+        if verify_ids is not None:
+            # Targeted verification: re-fetch specific events by ID
+            events = []
+            for eid in verify_ids:
+                try:
+                    ev = client.get_event(calendar["google_calendar_id"], eid)
+                    if ev:
+                        events.append(ev)
+                except Exception:
+                    pass  # event may have been deleted since initial sync
+            new_sync_token = None
+            sync_token = True  # skip full-sync branch in state update
+            logger.info(
+                f"Verification: re-fetched {len(events)}/{len(verify_ids)} "
+                f"events for calendar {client_calendar_id}"
+            )
+        else:
+            sync_token = calendar["sync_token"]
+            result = client.list_events(calendar["google_calendar_id"], sync_token=sync_token)
 
-        if result.get("sync_token_expired"):
-            # Need full sync
-            logger.info(f"Sync token expired for calendar {client_calendar_id}, doing full sync")
-            result = client.list_events(calendar["google_calendar_id"])
+            if result.get("sync_token_expired"):
+                # Need full sync
+                logger.info(f"Sync token expired for calendar {client_calendar_id}, doing full sync")
+                result = client.list_events(calendar["google_calendar_id"])
 
-        events = result["events"]
-        new_sync_token = result.get("next_sync_token")
+            events = result["events"]
+            new_sync_token = result.get("next_sync_token")
 
         # Deduplicate: if the same event appears multiple times (e.g. rapid
         # create-then-move before sync runs), keep only the latest entry so we
@@ -195,6 +276,7 @@ async def _sync_client_calendar(client_calendar_id: int) -> None:
         # Process each event
         synced_count = 0
         deleted_count = 0
+        processed_ids: list[str] = []
 
         for event in events:
             try:
@@ -247,6 +329,7 @@ async def _sync_client_calendar(client_calendar_id: int) -> None:
                                 user_email=user_email,
                             )
                         synced_count += 1
+                    processed_ids.append(event["id"])
 
             except Exception as e:
                 logger.error(f"Error processing event {event.get('id')}: {e}")
@@ -258,7 +341,14 @@ async def _sync_client_calendar(client_calendar_id: int) -> None:
                 f"First error: {event_errors[0]}"
             )
 
-        # Update sync state
+        # Update sync state (skip in verification mode — token is unchanged)
+        if verify_ids is not None:
+            logger.info(
+                f"Verification completed for calendar {client_calendar_id}: "
+                f"{synced_count} updated"
+            )
+            return processed_ids
+
         now = datetime.utcnow().isoformat()
         if sync_token:
             await db.execute(
@@ -288,6 +378,7 @@ async def _sync_client_calendar(client_calendar_id: int) -> None:
         await db.commit()
 
         logger.info(f"Sync completed for calendar {client_calendar_id}: {synced_count} synced, {deleted_count} deleted")
+        return processed_ids
 
     except Exception as e:
         logger.exception(f"Sync failed for calendar {client_calendar_id}: {e}")
@@ -329,6 +420,8 @@ async def _sync_client_calendar(client_calendar_id: int) -> None:
                 details=f"Calendar sync has failed {row['consecutive_failures']} consecutive times. Last error: {str(e)}"
             )
 
+    return []
+
 
 async def trigger_sync_for_main_calendar(user_id: int, debounce: float = 0) -> None:
     """Trigger sync for a user's main calendar."""
@@ -341,7 +434,15 @@ async def trigger_sync_for_main_calendar(user_id: int, debounce: float = 0) -> N
 
     lock = await _get_calendar_lock(f"main:{user_id}")
     async with lock:
-        await _sync_main_calendar(user_id)
+        processed = await _sync_main_calendar(user_id)
+
+    if debounce > 0 and processed:
+        _schedule_event_verification(
+            f"main:{user_id}",
+            _sync_main_calendar,
+            user_id,
+            processed,
+        )
 
 
 async def _revert_if_moved(
@@ -562,8 +663,14 @@ async def _retry_missing_busy_blocks(
     return created
 
 
-async def _sync_main_calendar(user_id: int) -> None:
-    """Internal: perform main calendar sync (must be called under lock)."""
+async def _sync_main_calendar(
+    user_id: int,
+    verify_ids: list[str] | None = None,
+) -> list[str]:
+    """Internal: perform main calendar sync (must be called under lock).
+
+    Returns the list of non-cancelled event IDs that were processed.
+    """
 
     db = await get_database()
 
@@ -575,7 +682,7 @@ async def _sync_main_calendar(user_id: int) -> None:
 
     if not user or not user["main_calendar_id"]:
         logger.warning(f"User {user_id} not found or no main calendar")
-        return
+        return []
 
     main_calendar_id = user["main_calendar_id"]
     user_email = user["email"]
@@ -615,17 +722,34 @@ async def _sync_main_calendar(user_id: int) -> None:
                 await db.commit()
 
         # Fetch events
-        sync_token = sync_state["sync_token"] if sync_state else None
-        is_full_sync = sync_token is None
-        result = main_client.list_events(main_calendar_id, sync_token=sync_token)
+        if verify_ids is not None:
+            events = []
+            for eid in verify_ids:
+                try:
+                    ev = main_client.get_event(main_calendar_id, eid)
+                    if ev:
+                        events.append(ev)
+                except Exception:
+                    pass
+            new_sync_token = None
+            sync_token = True
+            is_full_sync = False
+            logger.info(
+                f"Verification: re-fetched {len(events)}/{len(verify_ids)} "
+                f"main events for user {user_id}"
+            )
+        else:
+            sync_token = sync_state["sync_token"] if sync_state else None
+            is_full_sync = sync_token is None
+            result = main_client.list_events(main_calendar_id, sync_token=sync_token)
 
-        if result.get("sync_token_expired"):
-            logger.info(f"Main calendar sync token expired for user {user_id}, doing full sync")
-            result = main_client.list_events(main_calendar_id)
-            is_full_sync = True
+            if result.get("sync_token_expired"):
+                logger.info(f"Main calendar sync token expired for user {user_id}, doing full sync")
+                result = main_client.list_events(main_calendar_id)
+                is_full_sync = True
 
-        events = result["events"]
-        new_sync_token = result.get("next_sync_token")
+            events = result["events"]
+            new_sync_token = result.get("next_sync_token")
 
         # Deduplicate: keep only the latest entry per event ID.
         seen_main: dict[str, int] = {}
@@ -638,6 +762,7 @@ async def _sync_main_calendar(user_id: int) -> None:
         logger.info(f"Processing {len(events)} events from main calendar for user {user_id}")
 
         # Process events
+        processed_ids: list[str] = []
         for event in events:
             try:
                 if event.get("status") == "cancelled":
@@ -719,6 +844,7 @@ async def _sync_main_calendar(user_id: int) -> None:
                         main_calendar_id=main_calendar_id,
                         user_email=user_email,
                     )
+                    processed_ids.append(event["id"])
             except Exception as e:
                 logger.error(f"Error processing main event {event.get('id')}: {e}")
                 event_errors.append(f"{event.get('id')}: {e}")
@@ -728,6 +854,14 @@ async def _sync_main_calendar(user_id: int) -> None:
                 f"{len(event_errors)} event(s) failed while syncing main calendar for user {user_id}. "
                 f"First error: {event_errors[0]}"
             )
+
+        # In verification mode, skip state updates and retries
+        if verify_ids is not None:
+            logger.info(
+                f"Verification completed for main calendar user {user_id}: "
+                f"{len(processed_ids)} re-processed"
+            )
+            return processed_ids
 
         # Retry missing busy blocks: find event_mappings that should have
         # busy blocks on client calendars but don't (e.g. due to prior token failures).
@@ -771,6 +905,7 @@ async def _sync_main_calendar(user_id: int) -> None:
             )
         )
         await db.commit()
+        return processed_ids
 
     except Exception as e:
         logger.exception(f"Main calendar sync failed for user {user_id}: {e}")
@@ -795,6 +930,8 @@ async def _sync_main_calendar(user_id: int) -> None:
         )
         await db.commit()
 
+    return []
+
 
 async def trigger_sync_for_personal_calendar(personal_calendar_id: int, debounce: float = 0) -> None:
     """Trigger sync for a specific personal calendar."""
@@ -807,11 +944,25 @@ async def trigger_sync_for_personal_calendar(personal_calendar_id: int, debounce
 
     lock = await _get_calendar_lock(f"personal:{personal_calendar_id}")
     async with lock:
-        await _sync_personal_calendar(personal_calendar_id)
+        processed = await _sync_personal_calendar(personal_calendar_id)
+
+    if debounce > 0 and processed:
+        _schedule_event_verification(
+            f"personal:{personal_calendar_id}",
+            _sync_personal_calendar,
+            personal_calendar_id,
+            processed,
+        )
 
 
-async def _sync_personal_calendar(personal_calendar_id: int) -> None:
-    """Internal: perform sync for a personal calendar (must be called under lock)."""
+async def _sync_personal_calendar(
+    personal_calendar_id: int,
+    verify_ids: list[str] | None = None,
+) -> list[str]:
+    """Internal: perform sync for a personal calendar (must be called under lock).
+
+    Returns the list of non-cancelled event IDs that were processed.
+    """
     db = await get_database()
 
     # Get calendar info
@@ -829,11 +980,11 @@ async def _sync_personal_calendar(personal_calendar_id: int) -> None:
 
     if not calendar:
         logger.warning(f"Personal calendar {personal_calendar_id} not found or inactive")
-        return
+        return []
 
     if not calendar["main_calendar_id"]:
         logger.warning(f"User {calendar['user_id']} has no main calendar configured")
-        return
+        return []
 
     user_id = calendar["user_id"]
     personal_email = calendar["google_account_email"]
@@ -864,20 +1015,37 @@ async def _sync_personal_calendar(personal_calendar_id: int) -> None:
                 await db.commit()
 
         # Fetch events from personal calendar
-        sync_token = calendar["sync_token"]
-        result = personal_client.list_events(calendar["google_calendar_id"], sync_token=sync_token)
+        if verify_ids is not None:
+            events = []
+            for eid in verify_ids:
+                try:
+                    ev = personal_client.get_event(calendar["google_calendar_id"], eid)
+                    if ev:
+                        events.append(ev)
+                except Exception:
+                    pass
+            new_sync_token = None
+            sync_token = True
+            logger.info(
+                f"Verification: re-fetched {len(events)}/{len(verify_ids)} "
+                f"personal events for calendar {personal_calendar_id}"
+            )
+        else:
+            sync_token = calendar["sync_token"]
+            result = personal_client.list_events(calendar["google_calendar_id"], sync_token=sync_token)
 
-        if result.get("sync_token_expired"):
-            logger.info(f"Sync token expired for personal calendar {personal_calendar_id}, doing full sync")
-            result = personal_client.list_events(calendar["google_calendar_id"])
+            if result.get("sync_token_expired"):
+                logger.info(f"Sync token expired for personal calendar {personal_calendar_id}, doing full sync")
+                result = personal_client.list_events(calendar["google_calendar_id"])
 
-        events = result["events"]
-        new_sync_token = result.get("next_sync_token")
+            events = result["events"]
+            new_sync_token = result.get("next_sync_token")
 
         logger.info(f"Syncing {len(events)} events from personal calendar {personal_calendar_id}")
 
         synced_count = 0
         deleted_count = 0
+        processed_ids: list[str] = []
 
         for event in events:
             try:
@@ -906,6 +1074,7 @@ async def _sync_personal_calendar(personal_calendar_id: int) -> None:
                     )
                     if main_event_id:
                         synced_count += 1
+                    processed_ids.append(event["id"])
 
             except Exception as e:
                 logger.error(f"Error processing personal event {event.get('id')}: {e}")
@@ -916,6 +1085,13 @@ async def _sync_personal_calendar(personal_calendar_id: int) -> None:
                 f"{len(event_errors)} event(s) failed while syncing personal calendar {personal_calendar_id}. "
                 f"First error: {event_errors[0]}"
             )
+
+        if verify_ids is not None:
+            logger.info(
+                f"Verification completed for personal calendar {personal_calendar_id}: "
+                f"{synced_count} updated"
+            )
+            return processed_ids
 
         # Update sync state
         now = datetime.utcnow().isoformat()
@@ -946,6 +1122,7 @@ async def _sync_personal_calendar(personal_calendar_id: int) -> None:
         await db.commit()
 
         logger.info(f"Personal calendar sync completed for calendar {personal_calendar_id}: {synced_count} synced, {deleted_count} deleted")
+        return processed_ids
 
     except Exception as e:
         logger.exception(f"Personal calendar sync failed for calendar {personal_calendar_id}: {e}")
@@ -966,6 +1143,8 @@ async def _sync_personal_calendar(personal_calendar_id: int) -> None:
              json.dumps({"error": str(e), "failed_events": event_errors}))
         )
         await db.commit()
+
+    return []
 
 
 async def trigger_sync_for_user(user_id: int) -> None:
