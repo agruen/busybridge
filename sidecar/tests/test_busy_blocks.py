@@ -269,12 +269,12 @@ class AllDayBusyBlock(TestCase):
 
         busy = await ctx.waiter.wait_for_event(
             cal_b["client"], cal_b["google_calendar_id"],
-            lambda e: "[BusyBridge]" in e.get("summary", "") and "Busy" in e.get("summary", ""),
+            lambda e: ("[BusyBridge]" in e.get("summary", "")
+                       and "Busy" in e.get("summary", "")
+                       and e.get("start", {}).get("date") == start),
             description="all-day busy block",
         )
         ctx.cleanup.track(cal_b["client"], cal_b["google_calendar_id"], busy["id"])
-
-        assert "date" in busy.get("start", {}), "Busy block is not all-day"
 
 
 class DeclinedNoBusyBlock(TestCase):

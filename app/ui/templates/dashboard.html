@@ -288,10 +288,20 @@
                             {% else %}
                             <p class="text-xs text-gray-400">Never synced</p>
                             {% endif %}
+                            <!-- Sync progress (inline, hidden by default) -->
+                            <div id="sync-progress-{{ cal['id'] }}" class="hidden mt-2">
+                                <div class="flex items-center space-x-2">
+                                    <i class="fas fa-spinner fa-spin text-indigo-500 text-xs"></i>
+                                    <span class="text-xs text-indigo-600" id="sync-status-{{ cal['id'] }}"></span>
+                                </div>
+                                <div class="w-full bg-gray-200 rounded-full h-1.5 mt-1">
+                                    <div class="bg-indigo-500 h-1.5 rounded-full transition-all duration-500" id="sync-bar-{{ cal['id'] }}" style="width: 0%"></div>
+                                </div>
+                            </div>
                             <div class="mt-2 flex items-center space-x-2 sm:hidden">
                                 <button
-                                    hx-post="/api/client-calendars/{{ cal['id'] }}/sync"
-                                    hx-swap="none"
+                                    onclick="startCalendarSync({{ cal['id'] }})"
+                                    id="sync-btn-mobile-{{ cal['id'] }}"
                                     class="inline-flex items-center px-3 py-1.5 border border-gray-300 text-xs font-medium rounded text-gray-700 bg-white hover:bg-gray-50"
                                 >
                                     <i class="fas fa-sync-alt mr-1"></i> Sync
@@ -307,8 +317,8 @@
                     </div>
                     <div class="ml-4 hidden sm:flex items-center space-x-2">
                         <button
-                            hx-post="/api/client-calendars/{{ cal['id'] }}/sync"
-                            hx-swap="none"
+                            onclick="startCalendarSync({{ cal['id'] }})"
+                            id="sync-btn-{{ cal['id'] }}"
                             class="inline-flex items-center px-3 py-1.5 border border-gray-300 text-xs font-medium rounded text-gray-700 bg-white hover:bg-gray-50"
                         >
                             <i class="fas fa-sync-alt mr-1"></i> Sync
@@ -351,4 +361,93 @@
         {% endif %}
     </div>
 </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const _syncPolls = {};
+
+function startCalendarSync(calId) {
+    const progressEl = document.getElementById('sync-progress-' + calId);
+    const statusEl = document.getElementById('sync-status-' + calId);
+    const barEl = document.getElementById('sync-bar-' + calId);
+    const btnEl = document.getElementById('sync-btn-' + calId);
+    const btnMobileEl = document.getElementById('sync-btn-mobile-' + calId);
+
+    // Show progress, disable button
+    progressEl.classList.remove('hidden');
+    if (btnEl) btnEl.disabled = true;
+    if (btnMobileEl) btnMobileEl.disabled = true;
+    statusEl.textContent = 'Starting...';
+    barEl.style.width = '0%';
+
+    fetch('/api/client-calendars/' + calId + '/sync', {
+        method: 'POST', credentials: 'same-origin'
+    })
+    .then(r => r.json())
+    .then(() => { pollSyncProgress(calId); })
+    .catch(() => {
+        statusEl.textContent = 'Failed to start sync';
+        setTimeout(() => finishSyncUI(calId), 3000);
+    });
+}
+
+function pollSyncProgress(calId) {
+    if (_syncPolls[calId]) clearInterval(_syncPolls[calId]);
+    _syncPolls[calId] = setInterval(() => checkSyncProgress(calId), 1000);
+}
+
+function checkSyncProgress(calId) {
+    const statusEl = document.getElementById('sync-status-' + calId);
+    const barEl = document.getElementById('sync-bar-' + calId);
+
+    fetch('/api/client-calendars/' + calId + '/sync-progress', {
+        credentials: 'same-origin'
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.status === 'settling') {
+            const pct = Math.round(((data.total - data.remaining) / data.total) * 100);
+            barEl.style.width = pct + '%';
+            statusEl.textContent = 'Waiting for changes to settle... ' + data.remaining + 's';
+        } else if (data.status === 'syncing') {
+            barEl.style.width = '80%';
+            statusEl.textContent = data.step || 'Syncing...';
+        } else if (data.status === 'complete') {
+            barEl.style.width = '100%';
+            const n = data.events_processed || 0;
+            statusEl.textContent = 'Done \u2014 ' + n + ' event' + (n !== 1 ? 's' : '') + ' processed';
+            finishSyncUI(calId);
+        } else if (data.status === 'error') {
+            statusEl.textContent = 'Error: ' + (data.message || 'sync failed');
+            barEl.style.width = '100%';
+            barEl.classList.remove('bg-indigo-500');
+            barEl.classList.add('bg-red-400');
+            finishSyncUI(calId);
+        } else if (data.status === 'idle') {
+            statusEl.textContent = 'Starting...';
+        }
+    })
+    .catch(() => {});
+}
+
+function finishSyncUI(calId) {
+    if (_syncPolls[calId]) {
+        clearInterval(_syncPolls[calId]);
+        delete _syncPolls[calId];
+    }
+    const btnEl = document.getElementById('sync-btn-' + calId);
+    const btnMobileEl = document.getElementById('sync-btn-mobile-' + calId);
+    if (btnEl) btnEl.disabled = false;
+    if (btnMobileEl) btnMobileEl.disabled = false;
+
+    setTimeout(() => {
+        const progressEl = document.getElementById('sync-progress-' + calId);
+        const barEl = document.getElementById('sync-bar-' + calId);
+        progressEl.classList.add('hidden');
+        barEl.classList.remove('bg-red-400');
+        barEl.classList.add('bg-indigo-500');
+    }, 4000);
+}
+</script>
 {% endblock %}

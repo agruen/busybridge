@@ -36,6 +36,9 @@ _cleanup_in_progress: set[int] = set()
 # Cleanup progress tracking — keyed by user_id.
 _cleanup_progress: dict[int, dict] = {}
 
+# Manual sync progress tracking — keyed by client_calendar_id.
+_sync_progress: dict[int, dict] = {}
+
 
 def get_cleanup_progress(user_id: int) -> Optional[dict]:
     """Return the current cleanup progress for a user, or None."""
@@ -46,6 +49,17 @@ def _update_cleanup_progress(user_id: int, **kwargs) -> None:
     """Update cleanup progress for a user."""
     if user_id in _cleanup_progress:
         _cleanup_progress[user_id].update(kwargs)
+
+
+def get_sync_progress(client_calendar_id: int) -> Optional[dict]:
+    """Return the current manual sync progress for a calendar, or None."""
+    return _sync_progress.get(client_calendar_id)
+
+
+def _update_sync_progress(client_calendar_id: int, **kwargs) -> None:
+    """Update manual sync progress for a calendar."""
+    if client_calendar_id in _sync_progress:
+        _sync_progress[client_calendar_id].update(kwargs)
 
 
 async def _get_calendar_lock(key: str) -> asyncio.Lock:
@@ -134,32 +148,71 @@ def _schedule_event_verification(
     )
 
 
-async def trigger_sync_for_calendar(client_calendar_id: int, debounce: float = 0) -> None:
+async def trigger_sync_for_calendar(
+    client_calendar_id: int,
+    debounce: float = 0,
+    track_progress: bool = False,
+) -> None:
     """Trigger sync for a specific client calendar.
 
     Args:
         debounce: seconds to wait before syncing, allowing rapid-fire
                   updates to settle (avoids syncing stale snapshots when
                   Google's eventual consistency hasn't caught up yet).
+        track_progress: if True, update ``_sync_progress`` so the UI
+                        can poll for live status (settling countdown,
+                        sync activity, completion).
     """
     if await is_sync_paused():
         logger.info("Sync is paused, skipping calendar sync")
+        if track_progress:
+            _sync_progress[client_calendar_id] = {
+                "status": "error", "message": "Syncing is paused",
+            }
         return
 
-    if debounce > 0:
-        await asyncio.sleep(debounce)
+    try:
+        if debounce > 0:
+            total = int(debounce)
+            if track_progress:
+                _sync_progress[client_calendar_id] = {
+                    "status": "settling", "remaining": total, "total": total,
+                }
+            for i in range(total):
+                if track_progress:
+                    _update_sync_progress(client_calendar_id, remaining=total - i)
+                await asyncio.sleep(1)
+            if track_progress:
+                _update_sync_progress(client_calendar_id, remaining=0)
 
-    lock = await _get_calendar_lock(f"client:{client_calendar_id}")
-    async with lock:
-        processed = await _sync_client_calendar(client_calendar_id)
+        if track_progress:
+            _sync_progress[client_calendar_id] = {
+                "status": "syncing", "step": "Fetching events from Google...",
+            }
 
-    if debounce > 0 and processed:
-        _schedule_event_verification(
-            f"client:{client_calendar_id}",
-            _sync_client_calendar,
-            client_calendar_id,
-            processed,
-        )
+        lock = await _get_calendar_lock(f"client:{client_calendar_id}")
+        async with lock:
+            processed = await _sync_client_calendar(client_calendar_id)
+
+        if track_progress:
+            synced = len(processed) if processed else 0
+            _sync_progress[client_calendar_id] = {
+                "status": "complete", "events_processed": synced,
+            }
+
+        if debounce > 0 and processed:
+            _schedule_event_verification(
+                f"client:{client_calendar_id}",
+                _sync_client_calendar,
+                client_calendar_id,
+                processed,
+            )
+    except Exception as e:
+        logger.exception(f"Manual sync failed for calendar {client_calendar_id}: {e}")
+        if track_progress:
+            _sync_progress[client_calendar_id] = {
+                "status": "error", "message": str(e)[:200],
+            }
 
 
 async def _sync_client_calendar(
@@ -1648,7 +1701,10 @@ async def _cleanup_managed_events_impl(
 
             try:
                 events = await asyncio.wait_for(
-                    asyncio.to_thread(client.search_events, calendar_id, managed_prefix),
+                    asyncio.to_thread(
+                        client.search_events, calendar_id, managed_prefix,
+                        single_events=False,
+                    ),
                     timeout=30,
                 )
                 summary["prefix_calendars_scanned"] += 1

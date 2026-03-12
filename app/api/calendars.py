@@ -256,7 +256,7 @@ async def trigger_calendar_sync(
     calendar_id: int,
     user: User = Depends(get_current_user)
 ):
-    """Trigger manual sync for a calendar."""
+    """Trigger manual sync for a calendar with settling delay."""
     db = await get_database()
 
     # Verify calendar belongs to user
@@ -273,15 +273,47 @@ async def trigger_calendar_sync(
             detail="Calendar not found"
         )
 
-    # Trigger sync
+    # Trigger sync with settling delay so Google's cross-session
+    # eventual consistency has time to propagate recent writes.
+    _MANUAL_SYNC_SETTLE = 25
     from app.sync.engine import trigger_sync_for_calendar
     from app.utils.tasks import create_background_task
     create_background_task(
-        trigger_sync_for_calendar(calendar_id),
+        trigger_sync_for_calendar(
+            calendar_id,
+            debounce=_MANUAL_SYNC_SETTLE,
+            track_progress=True,
+        ),
         f"manual_sync_calendar_{calendar_id}"
     )
 
-    return {"status": "ok", "message": "Sync triggered"}
+    return {"status": "ok", "message": "Sync triggered", "settle_seconds": _MANUAL_SYNC_SETTLE}
+
+
+@router.get("/{calendar_id}/sync-progress")
+async def get_calendar_sync_progress(
+    calendar_id: int,
+    user: User = Depends(get_current_user)
+):
+    """Poll manual sync progress for a calendar."""
+    db = await get_database()
+
+    cursor = await db.execute(
+        """SELECT id FROM client_calendars
+           WHERE id = ? AND user_id = ?""",
+        (calendar_id, user.id)
+    )
+    if not await cursor.fetchone():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Calendar not found"
+        )
+
+    from app.sync.engine import get_sync_progress
+    progress = get_sync_progress(calendar_id)
+    if progress is None:
+        return {"status": "idle"}
+    return progress
 
 
 @router.post("/{calendar_id}/resync")
