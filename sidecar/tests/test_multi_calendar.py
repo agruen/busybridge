@@ -42,8 +42,6 @@ class CrossCalendarBusyBlocks(TestCase):
         )
         ctx.cleanup.track(cal_b["client"], cal_b["google_calendar_id"], event_b["id"])
 
-        await ctx.api.trigger_user_sync(acct["user_id"])
-
         # A's event should produce busy block on B
         busy_on_b = await ctx.waiter.wait_for_event(
             cal_b["client"], cal_b["google_calendar_id"],
@@ -95,8 +93,6 @@ class SimultaneousOverlapping(TestCase):
             cal_b["google_calendar_id"], summary_b, start, end,
         )
         ctx.cleanup.track(cal_b["client"], cal_b["google_calendar_id"], event_b["id"])
-
-        await ctx.api.trigger_user_sync(acct["user_id"])
 
         # Both should appear on main
         main_a = await ctx.waiter.wait_for_event(

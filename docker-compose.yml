@@ -38,6 +38,7 @@ services:
       context: ./sidecar
       network: host
     container_name: busybridge-test-sidecar
+    stop_grace_period: 120s
     profiles: ["test"]
     ports:
       - "8100:8100"

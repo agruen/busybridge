@@ -31,8 +31,6 @@ class MissingBusyBlockRecreated(TestCase):
         )
         ctx.cleanup.track(cal_a["client"], cal_a["google_calendar_id"], event["id"])
 
-        await ctx.api.trigger_calendar_sync(cal_a["calendar"]["id"])
-
         main_event = await ctx.waiter.wait_for_event(
             main_client, main_cal_id,
             lambda e: summary in e.get("summary", ""),
@@ -48,9 +46,6 @@ class MissingBusyBlockRecreated(TestCase):
 
         # Delete busy block directly via Google API
         cal_b["client"].delete_event(cal_b["google_calendar_id"], busy["id"])
-
-        # Trigger sync to trigger self-healing
-        await ctx.api.trigger_user_sync(acct["user_id"])
 
         # Wait for busy block to be recreated
         new_busy = await ctx.waiter.wait_for_event(
@@ -84,8 +79,6 @@ class ManuallyDeletedBlockRecreated(TestCase):
             cal_a["google_calendar_id"], summary, start, end,
         )
         ctx.cleanup.track(cal_a["client"], cal_a["google_calendar_id"], event["id"])
-
-        await ctx.api.trigger_calendar_sync(cal_a["calendar"]["id"])
 
         main_event = await ctx.waiter.wait_for_event(
             main_client, main_cal_id,

@@ -35,8 +35,6 @@ class ClientDeleteCleansAll(TestCase):
         )
         ctx.cleanup.track(cal_a["client"], cal_a["google_calendar_id"], event["id"])
 
-        await ctx.api.trigger_calendar_sync(cal_a["calendar"]["id"])
-
         main_event = await ctx.waiter.wait_for_event(
             main_client, main_cal_id,
             lambda e: summary in e.get("summary", ""),
@@ -53,8 +51,6 @@ class ClientDeleteCleansAll(TestCase):
 
         # Delete on client A
         cal_a["client"].delete_event(cal_a["google_calendar_id"], event["id"])
-
-        await ctx.api.trigger_calendar_sync(cal_a["calendar"]["id"])
 
         # Main copy should be gone
         await ctx.waiter.wait_for_gone(
@@ -91,8 +87,6 @@ class MainDeleteCleansBlocks(TestCase):
         event = main_client.create_event(main_cal_id, summary, start, end)
         ctx.cleanup.track(main_client, main_cal_id, event["id"])
 
-        await ctx.api.trigger_user_sync(acct["user_id"])
-
         # Wait for busy blocks
         busy_ids = []
         for cal in client_cals:
@@ -109,8 +103,6 @@ class MainDeleteCleansBlocks(TestCase):
 
         # Delete on main
         main_client.delete_event(main_cal_id, event["id"])
-
-        await ctx.api.trigger_user_sync(acct["user_id"])
 
         # Verify blocks removed
         for cal, bid in busy_ids:
@@ -142,8 +134,6 @@ class DBCleanedOnlyAfterRemoteDelete(TestCase):
         event = cal_client.create_event(cal_id, summary, start, end)
         ctx.cleanup.track(cal_client, cal_id, event["id"])
 
-        await ctx.api.trigger_calendar_sync(client_cal["calendar"]["id"])
-
         main_event = await ctx.waiter.wait_for_event(
             main_client, main_cal_id,
             lambda e: summary in e.get("summary", ""),
@@ -156,9 +146,8 @@ class DBCleanedOnlyAfterRemoteDelete(TestCase):
         found = [m for m in mappings if m.get("origin_event_id") == event["id"]]
         assert len(found) > 0, "No mapping found in DB after sync"
 
-        # Delete and sync
+        # Delete
         cal_client.delete_event(cal_id, event["id"])
-        await ctx.api.trigger_calendar_sync(client_cal["calendar"]["id"])
 
         await ctx.waiter.wait_for_gone(
             main_client, main_cal_id,

@@ -190,8 +190,10 @@ async def main() -> None:
             )
 
     logger.info("Running startup cleanup sweep...")
-    deleted = await CleanupManager.sweep_all(all_cal_clients)
-    logger.info("Startup cleanup: removed %d test events", deleted)
+    deleted = await CleanupManager.sweep_all(
+        all_cal_clients, include_sentinels=True, time_window_days=30,
+    )
+    logger.info("Startup cleanup: removed %d test events (incl. sentinels)", deleted)
 
     # 9. Build test context
     waiter = SyncWaiter(
@@ -285,7 +287,9 @@ async def main() -> None:
 
     # Final cleanup
     logger.info("Running shutdown cleanup sweep...")
-    await CleanupManager.sweep_all(all_cal_clients)
+    await CleanupManager.sweep_all(
+        all_cal_clients, include_sentinels=True, time_window_days=30,
+    )
 
     # Stop dashboard
     server.should_exit = True

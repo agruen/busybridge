@@ -39,6 +39,7 @@ class CleanupManager:
         clients: list[tuple[CalendarTestClient, str]],
         prefix: str = TEST_EVENT_PREFIX,
         time_window_days: int = 7,
+        include_sentinels: bool = False,
     ) -> int:
         """
         Delete all events with the test prefix from all calendars.
@@ -47,6 +48,7 @@ class CleanupManager:
             clients: List of (client, calendar_id) pairs.
             prefix: Event summary prefix to match.
             time_window_days: How far back/forward to look.
+            include_sentinels: If True, also delete sentinel events.
 
         Returns:
             Number of events deleted.
@@ -61,10 +63,32 @@ class CleanupManager:
                 events = client.find_events_by_prefix(
                     calendar_id, prefix, time_min=time_min, time_max=time_max
                 )
+                # Also search with singleEvents=False to catch parent
+                # recurring events (deleting instances doesn't remove parents).
+                parent_events = client.list_events(
+                    calendar_id, q=prefix, time_min=time_min, time_max=time_max,
+                    single_events=False,
+                )
+                parent_events = [e for e in parent_events if e.get("summary", "").startswith(prefix)]
+                seen = {e["id"] for e in events}
+                events.extend(e for e in parent_events if e["id"] not in seen)
+                # Sentinel summaries don't start with the test prefix
+                # ([TEST-BB] vs [TEST-BB-SENTINEL]), so search separately.
+                if include_sentinels:
+                    sentinel_events = client.find_events_by_prefix(
+                        calendar_id, SENTINEL_PREFIX,
+                        time_min=time_min, time_max=time_max,
+                    )
+                    sentinel_parents = client.list_events(
+                        calendar_id, q=SENTINEL_PREFIX, time_min=time_min,
+                        time_max=time_max, single_events=False,
+                    )
+                    sentinel_parents = [e for e in sentinel_parents if e.get("summary", "").startswith(SENTINEL_PREFIX)]
+                    seen = {e["id"] for e in events}
+                    events.extend(e for e in sentinel_events if e["id"] not in seen)
+                    seen = {e["id"] for e in events}
+                    events.extend(e for e in sentinel_parents if e["id"] not in seen)
                 for event in events:
-                    # Skip sentinel events — they're long-lived and managed separately
-                    if (event.get("summary") or "").startswith(SENTINEL_PREFIX):
-                        continue
                     try:
                         client.delete_event(calendar_id, event["id"])
                         total_deleted += 1

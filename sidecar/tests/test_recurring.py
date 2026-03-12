@@ -38,8 +38,6 @@ class WeeklyRecurringSync(TestCase):
         )
         ctx.cleanup.track(cal_client, cal_id, event["id"])
 
-        await ctx.api.trigger_calendar_sync(client_cal["calendar"]["id"])
-
         main_event = await ctx.waiter.wait_for_event(
             main_client, main_cal_id,
             lambda e: summary in e.get("summary", ""),
@@ -72,8 +70,6 @@ class DailyRecurringSync(TestCase):
         )
         ctx.cleanup.track(cal_client, cal_id, event["id"])
 
-        await ctx.api.trigger_calendar_sync(client_cal["calendar"]["id"])
-
         main_event = await ctx.waiter.wait_for_event(
             main_client, main_cal_id,
             lambda e: summary in e.get("summary", ""),
@@ -104,8 +100,6 @@ class SingleInstanceEdit(TestCase):
         )
         ctx.cleanup.track(cal_client, cal_id, event["id"])
 
-        await ctx.api.trigger_calendar_sync(client_cal["calendar"]["id"])
-
         main_event = await ctx.waiter.wait_for_event(
             main_client, main_cal_id,
             lambda e: summary in e.get("summary", ""),
@@ -125,7 +119,6 @@ class SingleInstanceEdit(TestCase):
                 "summary": new_summary,
             })
 
-            await ctx.api.trigger_calendar_sync(client_cal["calendar"]["id"])
             await asyncio.sleep(10)
 
             # Verify the edited instance appears on main
@@ -158,8 +151,6 @@ class SingleInstanceDelete(TestCase):
         )
         ctx.cleanup.track(cal_client, cal_id, event["id"])
 
-        await ctx.api.trigger_calendar_sync(client_cal["calendar"]["id"])
-
         main_event = await ctx.waiter.wait_for_event(
             main_client, main_cal_id,
             lambda e: summary in e.get("summary", ""),
@@ -173,7 +164,6 @@ class SingleInstanceDelete(TestCase):
         if len(test_instances) >= 2:
             cal_client.delete_event(cal_id, test_instances[0]["id"])
 
-            await ctx.api.trigger_calendar_sync(client_cal["calendar"]["id"])
             await asyncio.sleep(10)
 
             # Verify remaining instances still on main
@@ -205,8 +195,6 @@ class RecurringBusyBlock(TestCase):
             recurrence=["RRULE:FREQ=WEEKLY;COUNT=3"],
         )
         ctx.cleanup.track(cal_a["client"], cal_a["google_calendar_id"], event["id"])
-
-        await ctx.api.trigger_calendar_sync(cal_a["calendar"]["id"])
 
         main_event = await ctx.waiter.wait_for_event(
             acct["main_client"], acct["main_calendar_id"],
@@ -245,8 +233,6 @@ class DeleteRecurringParent(TestCase):
         )
         ctx.cleanup.track(cal_client, cal_id, event["id"])
 
-        await ctx.api.trigger_calendar_sync(client_cal["calendar"]["id"])
-
         main_event = await ctx.waiter.wait_for_event(
             main_client, main_cal_id,
             lambda e: summary in e.get("summary", ""),
@@ -256,8 +242,6 @@ class DeleteRecurringParent(TestCase):
 
         # Delete parent
         cal_client.delete_event(cal_id, event["id"])
-
-        await ctx.api.trigger_calendar_sync(client_cal["calendar"]["id"])
 
         await ctx.waiter.wait_for_gone(
             main_client, main_cal_id,
@@ -288,8 +272,6 @@ class ModifiedInstanceNoDuplicate(TestCase):
         )
         ctx.cleanup.track(cal_client, cal_id, event["id"])
 
-        await ctx.api.trigger_calendar_sync(client_cal["calendar"]["id"])
-
         main_event = await ctx.waiter.wait_for_event(
             main_client, main_cal_id,
             lambda e: summary in e.get("summary", ""),
@@ -307,7 +289,6 @@ class ModifiedInstanceNoDuplicate(TestCase):
                 "end": {"dateTime": new_end, "timeZone": "America/New_York"},
             })
 
-            await ctx.api.trigger_calendar_sync(client_cal["calendar"]["id"])
             await asyncio.sleep(15)
 
             # Count events at the new time - should be exactly 1

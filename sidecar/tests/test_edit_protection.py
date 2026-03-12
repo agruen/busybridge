@@ -37,8 +37,6 @@ class NonOrganizerGetsLockEmoji(TestCase):
         )
         ctx.cleanup.track(cal_client, cal_id, event["id"])
 
-        await ctx.api.trigger_calendar_sync(client_cal["calendar"]["id"])
-
         main_event = await ctx.waiter.wait_for_event(
             main_client, main_cal_id,
             lambda e: summary in e.get("summary", "") or
@@ -75,8 +73,6 @@ class MoveEditableOnMain(TestCase):
         event = cal_client.create_event(cal_id, summary, start, end)
         ctx.cleanup.track(cal_client, cal_id, event["id"])
 
-        await ctx.api.trigger_calendar_sync(client_cal["calendar"]["id"])
-
         main_event = await ctx.waiter.wait_for_event(
             main_client, main_cal_id,
             lambda e: summary in e.get("summary", ""),
@@ -90,8 +86,6 @@ class MoveEditableOnMain(TestCase):
             "start": {"dateTime": new_start, "timeZone": "America/New_York"},
             "end": {"dateTime": new_end, "timeZone": "America/New_York"},
         })
-
-        await ctx.api.trigger_user_sync(acct["user_id"])
 
         # Check client event updated
         updated = await ctx.waiter.wait_for_event_updated(
@@ -124,8 +118,6 @@ class MoveEditableOnClient(TestCase):
         event = cal_client.create_event(cal_id, summary, start, end)
         ctx.cleanup.track(cal_client, cal_id, event["id"])
 
-        await ctx.api.trigger_calendar_sync(client_cal["calendar"]["id"])
-
         main_event = await ctx.waiter.wait_for_event(
             main_client, main_cal_id,
             lambda e: summary in e.get("summary", ""),
@@ -139,8 +131,6 @@ class MoveEditableOnClient(TestCase):
             "start": {"dateTime": new_start, "timeZone": "America/New_York"},
             "end": {"dateTime": new_end, "timeZone": "America/New_York"},
         })
-
-        await ctx.api.trigger_calendar_sync(client_cal["calendar"]["id"])
 
         updated_main = await ctx.waiter.wait_for_event_updated(
             main_client, main_cal_id,
@@ -174,8 +164,6 @@ class MovedNonEditableReverts(TestCase):
         event = cal_client.create_event(cal_id, summary, start, end)
         ctx.cleanup.track(cal_client, cal_id, event["id"])
 
-        await ctx.api.trigger_calendar_sync(client_cal["calendar"]["id"])
-
         main_event = await ctx.waiter.wait_for_event(
             main_client, main_cal_id,
             lambda e: summary in e.get("summary", ""),
@@ -207,8 +195,6 @@ class GuestsCanModifyAllowsEdit(TestCase):
 
         event = cal_client.create_event(cal_id, summary, start, end)
         ctx.cleanup.track(cal_client, cal_id, event["id"])
-
-        await ctx.api.trigger_calendar_sync(client_cal["calendar"]["id"])
 
         main_event = await ctx.waiter.wait_for_event(
             main_client, main_cal_id,
@@ -243,8 +229,6 @@ class MoveNonEditableOnClient(TestCase):
 
         event = cal_client.create_event(cal_id, summary, start, end)
         ctx.cleanup.track(cal_client, cal_id, event["id"])
-
-        await ctx.api.trigger_calendar_sync(client_cal["calendar"]["id"])
 
         main_event = await ctx.waiter.wait_for_event(
             main_client, main_cal_id,

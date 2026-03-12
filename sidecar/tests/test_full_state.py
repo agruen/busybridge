@@ -31,8 +31,6 @@ class FullStateAfterClientEvent(TestCase):
         )
         ctx.cleanup.track(cal_a["client"], cal_a["google_calendar_id"], event["id"])
 
-        await ctx.api.trigger_user_sync(acct["user_id"])
-
         # Verify main has copy
         main_event = await ctx.waiter.wait_for_event(
             main_client, main_cal_id,
@@ -86,8 +84,6 @@ class FullStateAfterMainEvent(TestCase):
         event = main_client.create_event(main_cal_id, summary, start, end)
         ctx.cleanup.track(main_client, main_cal_id, event["id"])
 
-        await ctx.api.trigger_user_sync(acct["user_id"])
-
         for cal in client_cals:
             busy = await ctx.waiter.wait_for_event(
                 cal["client"], cal["google_calendar_id"],
@@ -120,8 +116,6 @@ class FullStateAfterDelete(TestCase):
         )
         ctx.cleanup.track(cal_a["client"], cal_a["google_calendar_id"], event["id"])
 
-        await ctx.api.trigger_user_sync(acct["user_id"])
-
         main_event = await ctx.waiter.wait_for_event(
             main_client, main_cal_id,
             lambda e: summary in e.get("summary", ""),
@@ -137,8 +131,6 @@ class FullStateAfterDelete(TestCase):
 
         # Delete on client A
         cal_a["client"].delete_event(cal_a["google_calendar_id"], event["id"])
-
-        await ctx.api.trigger_calendar_sync(cal_a["calendar"]["id"])
 
         await ctx.waiter.wait_for_gone(
             main_client, main_cal_id,
@@ -189,8 +181,6 @@ class FullStateMultipleEvents(TestCase):
             )
             ctx.cleanup.track(cal_b["client"], cal_b["google_calendar_id"], event["id"])
 
-        await ctx.api.trigger_user_sync(acct["user_id"])
-
         for s in summaries_a + summaries_b:
             main_event = await ctx.waiter.wait_for_event(
                 main_client, main_cal_id,
@@ -238,8 +228,6 @@ class FullStateAfterEditableMove(TestCase):
         )
         ctx.cleanup.track(cal_a["client"], cal_a["google_calendar_id"], event["id"])
 
-        await ctx.api.trigger_user_sync(acct["user_id"])
-
         main_event = await ctx.waiter.wait_for_event(
             main_client, main_cal_id,
             lambda e: summary in e.get("summary", ""),
@@ -260,8 +248,6 @@ class FullStateAfterEditableMove(TestCase):
             "start": {"dateTime": new_start, "timeZone": "America/New_York"},
             "end": {"dateTime": new_end, "timeZone": "America/New_York"},
         })
-
-        await ctx.api.trigger_user_sync(acct["user_id"])
 
         await ctx.waiter.wait_for_event_updated(
             cal_a["client"], cal_a["google_calendar_id"],
@@ -301,8 +287,6 @@ class FullStateAfterNonEditableMove(TestCase):
         event = cal_client.create_event(cal_id, summary, start, end)
         ctx.cleanup.track(cal_client, cal_id, event["id"])
 
-        await ctx.api.trigger_calendar_sync(client_cal["calendar"]["id"])
-
         main_event = await ctx.waiter.wait_for_event(
             main_client, main_cal_id,
             lambda e: summary in e.get("summary", ""),
@@ -332,8 +316,6 @@ class FullStateConsistencyCheck(TestCase):
 
         event = cal_client.create_event(cal_id, summary, start, end)
         ctx.cleanup.track(cal_client, cal_id, event["id"])
-
-        await ctx.api.trigger_calendar_sync(client_cal["calendar"]["id"])
 
         main_event = await ctx.waiter.wait_for_event(
             main_client, main_cal_id,

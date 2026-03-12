@@ -31,8 +31,6 @@ class BasicEventSync(TestCase):
         )
         ctx.cleanup.track(cal_client, cal_id, event["id"])
 
-        await ctx.api.trigger_calendar_sync(client_cal["calendar"]["id"])
-
         main_event = await ctx.waiter.wait_for_event(
             main_client, main_cal_id,
             lambda e: summary in e.get("summary", ""),
@@ -68,8 +66,6 @@ class DescriptionPreserved(TestCase):
             cal_id, summary, start, end, description=desc,
         )
         ctx.cleanup.track(cal_client, cal_id, event["id"])
-
-        await ctx.api.trigger_calendar_sync(client_cal["calendar"]["id"])
 
         main_event = await ctx.waiter.wait_for_event(
             main_client, main_cal_id,
@@ -108,8 +104,6 @@ class LocationPreserved(TestCase):
         )
         ctx.cleanup.track(cal_client, cal_id, event["id"])
 
-        await ctx.api.trigger_calendar_sync(client_cal["calendar"]["id"])
-
         main_event = await ctx.waiter.wait_for_event(
             main_client, main_cal_id,
             lambda e: summary in e.get("summary", ""),
@@ -142,8 +136,6 @@ class UpdatePropagates(TestCase):
         event = cal_client.create_event(cal_id, summary, start, end)
         ctx.cleanup.track(cal_client, cal_id, event["id"])
 
-        await ctx.api.trigger_calendar_sync(client_cal["calendar"]["id"])
-
         main_event = await ctx.waiter.wait_for_event(
             main_client, main_cal_id,
             lambda e: summary in e.get("summary", ""),
@@ -160,8 +152,6 @@ class UpdatePropagates(TestCase):
             "start": {"dateTime": new_start, "timeZone": "America/New_York"},
             "end": {"dateTime": new_end, "timeZone": "America/New_York"},
         })
-
-        await ctx.api.trigger_calendar_sync(client_cal["calendar"]["id"])
 
         updated = await ctx.waiter.wait_for_event_updated(
             main_client, main_cal_id,
@@ -193,8 +183,6 @@ class DeleteRemovesMainCopy(TestCase):
         event = cal_client.create_event(cal_id, summary, start, end)
         ctx.cleanup.track(cal_client, cal_id, event["id"])
 
-        await ctx.api.trigger_calendar_sync(client_cal["calendar"]["id"])
-
         main_event = await ctx.waiter.wait_for_event(
             main_client, main_cal_id,
             lambda e: summary in e.get("summary", ""),
@@ -205,8 +193,6 @@ class DeleteRemovesMainCopy(TestCase):
 
         # Delete from client
         cal_client.delete_event(cal_id, event["id"])
-
-        await ctx.api.trigger_calendar_sync(client_cal["calendar"]["id"])
 
         await ctx.waiter.wait_for_gone(
             main_client, main_cal_id,
@@ -241,8 +227,6 @@ class AttendeesInFooter(TestCase):
             cal_id, summary, start, end, attendees=attendees,
         )
         ctx.cleanup.track(cal_client, cal_id, event["id"])
-
-        await ctx.api.trigger_calendar_sync(client_cal["calendar"]["id"])
 
         main_event = await ctx.waiter.wait_for_event(
             main_client, main_cal_id,
@@ -280,8 +264,6 @@ class AllDayEventSync(TestCase):
         )
         ctx.cleanup.track(cal_client, cal_id, event["id"])
 
-        await ctx.api.trigger_calendar_sync(client_cal["calendar"]["id"])
-
         main_event = await ctx.waiter.wait_for_event(
             main_client, main_cal_id,
             lambda e: summary in e.get("summary", ""),
@@ -315,8 +297,6 @@ class MultiDayEventSync(TestCase):
             cal_id, summary, start, end, all_day=True,
         )
         ctx.cleanup.track(cal_client, cal_id, event["id"])
-
-        await ctx.api.trigger_calendar_sync(client_cal["calendar"]["id"])
 
         main_event = await ctx.waiter.wait_for_event(
             main_client, main_cal_id,
@@ -352,8 +332,6 @@ class ConferenceDataPreserved(TestCase):
         event = cal_client.create_event(cal_id, summary, start, end)
         ctx.cleanup.track(cal_client, cal_id, event["id"])
 
-        await ctx.api.trigger_calendar_sync(client_cal["calendar"]["id"])
-
         main_event = await ctx.waiter.wait_for_event(
             main_client, main_cal_id,
             lambda e: summary in e.get("summary", ""),
@@ -387,8 +365,6 @@ class ColorIdApplied(TestCase):
 
         event = cal_client.create_event(cal_id, summary, start, end)
         ctx.cleanup.track(cal_client, cal_id, event["id"])
-
-        await ctx.api.trigger_calendar_sync(client_cal["calendar"]["id"])
 
         main_event = await ctx.waiter.wait_for_event(
             main_client, main_cal_id,
@@ -426,8 +402,6 @@ class UntitledEventSync(TestCase):
             cal_id, "", start, end, description=marker,
         )
         ctx.cleanup.track(cal_client, cal_id, event["id"])
-
-        await ctx.api.trigger_calendar_sync(client_cal["calendar"]["id"])
 
         # Search by the marker in description
         import asyncio
@@ -467,8 +441,6 @@ class MetadataFooterFormat(TestCase):
 
         event = cal_client.create_event(cal_id, summary, start, end)
         ctx.cleanup.track(cal_client, cal_id, event["id"])
-
-        await ctx.api.trigger_calendar_sync(client_cal["calendar"]["id"])
 
         main_event = await ctx.waiter.wait_for_event(
             main_client, main_cal_id,

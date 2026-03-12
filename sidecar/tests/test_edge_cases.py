@@ -28,8 +28,6 @@ class CreateDeleteBeforeSync(TestCase):
         event = cal_client.create_event(cal_id, summary, start, end)
         cal_client.delete_event(cal_id, event["id"])
 
-        # Sync should handle gracefully
-        await ctx.api.trigger_calendar_sync(client_cal["calendar"]["id"])
         await asyncio.sleep(5)
 
         # Nothing should appear on main
@@ -66,8 +64,6 @@ class RapidUpdates(TestCase):
         # Rapid updates
         cal_client.update_event(cal_id, event["id"], {"summary": summary2})
         cal_client.update_event(cal_id, event["id"], {"summary": summary3})
-
-        await ctx.api.trigger_calendar_sync(client_cal["calendar"]["id"])
 
         main_event = await ctx.waiter.wait_for_event(
             main_client, main_cal_id,
@@ -108,13 +104,6 @@ class RapidCreateAndMove(TestCase):
             "end": {"dateTime": new_end, "timeZone": "America/New_York"},
         })
 
-        # Trigger a sync as a fallback in case webhooks aren't firing.
-        # If cross-session consistency causes the first sync to read stale
-        # data, the engine's automatic verification resync (triggered by
-        # the webhook handler ~30s after the change) will correct it.
-        await asyncio.sleep(5)
-        await ctx.api.trigger_calendar_sync(client_cal["calendar"]["id"])
-
         main_event = await ctx.waiter.wait_for_event(
             main_client, main_cal_id,
             lambda e: (summary in e.get("summary", "")
@@ -147,8 +136,6 @@ class BackToBackEdits(TestCase):
         event = cal_client.create_event(cal_id, summary, start, end)
         ctx.cleanup.track(cal_client, cal_id, event["id"])
 
-        await ctx.api.trigger_calendar_sync(client_cal["calendar"]["id"])
-
         main_event = await ctx.waiter.wait_for_event(
             main_client, main_cal_id,
             lambda e: summary in e.get("summary", ""),
@@ -162,8 +149,6 @@ class BackToBackEdits(TestCase):
         cal_client.update_event(cal_id, event["id"], {"summary": edit1})
         await asyncio.sleep(1)
         cal_client.update_event(cal_id, event["id"], {"summary": edit2})
-
-        await ctx.api.trigger_calendar_sync(client_cal["calendar"]["id"])
 
         updated = await ctx.waiter.wait_for_event_updated(
             main_client, main_cal_id,
@@ -202,8 +187,6 @@ class MidnightSpanningEvent(TestCase):
         event = cal_client.create_event(cal_id, summary, start, end)
         ctx.cleanup.track(cal_client, cal_id, event["id"])
 
-        await ctx.api.trigger_calendar_sync(client_cal["calendar"]["id"])
-
         main_event = await ctx.waiter.wait_for_event(
             main_client, main_cal_id,
             lambda e: summary in e.get("summary", ""),
@@ -236,8 +219,6 @@ class DifferentTimezone(TestCase):
         )
         ctx.cleanup.track(cal_client, cal_id, event["id"])
 
-        await ctx.api.trigger_calendar_sync(client_cal["calendar"]["id"])
-
         main_event = await ctx.waiter.wait_for_event(
             main_client, main_cal_id,
             lambda e: summary in e.get("summary", ""),
@@ -269,8 +250,6 @@ class SpecialCharsInTitle(TestCase):
 
         event = cal_client.create_event(cal_id, summary, start, end)
         ctx.cleanup.track(cal_client, cal_id, event["id"])
-
-        await ctx.api.trigger_calendar_sync(client_cal["calendar"]["id"])
 
         main_event = await ctx.waiter.wait_for_event(
             main_client, main_cal_id,
@@ -307,8 +286,6 @@ class HTMLInDescription(TestCase):
         )
         ctx.cleanup.track(cal_client, cal_id, event["id"])
 
-        await ctx.api.trigger_calendar_sync(client_cal["calendar"]["id"])
-
         main_event = await ctx.waiter.wait_for_event(
             main_client, main_cal_id,
             lambda e: summary in e.get("summary", ""),
@@ -342,8 +319,6 @@ class RescheduleEvent(TestCase):
         event = cal_client.create_event(cal_id, summary, start, end)
         ctx.cleanup.track(cal_client, cal_id, event["id"])
 
-        await ctx.api.trigger_calendar_sync(client_cal["calendar"]["id"])
-
         main_event = await ctx.waiter.wait_for_event(
             main_client, main_cal_id,
             lambda e: summary in e.get("summary", ""),
@@ -357,8 +332,6 @@ class RescheduleEvent(TestCase):
             "start": {"dateTime": new_start, "timeZone": "America/New_York"},
             "end": {"dateTime": new_end, "timeZone": "America/New_York"},
         })
-
-        await ctx.api.trigger_calendar_sync(client_cal["calendar"]["id"])
 
         updated = await ctx.waiter.wait_for_event_updated(
             main_client, main_cal_id,
@@ -389,8 +362,6 @@ class RescheduleToDifferentDay(TestCase):
         event = cal_client.create_event(cal_id, summary, start, end)
         ctx.cleanup.track(cal_client, cal_id, event["id"])
 
-        await ctx.api.trigger_calendar_sync(client_cal["calendar"]["id"])
-
         main_event = await ctx.waiter.wait_for_event(
             main_client, main_cal_id,
             lambda e: summary in e.get("summary", ""),
@@ -404,8 +375,6 @@ class RescheduleToDifferentDay(TestCase):
             "start": {"dateTime": new_start, "timeZone": "America/New_York"},
             "end": {"dateTime": new_end, "timeZone": "America/New_York"},
         })
-
-        await ctx.api.trigger_calendar_sync(client_cal["calendar"]["id"])
 
         updated = await ctx.waiter.wait_for_event_updated(
             main_client, main_cal_id,
@@ -442,8 +411,6 @@ class FixedOffsetTimezonePreserved(TestCase):
 
         event = cal_client.create_event(cal_id, summary, start, end)
         ctx.cleanup.track(cal_client, cal_id, event["id"])
-
-        await ctx.api.trigger_calendar_sync(client_cal["calendar"]["id"])
 
         main_event = await ctx.waiter.wait_for_event(
             main_client, main_cal_id,

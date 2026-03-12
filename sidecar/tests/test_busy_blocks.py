@@ -33,8 +33,6 @@ class BusyBlockOnOtherCalendar(TestCase):
         )
         ctx.cleanup.track(cal_a["client"], cal_a["google_calendar_id"], event["id"])
 
-        await ctx.api.trigger_calendar_sync(cal_a["calendar"]["id"])
-
         # Wait for main copy
         main_event = await ctx.waiter.wait_for_event(
             acct["main_client"], acct["main_calendar_id"],
@@ -69,7 +67,6 @@ class NoBusyBlockOnOrigin(TestCase):
         )
         ctx.cleanup.track(cal_a["client"], cal_a["google_calendar_id"], event["id"])
 
-        await ctx.api.trigger_calendar_sync(cal_a["calendar"]["id"])
         await asyncio.sleep(10)  # Let sync complete
 
         # Check that NO busy block on A
@@ -108,8 +105,6 @@ class BusyBlockTitle(TestCase):
         )
         ctx.cleanup.track(cal_a["client"], cal_a["google_calendar_id"], event["id"])
 
-        await ctx.api.trigger_calendar_sync(cal_a["calendar"]["id"])
-
         # Wait for main copy first
         main_event = await ctx.waiter.wait_for_event(
             acct["main_client"], acct["main_calendar_id"],
@@ -147,8 +142,6 @@ class BusyBlockPrivateVisibility(TestCase):
         )
         ctx.cleanup.track(cal_a["client"], cal_a["google_calendar_id"], event["id"])
 
-        await ctx.api.trigger_calendar_sync(cal_a["calendar"]["id"])
-
         main_event = await ctx.waiter.wait_for_event(
             acct["main_client"], acct["main_calendar_id"],
             lambda e: summary in e.get("summary", ""),
@@ -182,8 +175,6 @@ class BusyBlockOpaque(TestCase):
             cal_a["google_calendar_id"], summary, start, end,
         )
         ctx.cleanup.track(cal_a["client"], cal_a["google_calendar_id"], event["id"])
-
-        await ctx.api.trigger_calendar_sync(cal_a["calendar"]["id"])
 
         main_event = await ctx.waiter.wait_for_event(
             acct["main_client"], acct["main_calendar_id"],
@@ -220,8 +211,6 @@ class BusyBlockTimesMatch(TestCase):
         )
         ctx.cleanup.track(cal_a["client"], cal_a["google_calendar_id"], event["id"])
 
-        await ctx.api.trigger_calendar_sync(cal_a["calendar"]["id"])
-
         main_event = await ctx.waiter.wait_for_event(
             acct["main_client"], acct["main_calendar_id"],
             lambda e: summary in e.get("summary", ""),
@@ -257,8 +246,6 @@ class AllDayBusyBlock(TestCase):
             cal_a["google_calendar_id"], summary, start, end, all_day=True,
         )
         ctx.cleanup.track(cal_a["client"], cal_a["google_calendar_id"], event["id"])
-
-        await ctx.api.trigger_calendar_sync(cal_a["calendar"]["id"])
 
         main_event = await ctx.waiter.wait_for_event(
             acct["main_client"], acct["main_calendar_id"],
@@ -298,7 +285,6 @@ class DeclinedNoBusyBlock(TestCase):
         )
         ctx.cleanup.track(cal_a["client"], cal_a["google_calendar_id"], event["id"])
 
-        await ctx.api.trigger_calendar_sync(cal_a["calendar"]["id"])
         await asyncio.sleep(15)
 
         # Check no busy block on B
@@ -327,7 +313,6 @@ class FreeAllDayNoBusyBlock(TestCase):
         )
         ctx.cleanup.track(cal_a["client"], cal_a["google_calendar_id"], event["id"])
 
-        await ctx.api.trigger_calendar_sync(cal_a["calendar"]["id"])
         await asyncio.sleep(15)
 
         events_b = cal_b["client"].list_events(
@@ -357,8 +342,6 @@ class BusyBlockDeletedWithSource(TestCase):
         )
         ctx.cleanup.track(cal_a["client"], cal_a["google_calendar_id"], event["id"])
 
-        await ctx.api.trigger_calendar_sync(cal_a["calendar"]["id"])
-
         main_event = await ctx.waiter.wait_for_event(
             acct["main_client"], acct["main_calendar_id"],
             lambda e: summary in e.get("summary", ""),
@@ -375,8 +358,6 @@ class BusyBlockDeletedWithSource(TestCase):
 
         # Delete source
         cal_a["client"].delete_event(cal_a["google_calendar_id"], event["id"])
-
-        await ctx.api.trigger_calendar_sync(cal_a["calendar"]["id"])
 
         await ctx.waiter.wait_for_gone(
             cal_b["client"], cal_b["google_calendar_id"],
@@ -399,8 +380,6 @@ class BusyBlockUpdatedOnTimeChange(TestCase):
             cal_a["google_calendar_id"], summary, start, end,
         )
         ctx.cleanup.track(cal_a["client"], cal_a["google_calendar_id"], event["id"])
-
-        await ctx.api.trigger_calendar_sync(cal_a["calendar"]["id"])
 
         main_event = await ctx.waiter.wait_for_event(
             acct["main_client"], acct["main_calendar_id"],
@@ -425,8 +404,6 @@ class BusyBlockUpdatedOnTimeChange(TestCase):
                 "end": {"dateTime": new_end, "timeZone": "America/New_York"},
             },
         )
-
-        await ctx.api.trigger_calendar_sync(cal_a["calendar"]["id"])
 
         # Verify busy block updated
         updated_busy = await ctx.waiter.wait_for_event(
@@ -457,8 +434,6 @@ class MainOriginBusyBlockAllClients(TestCase):
         event = main_client.create_event(main_cal_id, summary, start, end)
         ctx.cleanup.track(main_client, main_cal_id, event["id"])
 
-        await ctx.api.trigger_user_sync(acct["user_id"])
-
         # Check busy blocks on all clients
         for cal in client_cals:
             busy = await ctx.waiter.wait_for_event(
@@ -484,8 +459,6 @@ class SyncTagPreserved(TestCase):
             cal_a["google_calendar_id"], summary, start, end,
         )
         ctx.cleanup.track(cal_a["client"], cal_a["google_calendar_id"], event["id"])
-
-        await ctx.api.trigger_calendar_sync(cal_a["calendar"]["id"])
 
         main_event = await ctx.waiter.wait_for_event(
             acct["main_client"], acct["main_calendar_id"],

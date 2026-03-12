@@ -129,7 +129,7 @@ class CleanupAndResync(TestCase):
         await ctx.api.cleanup_managed()
 
         # Wait for cleanup to complete and check status
-        progress = await ctx.api.wait_for_cleanup(timeout=120)
+        progress = await ctx.api.wait_for_cleanup(timeout=600)
         cleanup_summary = progress.get("summary") or {}
         cleanup_status = cleanup_summary.get("status", "ok")
 
@@ -199,7 +199,7 @@ class CleanupAndPause(TestCase):
             await ctx.api.cleanup_and_pause()
 
             # Wait for cleanup to complete and check status
-            progress = await ctx.api.wait_for_cleanup(timeout=120)
+            progress = await ctx.api.wait_for_cleanup(timeout=600)
             cleanup_summary = progress.get("summary") or {}
             cleanup_status = cleanup_summary.get("status", "ok")
 

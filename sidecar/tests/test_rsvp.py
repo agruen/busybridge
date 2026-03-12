@@ -34,8 +34,6 @@ class AcceptPropagates(TestCase):
         )
         ctx.cleanup.track(cal_client, cal_id, event["id"])
 
-        await ctx.api.trigger_calendar_sync(client_cal["calendar"]["id"])
-
         main_event = await ctx.waiter.wait_for_event(
             main_client, main_cal_id,
             lambda e: summary in e.get("summary", ""),
@@ -49,7 +47,6 @@ class AcceptPropagates(TestCase):
             "attendees": [{"email": acct["email"], "responseStatus": "accepted"}],
         })
 
-        await ctx.api.trigger_user_sync(acct["user_id"])
         await asyncio.sleep(10)
 
         # Verify propagation
@@ -86,8 +83,6 @@ class DeclinePropagates(TestCase):
         )
         ctx.cleanup.track(cal_client, cal_id, event["id"])
 
-        await ctx.api.trigger_calendar_sync(client_cal["calendar"]["id"])
-
         main_event = await ctx.waiter.wait_for_event(
             main_client, main_cal_id,
             lambda e: summary in e.get("summary", ""),
@@ -100,7 +95,6 @@ class DeclinePropagates(TestCase):
             "attendees": [{"email": acct["email"], "responseStatus": "declined"}],
         })
 
-        await ctx.api.trigger_user_sync(acct["user_id"])
         await asyncio.sleep(10)
 
         # Check client
@@ -137,8 +131,6 @@ class TentativePropagates(TestCase):
         )
         ctx.cleanup.track(cal_client, cal_id, event["id"])
 
-        await ctx.api.trigger_calendar_sync(client_cal["calendar"]["id"])
-
         main_event = await ctx.waiter.wait_for_event(
             main_client, main_cal_id,
             lambda e: summary in e.get("summary", ""),
@@ -151,7 +143,6 @@ class TentativePropagates(TestCase):
             "attendees": [{"email": acct["email"], "responseStatus": "tentative"}],
         })
 
-        await ctx.api.trigger_user_sync(acct["user_id"])
         await asyncio.sleep(10)
 
         updated = cal_client.get_event(cal_id, event["id"])
