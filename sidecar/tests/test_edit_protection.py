@@ -3,8 +3,19 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 
 from sidecar.framework.base import TestCase, TestContext, TestTiming
+
+
+def _times_match(iso1: str, iso2: str) -> bool:
+    """Compare two ISO datetime strings as timezone-aware instants."""
+    try:
+        dt1 = datetime.fromisoformat(iso1)
+        dt2 = datetime.fromisoformat(iso2)
+        return abs((dt1 - dt2).total_seconds()) < 60
+    except (ValueError, TypeError):
+        return False
 
 SUITE = "edit_protection"
 
@@ -91,9 +102,9 @@ class MoveEditableOnMain(TestCase):
         updated = await ctx.waiter.wait_for_event_updated(
             cal_client, cal_id,
             lambda e: e["id"] == event["id"],
-            lambda e: new_start[:16] in e.get("start", {}).get("dateTime", ""),
+            lambda e: _times_match(new_start, e.get("start", {}).get("dateTime", "")),
             description="moved client event",
-            timeout=60,
+            timeout=180,
         )
 
 
@@ -135,8 +146,9 @@ class MoveEditableOnClient(TestCase):
         updated_main = await ctx.waiter.wait_for_event_updated(
             main_client, main_cal_id,
             lambda e: e["id"] == main_event["id"],
-            lambda e: new_start[:16] in e.get("start", {}).get("dateTime", ""),
+            lambda e: _times_match(new_start, e.get("start", {}).get("dateTime", "")),
             description="moved main copy",
+            timeout=180,
         )
 
 

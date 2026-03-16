@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from app.config import get_settings
-from app.database import get_database, get_setting
+from app.database import get_database, get_setting, set_setting
 from app.sync.google_calendar import GoogleCalendarClient
 from app.sync.rules import (
     sync_client_event_to_main,
@@ -26,8 +26,11 @@ logger = logging.getLogger(__name__)
 _calendar_locks: dict[str, asyncio.Lock] = {}
 _calendar_locks_guard = asyncio.Lock()
 
-# Track pending verification resyncs so we don't stack duplicates.
-_pending_verification: set[str] = set()
+# Track pending verification resyncs: accumulate event IDs and reset
+# the timer when new events arrive so the delay is measured from the
+# *latest* webhook sync, not the first one.
+_pending_verification_ids: dict[str, set[str]] = {}
+_pending_verification_tasks: dict[str, asyncio.Task] = {}
 
 # Set of user IDs currently running cleanup.  While set, the main-calendar
 # sync must treat any "cancelled" events as a full-sync (no cascade deletes).
@@ -105,7 +108,7 @@ async def is_sync_paused() -> bool:
     return setting and setting.get("value_plain") == "true"
 
 
-_VERIFICATION_DELAY = 25  # seconds — long enough for cross-session consistency
+_VERIFICATION_DELAY = 40  # seconds — must exceed Google's 30s cross-session consistency window
 
 
 def _schedule_event_verification(
@@ -124,28 +127,48 @@ def _schedule_event_verification(
     Instead of re-syncing the entire calendar, this re-fetches only the
     events that were just processed (typically 1-3 from a webhook), waits
     for consistency to settle, then re-processes them with fresh data.
-    """
-    if key in _pending_verification:
-        return
-    _pending_verification.add(key)
 
+    If a verification is already pending for this key (e.g. from a CREATE
+    webhook), a subsequent call (e.g. from an UPDATE webhook) cancels the
+    old timer and restarts it.  This ensures the delay is measured from
+    the *latest* change, and all accumulated event IDs are re-fetched.
+    """
     from app.utils.tasks import create_background_task
+
+    # Accumulate event IDs across rapid-fire syncs
+    if key not in _pending_verification_ids:
+        _pending_verification_ids[key] = set()
+    _pending_verification_ids[key].update(event_ids)
+
+    # Cancel the existing timer so we restart the delay from now
+    old_task = _pending_verification_tasks.pop(key, None)
+    if old_task and not old_task.done():
+        old_task.cancel()
 
     async def _do_verification():
         try:
             await asyncio.sleep(_VERIFICATION_DELAY)
             if await is_sync_paused():
+                _pending_verification_ids.pop(key, None)
+                return
+            all_ids = list(_pending_verification_ids.pop(key, set()))
+            if not all_ids:
                 return
             lock = await _get_calendar_lock(key)
             async with lock:
-                await sync_fn(calendar_id, verify_ids=event_ids)
+                await sync_fn(calendar_id, verify_ids=all_ids)
+        except asyncio.CancelledError:
+            # Don't clean up _pending_verification_ids — the replacement
+            # task that cancelled us will use the accumulated IDs.
+            pass
         finally:
-            _pending_verification.discard(key)
+            _pending_verification_tasks.pop(key, None)
 
-    create_background_task(
+    task = create_background_task(
         _do_verification(),
-        f"verify_{key}_{len(event_ids)}events",
+        f"verify_{key}_{len(_pending_verification_ids[key])}events",
     )
+    _pending_verification_tasks[key] = task
 
 
 async def trigger_sync_for_calendar(
@@ -200,7 +223,7 @@ async def trigger_sync_for_calendar(
                 "status": "complete", "events_processed": synced,
             }
 
-        if debounce > 0 and processed:
+        if processed:
             _schedule_event_verification(
                 f"client:{client_calendar_id}",
                 _sync_client_calendar,
@@ -489,7 +512,7 @@ async def trigger_sync_for_main_calendar(user_id: int, debounce: float = 0) -> N
     async with lock:
         processed = await _sync_main_calendar(user_id)
 
-    if debounce > 0 and processed:
+    if processed:
         _schedule_event_verification(
             f"main:{user_id}",
             _sync_main_calendar,
@@ -999,7 +1022,7 @@ async def trigger_sync_for_personal_calendar(personal_calendar_id: int, debounce
     async with lock:
         processed = await _sync_personal_calendar(personal_calendar_id)
 
-    if debounce > 0 and processed:
+    if processed:
         _schedule_event_verification(
             f"personal:{personal_calendar_id}",
             _sync_personal_calendar,
@@ -1408,13 +1431,39 @@ async def cleanup_disconnected_calendar(client_calendar_id: int, user_id: int) -
         logger.exception(f"Error during calendar cleanup: {e}")
 
 
-async def cleanup_managed_events_for_user(user_id: int) -> dict:
+async def _clear_sync_tokens(user_id: int, db) -> None:
+    """Clear all sync tokens for a user so the next sync is a full sync."""
+    cursor = await db.execute(
+        "SELECT id FROM client_calendars WHERE user_id = ? AND is_active = TRUE",
+        (user_id,),
+    )
+    active_cal_ids = [row["id"] for row in await cursor.fetchall()]
+    if active_cal_ids:
+        placeholders = ",".join("?" * len(active_cal_ids))
+        await db.execute(
+            f"UPDATE calendar_sync_state SET sync_token = NULL WHERE client_calendar_id IN ({placeholders})",
+            tuple(active_cal_ids),
+        )
+    await db.execute(
+        "UPDATE main_calendar_sync_state SET sync_token = NULL WHERE user_id = ?",
+        (user_id,),
+    )
+    await db.commit()
+
+
+async def cleanup_managed_events_for_user(
+    user_id: int, *, resume_after: bool = True,
+) -> dict:
     """
     Remove BusyBridge-managed events for a user.
 
     Uses two strategies for full coverage:
     1. Internal DB references (event_mappings and busy_blocks)
     2. Prefix search sweep across main and client calendars
+
+    Sync is paused for the duration of cleanup to prevent racing syncs from
+    obtaining new tokens that survive cleanup.  After cleanup, tokens are
+    cleared again and sync is resumed (unless ``resume_after=False``).
     """
     db = await get_database()
     settings = get_settings()
@@ -1438,16 +1487,31 @@ async def cleanup_managed_events_for_user(user_id: int) -> dict:
     _cleanup_progress[user_id] = {
         "status": "running",
         "started_at": datetime.now(timezone.utc).isoformat(),
-        "step": "clearing_tokens",
-        "step_label": "Clearing sync tokens...",
+        "step": "pausing_sync",
+        "step_label": "Pausing sync...",
         "current": 0,
         "total": 0,
         "summary": None,
     }
 
+    # Pause sync globally so no webhook/periodic syncs can run during cleanup.
+    await set_setting("sync_paused", "true")
+    logger.info("Cleanup: paused sync for user %s before cleanup", user_id)
+
     _cleanup_in_progress.add(user_id)
     try:
+        _cleanup_progress[user_id].update(
+            step="clearing_tokens",
+            step_label="Clearing sync tokens...",
+        )
         result = await _cleanup_managed_events_impl(user_id, db, managed_prefix, summary)
+
+        # Clear tokens AGAIN after cleanup — any verification tasks that
+        # were already past the is_sync_paused() check when we paused may
+        # have advanced tokens during cleanup.
+        await _clear_sync_tokens(user_id, db)
+        logger.info("Cleanup: cleared sync tokens after cleanup for user %s", user_id)
+
         _cleanup_progress[user_id].update(
             status="completed",
             step="done",
@@ -1465,6 +1529,9 @@ async def cleanup_managed_events_for_user(user_id: int) -> dict:
         raise
     finally:
         _cleanup_in_progress.discard(user_id)
+        if resume_after:
+            await set_setting("sync_paused", "false")
+            logger.info("Cleanup: resumed sync for user %s after cleanup", user_id)
 
 
 async def _cleanup_managed_events_impl(
@@ -1538,29 +1605,11 @@ async def _cleanup_managed_events_impl(
 
     # ------------------------------------------------------------------ #
     # Pass 0: Clear all sync tokens BEFORE deleting any remote events.    #
-    # When cleanup deletes events from Google, webhooks fire immediately   #
-    # and can trigger a sync.  If that sync runs with an incremental      #
-    # token it will see the deletions and cascade-delete the original     #
-    # client events -- catastrophic data loss.  By clearing tokens first, #
-    # any racing sync will be a *full* sync, which has safe logic that    #
-    # never cascades deletes back to client calendars.                    #
+    # Sync is already paused by the caller, but clear tokens as a safety  #
+    # net — if any sync slipped through before the pause took effect,     #
+    # it'll run as a full sync (safe: no cascade deletes to clients).     #
     # ------------------------------------------------------------------ #
-    cursor = await db.execute(
-        """SELECT id FROM client_calendars WHERE user_id = ? AND is_active = TRUE""",
-        (user_id,),
-    )
-    active_cal_ids = [row["id"] for row in await cursor.fetchall()]
-    if active_cal_ids:
-        placeholders = ",".join("?" * len(active_cal_ids))
-        await db.execute(
-            f"UPDATE calendar_sync_state SET sync_token = NULL WHERE client_calendar_id IN ({placeholders})",
-            tuple(active_cal_ids),
-        )
-    await db.execute(
-        "UPDATE main_calendar_sync_state SET sync_token = NULL WHERE user_id = ?",
-        (user_id,),
-    )
-    await db.commit()
+    await _clear_sync_tokens(user_id, db)
     logger.info("Cleanup: cleared all sync tokens for user %s before remote deletions", user_id)
 
     # Track which mappings/blocks were successfully cleaned remotely so we only

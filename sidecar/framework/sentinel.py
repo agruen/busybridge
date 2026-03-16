@@ -161,45 +161,48 @@ class SentinelManager:
         created = 0
 
         for spec in SENTINEL_SPECS:
-            # Already have this sentinel?
-            if spec.label in existing_labels:
-                existing = next(s for s in self._sentinels if s.spec_label == spec.label)
-                # Verify the origin event still exists
-                event = await _in_thread(origin_client.get_event, existing.origin_calendar_id, existing.origin_event_id)
-                if event:
-                    continue
-                # Event is gone — remove stale state and recreate
-                logger.info("Sentinel: %s origin event gone, recreating", spec.label)
-                self._sentinels = [s for s in self._sentinels if s.spec_label != spec.label]
+            try:
+                # Already have this sentinel?
+                if spec.label in existing_labels:
+                    existing = next(s for s in self._sentinels if s.spec_label == spec.label)
+                    # Verify the origin event still exists
+                    event = await _in_thread(origin_client.get_event, existing.origin_calendar_id, existing.origin_event_id)
+                    if event:
+                        continue
+                    # Event is gone — remove stale state and recreate
+                    logger.info("Sentinel: %s origin event gone, recreating", spec.label)
+                    self._sentinels = [s for s in self._sentinels if s.spec_label != spec.label]
 
-            # Create the sentinel event
-            summary = f"{SENTINEL_PREFIX} {spec.label}"
-            start, end = self._compute_times(spec)
+                # Create the sentinel event
+                summary = f"{SENTINEL_PREFIX} {spec.label}"
+                start, end = self._compute_times(spec)
 
-            event = await _in_thread(
-                origin_client.create_event,
-                origin_cal_id,
-                summary=summary,
-                start=start,
-                end=end,
-                all_day=spec.all_day,
-                description=spec.description,
-                location=spec.location,
-                recurrence=spec.recurrence or None,
-            )
+                event = await _in_thread(
+                    origin_client.create_event,
+                    origin_cal_id,
+                    summary=summary,
+                    start=start,
+                    end=end,
+                    all_day=spec.all_day,
+                    description=spec.description,
+                    location=spec.location,
+                    recurrence=spec.recurrence or None,
+                )
 
-            self._sentinels.append(SentinelState(
-                spec_label=spec.label,
-                summary=summary,
-                origin_calendar_id=origin_cal_id,
-                origin_event_id=event["id"],
-                client_calendar_db_id=origin_db_id,
-                created_at=datetime.now(timezone.utc).isoformat(),
-                start_time=start,
-                end_time=end,
-            ))
-            created += 1
-            logger.info("Sentinel: created %s (%s)", spec.label, event["id"])
+                self._sentinels.append(SentinelState(
+                    spec_label=spec.label,
+                    summary=summary,
+                    origin_calendar_id=origin_cal_id,
+                    origin_event_id=event["id"],
+                    client_calendar_db_id=origin_db_id,
+                    created_at=datetime.now(timezone.utc).isoformat(),
+                    start_time=start,
+                    end_time=end,
+                ))
+                created += 1
+                logger.info("Sentinel: created %s (%s)", spec.label, event["id"])
+            except Exception as e:
+                logger.warning("Sentinel: failed to reconcile %s: %s", spec.label, e)
 
         # Trigger sync if new sentinels were created or if any have failed
         any_failed = any(s.consecutive_failures > 0 for s in self._sentinels)
@@ -290,22 +293,42 @@ class SentinelManager:
                 else:
                     details["origin_status"] = origin_event.get("status")
 
-            # 2. Main calendar copy exists?
+            # 2. DB mapping exists?
+            user_id = acct["user_id"]
+            mappings = await self._ctx.db.get_event_mappings(user_id)
+            found = [
+                m for m in mappings
+                if m.get("origin_event_id") == sentinel.origin_event_id
+                and m.get("deleted_at") is None
+            ]
+            if not found:
+                errors.append("No DB mapping for sentinel")
+            else:
+                details["mapping_id"] = found[0]["id"]
+                db_main_id = found[0].get("main_event_id", "")
+                details["db_main_event_id"] = db_main_id
+
+                # Check busy blocks in DB
+                blocks = await self._ctx.db.get_busy_blocks(found[0]["id"])
+                details["db_busy_blocks"] = len(blocks)
+
+            # 3. Main calendar copy exists?
+            # Fetch by the ID stored in the DB mapping rather than searching
+            # by summary — summary search can find orphaned duplicates from
+            # prior cleanup cycles, causing false mismatches.
             main_client = acct.get("main_client")
             main_cal_id = acct.get("main_calendar_id")
             main_event = None
 
             if main_client and main_cal_id:
-                main_events = await _in_thread(
-                    main_client.find_events_by_prefix,
-                    main_cal_id, sentinel.summary,
-                    time_min=self._search_time_min(sentinel),
-                    time_max=self._search_time_max(sentinel),
-                )
-                if not main_events:
+                if found and db_main_id:
+                    main_event = await _in_thread(
+                        main_client.get_event,
+                        main_cal_id, db_main_id,
+                    )
+                if not main_event:
                     errors.append("Main calendar copy missing")
                 else:
-                    main_event = main_events[0]
                     details["main_event_id"] = main_event["id"]
 
                     # Check metadata preservation
@@ -321,7 +344,7 @@ class SentinelManager:
             else:
                 errors.append("No main calendar client available")
 
-            # 3. Busy blocks on other client calendars?
+            # 4. Busy blocks on other client calendars?
             client_cals = [
                 c for c in acct["calendars"]
                 if c["calendar_type"] == "client"
@@ -347,35 +370,8 @@ class SentinelManager:
                 except Exception as e:
                     errors.append(f"Error checking busy block on {cal_id[:25]}: {e}")
 
-            # 4. DB mapping exists?
-            user_id = acct["user_id"]
-            mappings = await self._ctx.db.get_event_mappings(user_id)
-            found = [
-                m for m in mappings
-                if m.get("origin_event_id") == sentinel.origin_event_id
-                and m.get("deleted_at") is None
-            ]
-            if not found:
-                errors.append("No DB mapping for sentinel")
-            else:
-                details["mapping_id"] = found[0]["id"]
-                db_main_id = found[0].get("main_event_id", "")
-                actual_main_id = main_event["id"] if main_event else ""
-                # Recurring instances have IDs like "baseId_20260318T230000Z"
-                ids_match = (
-                    db_main_id == actual_main_id
-                    or actual_main_id.startswith(db_main_id + "_")
-                )
-                if main_event and not ids_match:
-                    errors.append(
-                        f"DB main_event_id mismatch: "
-                        f"{db_main_id} != {actual_main_id}"
-                    )
-                # Check busy blocks in DB
-                blocks = await self._ctx.db.get_busy_blocks(found[0]["id"])
-                details["db_busy_blocks"] = len(blocks)
-                if len(client_cals) > 0 and len(blocks) == 0:
-                    errors.append("No busy blocks in DB for sentinel mapping")
+            if found and len(client_cals) > 0 and details.get("db_busy_blocks", 0) == 0:
+                errors.append("No busy blocks in DB for sentinel mapping")
 
         except Exception as e:
             errors.append(f"Verification exception: {type(e).__name__}: {e}")
@@ -444,9 +440,10 @@ async def _async_sleep(seconds: float) -> None:
 
 
 async def _in_thread(fn, *args, **kwargs):
-    """Run a blocking function in a thread to avoid blocking the event loop."""
-    import asyncio
+    """Run a blocking call. Runs synchronously to avoid httplib2 thread-safety
+    issues — the Google API client's httplib2 transport is not thread-safe,
+    and concurrent to_thread calls from sentinel/lifecycle/soak can segfault."""
     from functools import partial
     if kwargs:
         fn = partial(fn, **kwargs)
-    return await asyncio.to_thread(fn, *args)
+    return fn(*args)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from google.oauth2.credentials import Credentials
@@ -100,8 +101,15 @@ class CalendarTestClient:
         }
         if q:
             kwargs["q"] = q
-        if time_min:
-            kwargs["timeMin"] = time_min
+        # Default timeMin to 24h ago to avoid fetching years of history
+        # when maxResults caps results before reaching recent events.
+        effective_time_min = time_min
+        if not effective_time_min and single_events:
+            effective_time_min = (
+                datetime.now(timezone.utc) - timedelta(hours=24)
+            ).isoformat()
+        if effective_time_min:
+            kwargs["timeMin"] = effective_time_min
         if time_max:
             kwargs["timeMax"] = time_max
 

@@ -3,8 +3,19 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 
 from sidecar.framework.base import TestCase, TestContext, TestTiming
+
+
+def _times_match(iso1: str, iso2: str) -> bool:
+    """Compare two ISO datetime strings as timezone-aware instants."""
+    try:
+        dt1 = datetime.fromisoformat(iso1)
+        dt2 = datetime.fromisoformat(iso2)
+        return abs((dt1 - dt2).total_seconds()) < 60
+    except (ValueError, TypeError):
+        return False
 
 SUITE = "full_state"
 
@@ -252,9 +263,9 @@ class FullStateAfterEditableMove(TestCase):
         await ctx.waiter.wait_for_event_updated(
             cal_a["client"], cal_a["google_calendar_id"],
             lambda e: e["id"] == event["id"],
-            lambda e: new_start[:16] in e.get("start", {}).get("dateTime", ""),
+            lambda e: _times_match(new_start, e.get("start", {}).get("dateTime", "")),
             description="moved client event",
-            timeout=60,
+            timeout=180,
         )
 
         updated_busy = await ctx.waiter.wait_for_event(

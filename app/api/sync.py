@@ -372,13 +372,11 @@ async def _run_cleanup_and_resync(user_id: int) -> None:
 
 
 async def _run_cleanup_and_pause(user_id: int) -> None:
-    """Background task: pause sync, run cleanup, log results."""
+    """Background task: pause sync, run cleanup, leave sync paused."""
     from app.sync.engine import cleanup_managed_events_for_user
 
-    await set_setting("sync_paused", "true")
-
     try:
-        summary = await cleanup_managed_events_for_user(user_id)
+        summary = await cleanup_managed_events_for_user(user_id, resume_after=False)
     except Exception:
         logger.exception("Cleanup failed for user %s", user_id)
         return

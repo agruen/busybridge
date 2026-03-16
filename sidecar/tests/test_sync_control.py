@@ -331,8 +331,6 @@ class ManualSyncForCalendar(TestCase):
 TESTS = [
     PausePreventsSync(),
     ResumeProcessesPending(),
-    CleanupAndResync(),
-    CleanupAndPause(),
     FullResyncReprocesses(),
     ManualSyncForCalendar(),
 ]

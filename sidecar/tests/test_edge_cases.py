@@ -3,8 +3,19 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 
 from sidecar.framework.base import TestCase, TestContext, TestTiming
+
+
+def _times_match(iso1: str, iso2: str) -> bool:
+    """Compare two ISO datetime strings as timezone-aware instants."""
+    try:
+        dt1 = datetime.fromisoformat(iso1)
+        dt2 = datetime.fromisoformat(iso2)
+        return abs((dt1 - dt2).total_seconds()) < 60
+    except (ValueError, TypeError):
+        return False
 
 SUITE = "edge_cases"
 
@@ -107,7 +118,7 @@ class RapidCreateAndMove(TestCase):
         main_event = await ctx.waiter.wait_for_event(
             main_client, main_cal_id,
             lambda e: (summary in e.get("summary", "")
-                       and new_start[:16] in e.get("start", {}).get("dateTime", "")),
+                       and _times_match(new_start, e.get("start", {}).get("dateTime", ""))),
             search_query=summary,
             description="moved event with correct time on main",
             timeout=90,
@@ -336,7 +347,7 @@ class RescheduleEvent(TestCase):
         updated = await ctx.waiter.wait_for_event_updated(
             main_client, main_cal_id,
             lambda e: e["id"] == main_event["id"],
-            lambda e: new_start[:16] in e.get("start", {}).get("dateTime", ""),
+            lambda e: _times_match(new_start, e.get("start", {}).get("dateTime", "")),
             description="rescheduled event",
         )
 
@@ -379,7 +390,7 @@ class RescheduleToDifferentDay(TestCase):
         updated = await ctx.waiter.wait_for_event_updated(
             main_client, main_cal_id,
             lambda e: e["id"] == main_event["id"],
-            lambda e: new_start[:10] in e.get("start", {}).get("dateTime", ""),
+            lambda e: _times_match(new_start, e.get("start", {}).get("dateTime", "")),
             description="rescheduled to different day",
         )
 

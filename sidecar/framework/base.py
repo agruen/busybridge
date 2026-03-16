@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 
 class TestStatus(str, Enum):
     PASSED = "passed"
+    SLOW_PASS = "slow_pass"
     FAILED = "failed"
     ERROR = "error"
     SKIPPED = "skipped"
@@ -99,6 +100,9 @@ class TestCase:
         error = None
         details: dict = {}
 
+        # Reset per-test self-heal tracking
+        ctx.waiter.reset()
+
         try:
             await self.setup(ctx)
             await self.run(ctx)
@@ -122,6 +126,11 @@ class TestCase:
                 logger.error("Cleanup error in %s: %s", self.name, e)
 
         duration = time.monotonic() - start
+
+        # Downgrade PASSED → SLOW_PASS if the waiter had to self-heal
+        if status == TestStatus.PASSED and ctx.waiter.slow_healed:
+            status = TestStatus.SLOW_PASS
+
         result = TestResult(
             test_name=self.name,
             suite=self.suite,
@@ -131,6 +140,9 @@ class TestCase:
             error=error,
             details=details,
         )
-        log_level = logging.INFO if status == TestStatus.PASSED else logging.WARNING
+        if status in (TestStatus.PASSED, TestStatus.SLOW_PASS):
+            log_level = logging.INFO
+        else:
+            log_level = logging.WARNING
         logger.log(log_level, "%s %s (%.1fs)", status.value.upper(), self.name, duration)
         return result

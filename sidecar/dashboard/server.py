@@ -90,6 +90,7 @@ async def summary():
     results = _state["results"]
     total = len(results)
     passed = sum(1 for r in results if r.status.value == "passed")
+    slow_passed = sum(1 for r in results if r.status.value == "slow_pass")
     failed = sum(1 for r in results if r.status.value == "failed")
     errored = sum(1 for r in results if r.status.value == "error")
     skipped = sum(1 for r in results if r.status.value == "skipped")
@@ -97,10 +98,14 @@ async def summary():
 
     by_suite: dict = {}
     for r in results:
-        s = by_suite.setdefault(r.suite, {"total": 0, "passed": 0, "failed": 0, "error": 0})
+        s = by_suite.setdefault(r.suite, {
+            "total": 0, "passed": 0, "slow_passed": 0, "failed": 0, "error": 0,
+        })
         s["total"] += 1
         if r.status.value == "passed":
             s["passed"] += 1
+        elif r.status.value == "slow_pass":
+            s["slow_passed"] += 1
         elif r.status.value == "failed":
             s["failed"] += 1
         else:
@@ -110,6 +115,7 @@ async def summary():
     return {
         "total": total,
         "passed": passed,
+        "slow_passed": slow_passed,
         "failed": failed,
         "errored": errored,
         "skipped": skipped,
@@ -159,6 +165,17 @@ async def sentinel_status():
         except Exception:
             return {"error": "failed to read state file"}
     return {"sentinels": []}
+
+
+@app.get("/api/lifecycle")
+async def lifecycle_status():
+    state_file = Path("/data/test-logs/lifecycle.json")
+    if state_file.exists():
+        try:
+            return json.loads(state_file.read_text())
+        except Exception:
+            return {"error": "failed to read state file"}
+    return {"events": []}
 
 
 @app.get("/", response_class=HTMLResponse)

@@ -42,6 +42,7 @@
   tbody td { padding: 10px 16px; font-size: 14px; }
   .badge { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 12px; font-weight: 600; }
   .badge.passed { background: rgba(63, 185, 80, 0.2); color: #3fb950; }
+  .badge.slow_pass { background: rgba(63, 185, 80, 0.1); color: #7cc98a; border: 1px solid rgba(63, 185, 80, 0.3); }
   .badge.failed { background: rgba(248, 81, 73, 0.2); color: #f85149; }
   .badge.error { background: rgba(210, 153, 34, 0.2); color: #d29922; }
   .badge.skipped { background: rgba(139, 148, 158, 0.2); color: #8b949e; }
@@ -81,6 +82,7 @@
     <select id="filterStatus">
       <option value="">All Status</option>
       <option value="passed">Passed</option>
+      <option value="slow_pass">Slow Pass</option>
       <option value="failed">Failed</option>
       <option value="error">Error</option>
     </select>
@@ -111,7 +113,7 @@ async function refresh() {
     allResults = data.results || [];
 
     document.getElementById('totalRuns').textContent = summary.total;
-    document.getElementById('totalPassed').textContent = summary.passed;
+    document.getElementById('totalPassed').textContent = summary.passed + (summary.slow_passed || 0);
     document.getElementById('totalFailed').textContent = summary.failed + (summary.errored || 0);
     document.getElementById('errorRate').textContent = summary.error_rate + '%';
     document.getElementById('uptime').textContent = formatUptime(summary.uptime);
@@ -127,7 +129,7 @@ async function refresh() {
     const select = document.getElementById('filterSuite');
     for (const [name, s] of Object.entries(summary.by_suite || {})) {
       if (!knownSuites.has(name)) { knownSuites.add(name); const o = document.createElement('option'); o.value = name; o.textContent = name; select.appendChild(o); }
-      const pct = s.total ? Math.round(s.passed / s.total * 100) : 0;
+      const pct = s.total ? Math.round((s.passed + (s.slow_passed || 0)) / s.total * 100) : 0;
       const row = document.createElement('div'); row.className = 'suite-row';
       row.innerHTML = '<div class="suite-name">' + name + '</div>' +
         '<div class="suite-counts">' + s.passed + '/' + s.total + ' passed</div>' +

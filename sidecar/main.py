@@ -262,14 +262,21 @@ async def main() -> None:
     sentinel_mgr = SentinelManager(ctx, on_result=on_result)
     sentinel_task = asyncio.create_task(sentinel_mgr.run())
 
+    # 17. Start lifecycle manager
+    from sidecar.framework.lifecycle import LifecycleManager
+    lifecycle_mgr = LifecycleManager(ctx, on_result=on_result)
+    lifecycle_task = asyncio.create_task(lifecycle_mgr.run())
+
     logger.info(
-        "Sidecar running: dashboard on :%d, %d tests loaded, sentinels active",
+        "Sidecar running: dashboard on :%d, %d tests loaded, sentinels + lifecycle active",
         config.DASHBOARD_PORT, len(tests),
     )
 
-    # Wait for either to finish
+    # Wait for shutdown signal or runner/dashboard to finish.
+    # Sentinel and lifecycle tasks are fire-and-forget — if they crash
+    # they log the error and stop, but shouldn't bring the sidecar down.
     done, pending = await asyncio.wait(
-        [dashboard_task, runner_task, sentinel_task,
+        [dashboard_task, runner_task,
          asyncio.create_task(shutdown_event.wait())],
         return_when=asyncio.FIRST_COMPLETED,
     )
@@ -278,6 +285,7 @@ async def main() -> None:
     logger.info("Shutting down...")
     runner.request_shutdown()
     sentinel_mgr.request_shutdown()
+    lifecycle_mgr.request_shutdown()
 
     # Wait for runner to finish current test (up to 5 min)
     try:

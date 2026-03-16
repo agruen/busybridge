@@ -8,6 +8,7 @@ from typing import Optional
 
 TEST_EVENT_PREFIX = "[TEST-BB]"
 SENTINEL_PREFIX = "[TEST-BB-SENTINEL]"
+LIFECYCLE_PREFIX = "[TEST-BB-LIFECYCLE]"
 
 
 class EventFactory:

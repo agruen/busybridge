@@ -7,7 +7,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from sidecar.framework.event_factory import SENTINEL_PREFIX, TEST_EVENT_PREFIX
+from sidecar.framework.event_factory import LIFECYCLE_PREFIX, SENTINEL_PREFIX, TEST_EVENT_PREFIX
 from sidecar.infra.calendar_client import CalendarTestClient
 
 logger = logging.getLogger(__name__)
@@ -75,19 +75,20 @@ class CleanupManager:
                 # Sentinel summaries don't start with the test prefix
                 # ([TEST-BB] vs [TEST-BB-SENTINEL]), so search separately.
                 if include_sentinels:
-                    sentinel_events = client.find_events_by_prefix(
-                        calendar_id, SENTINEL_PREFIX,
-                        time_min=time_min, time_max=time_max,
-                    )
-                    sentinel_parents = client.list_events(
-                        calendar_id, q=SENTINEL_PREFIX, time_min=time_min,
-                        time_max=time_max, single_events=False,
-                    )
-                    sentinel_parents = [e for e in sentinel_parents if e.get("summary", "").startswith(SENTINEL_PREFIX)]
-                    seen = {e["id"] for e in events}
-                    events.extend(e for e in sentinel_events if e["id"] not in seen)
-                    seen = {e["id"] for e in events}
-                    events.extend(e for e in sentinel_parents if e["id"] not in seen)
+                    for extra_prefix in (SENTINEL_PREFIX, LIFECYCLE_PREFIX):
+                        extra_events = client.find_events_by_prefix(
+                            calendar_id, extra_prefix,
+                            time_min=time_min, time_max=time_max,
+                        )
+                        extra_parents = client.list_events(
+                            calendar_id, q=extra_prefix, time_min=time_min,
+                            time_max=time_max, single_events=False,
+                        )
+                        extra_parents = [e for e in extra_parents if e.get("summary", "").startswith(extra_prefix)]
+                        seen = {e["id"] for e in events}
+                        events.extend(e for e in extra_events if e["id"] not in seen)
+                        seen = {e["id"] for e in events}
+                        events.extend(e for e in extra_parents if e["id"] not in seen)
                 for event in events:
                     try:
                         client.delete_event(calendar_id, event["id"])
