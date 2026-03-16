@@ -122,6 +122,81 @@ class GoogleCalendarClient:
                 return None
             raise
 
+    def find_by_origin(
+        self,
+        calendar_id: str,
+        origin_id: str,
+        bb_type: Optional[str] = None,
+    ) -> list[dict]:
+        """Find events we created for a specific origin event ID.
+
+        Uses Google Calendar's privateExtendedProperty filter for an
+        efficient server-side query.  Returns all non-cancelled matches.
+        """
+        try:
+            params: dict = {
+                "calendarId": calendar_id,
+                "privateExtendedProperty": f"bb_origin_id={origin_id}",
+                "showDeleted": False,
+                "maxResults": 50,
+                "singleEvents": False,
+            }
+            if bb_type:
+                params["privateExtendedProperty"] = [
+                    f"bb_origin_id={origin_id}",
+                    f"bb_type={bb_type}",
+                ]
+            result = self.service.events().list(**params).execute()
+            return [
+                e for e in result.get("items", [])
+                if e.get("status") != "cancelled"
+            ]
+        except HttpError as e:
+            if e.resp.status in (404, 403):
+                return []
+            raise
+        except Exception:
+            return []
+
+    def list_our_events(
+        self,
+        calendar_id: str,
+        time_min: Optional[str] = None,
+        time_max: Optional[str] = None,
+    ) -> list[dict]:
+        """List all events we created (have our sync tag) on a calendar."""
+        try:
+            params: dict = {
+                "calendarId": calendar_id,
+                "privateExtendedProperty": f"{self.settings.calendar_sync_tag}=true",
+                "showDeleted": False,
+                "maxResults": 2500,
+                "singleEvents": False,
+            }
+            if time_min:
+                params["timeMin"] = time_min
+            if time_max:
+                params["timeMax"] = time_max
+
+            all_events = []
+            page_token = None
+            while True:
+                if page_token:
+                    params["pageToken"] = page_token
+                result = self.service.events().list(**params).execute()
+                all_events.extend(
+                    e for e in result.get("items", [])
+                    if e.get("status") != "cancelled"
+                )
+                page_token = result.get("nextPageToken")
+                if not page_token:
+                    break
+            return all_events
+        except HttpError as e:
+            if e.resp.status in (404, 403):
+                return []
+            raise
+
     def search_events(
         self,
         calendar_id: str,
@@ -351,12 +426,22 @@ def derive_instance_event_id(parent_event_id: str, original_start_time: dict) ->
     return f"{parent_event_id}_{suffix}"
 
 
+def _set_bb_props(event: dict, props: Optional[dict]) -> None:
+    """Embed BusyBridge origin metadata into extendedProperties.private."""
+    if not props:
+        return
+    ep = event.setdefault("extendedProperties", {})
+    priv = ep.setdefault("private", {})
+    priv.update(props)
+
+
 def create_busy_block(
     start: dict,
     end: dict,
     is_all_day: bool = False,
     use_service_account: bool = False,
     main_email: Optional[str] = None,
+    origin_props: Optional[dict] = None,
 ) -> dict:
     """
     Create a busy block event structure.
@@ -396,6 +481,7 @@ def create_busy_block(
         if main_email:
             event["attendees"] = [{"email": main_email, "responseStatus": "accepted"}]
 
+    _set_bb_props(event, origin_props)
     return event
 
 
@@ -405,6 +491,7 @@ def create_personal_busy_block(
     is_all_day: bool = False,
     use_service_account: bool = False,
     main_email: Optional[str] = None,
+    origin_props: Optional[dict] = None,
 ) -> dict:
     """
     Create a busy block event for a personal calendar event.
@@ -439,6 +526,7 @@ def create_personal_busy_block(
         if main_email:
             event["attendees"] = [{"email": main_email, "responseStatus": "accepted"}]
 
+    _set_bb_props(event, origin_props)
     return event
 
 
@@ -450,6 +538,7 @@ def copy_event_for_main(
     current_rsvp_status: Optional[str] = None,
     user_can_edit: bool = True,
     use_service_account: bool = False,
+    origin_props: Optional[dict] = None,
 ) -> dict:
     """
     Create a copy of an event suitable for the main calendar.
@@ -536,6 +625,7 @@ def copy_event_for_main(
         base_desc = event["description"]
         event["description"] = f"{base_desc}\n\n---\n{footer}".strip() if base_desc else footer
 
+    _set_bb_props(event, origin_props)
     return event
 
 

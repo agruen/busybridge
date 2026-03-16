@@ -86,6 +86,30 @@ async def run_consistency_check_job() -> None:
         await release_job_lock("consistency_check")
 
 
+async def run_orphan_scan_job() -> None:
+    """Periodic scan for orphaned events on Google Calendars."""
+    paused = await get_setting("sync_paused")
+    if paused and paused.get("value_plain") == "true":
+        return
+
+    if not await acquire_job_lock("orphan_scan"):
+        logger.debug("Orphan scan already running, skipping")
+        return
+
+    try:
+        from app.sync.consistency import scan_for_orphans
+        result = await scan_for_orphans(dry_run=False)
+        if result.get("orphans_found") or result.get("db_duplicates_found"):
+            logger.warning(
+                "Orphan scan found %d orphans, %d DB duplicates",
+                result["orphans_found"], result["db_duplicates_found"],
+            )
+    except Exception:
+        logger.exception("Orphan scan job failed")
+    finally:
+        await release_job_lock("orphan_scan")
+
+
 async def refresh_expiring_tokens() -> None:
     """Proactively refresh tokens that will expire soon."""
     db = await get_database()

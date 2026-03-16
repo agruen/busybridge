@@ -447,6 +447,29 @@ async def check_connections(user: User = Depends(get_current_user)):
     return {"status": "ok" if all_ok else "error", "accounts": accounts}
 
 
+@router.post("/scan-orphans")
+async def trigger_orphan_scan(
+    user: User = Depends(get_current_user),
+    dry_run: bool = False,
+):
+    """Scan Google Calendars for orphaned events the DB doesn't know about."""
+    from app.sync.consistency import scan_for_orphans
+    from app.utils.tasks import create_background_task
+
+    async def _run():
+        result = await scan_for_orphans(dry_run=dry_run)
+        db = await get_database()
+        await db.execute(
+            """INSERT INTO sync_log (user_id, action, status, details)
+               VALUES (?, 'orphan_scan', 'success', ?)""",
+            (user.id, json.dumps(result)),
+        )
+        await db.commit()
+
+    create_background_task(_run(), f"orphan_scan_user_{user.id}")
+    return {"status": "started", "dry_run": dry_run}
+
+
 @router.post("/cleanup-managed")
 async def cleanup_managed_events(user: User = Depends(get_current_user)):
     """Kick off cleanup + resync in the background. Returns immediately."""

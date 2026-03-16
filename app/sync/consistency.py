@@ -2,7 +2,7 @@
 
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 from app.database import get_database
 from app.sync.google_calendar import GoogleCalendarClient
@@ -105,13 +105,14 @@ async def check_user_consistency(user_id: int, summary: dict, dry_run: bool = Fa
             await db.commit()
     write_client = sa_main_client if sa_main_client is not None else main_client
 
-    # Check event mappings with client origins
+    # Check event mappings with client AND personal origins
     cursor = await db.execute(
         """SELECT em.*, cc.google_calendar_id, cc.display_name, ot.google_account_email
            FROM event_mappings em
            JOIN client_calendars cc ON em.origin_calendar_id = cc.id
            JOIN oauth_tokens ot ON cc.oauth_token_id = ot.id
-           WHERE em.user_id = ? AND em.origin_type = 'client' AND em.deleted_at IS NULL
+           WHERE em.user_id = ? AND em.origin_type IN ('client', 'personal')
+           AND em.deleted_at IS NULL
            AND cc.is_active = TRUE""",
         (user_id,)
     )
@@ -604,3 +605,330 @@ async def _maybe_alert_integrity(user_id: int, unresolved: int, details: dict) -
         user_id=user_id,
         details="\n".join(detail_lines),
     )
+
+
+# ── Google→DB orphan scan ────────────────────────────────────────────
+
+
+async def scan_for_orphans(dry_run: bool = False) -> dict:
+    """Scan Google Calendars for orphaned events and duplicates.
+
+    Unlike the DB→Google consistency check, this goes the other
+    direction: lists every event *we* created on each calendar, cross-
+    references with the DB, and deletes anything the DB doesn't know about.
+
+    Also checks for duplicate DB records pointing to different Google
+    events for the same origin.
+
+    Returns a summary dict of actions taken (or planned when dry_run=True).
+    """
+    db = await get_database()
+    summary = {
+        "calendars_scanned": 0,
+        "our_events_found": 0,
+        "orphans_found": 0,
+        "orphans_deleted": 0,
+        "db_duplicates_found": 0,
+        "db_duplicates_fixed": 0,
+        "errors": 0,
+        "details": [],
+    }
+
+    # Get all users
+    cursor = await db.execute("SELECT * FROM users")
+    users = await cursor.fetchall()
+
+    for user in users:
+        user_id = user["id"]
+        try:
+            await _scan_user_orphans(user_id, summary, dry_run)
+            await _scan_db_duplicates(user_id, summary, dry_run)
+        except Exception as e:
+            logger.error("Orphan scan failed for user %d: %s", user_id, e)
+            summary["errors"] += 1
+
+    logger.info(
+        "Orphan scan complete: scanned %d calendars, found %d our events, "
+        "%d orphans (%d deleted), %d DB duplicates (%d fixed), %d errors",
+        summary["calendars_scanned"], summary["our_events_found"],
+        summary["orphans_found"], summary["orphans_deleted"],
+        summary["db_duplicates_found"], summary["db_duplicates_fixed"],
+        summary["errors"],
+    )
+    return summary
+
+
+async def _scan_user_orphans(
+    user_id: int, summary: dict, dry_run: bool
+) -> None:
+    """Scan all calendars for a user and find orphaned events."""
+    from app.auth.google import get_valid_access_token
+
+    db = await get_database()
+    now = datetime.now(timezone.utc)
+    time_min = (now - timedelta(days=7)).isoformat()
+    time_max = (now + timedelta(days=365)).isoformat()
+
+    # Build the set of all Google event IDs we know about in the DB
+    cursor = await db.execute(
+        "SELECT main_event_id FROM event_mappings WHERE user_id = ? AND deleted_at IS NULL",
+        (user_id,),
+    )
+    known_main_ids = {row["main_event_id"] for row in await cursor.fetchall() if row["main_event_id"]}
+
+    cursor = await db.execute(
+        """SELECT bb.busy_block_event_id
+           FROM busy_blocks bb
+           JOIN event_mappings em ON bb.event_mapping_id = em.id
+           WHERE em.user_id = ?""",
+        (user_id,),
+    )
+    known_block_ids = {row["busy_block_event_id"] for row in await cursor.fetchall() if row["busy_block_event_id"]}
+
+    cursor = await db.execute(
+        "SELECT origin_event_id, origin_calendar_id FROM event_mappings WHERE user_id = ? AND deleted_at IS NULL",
+        (user_id,),
+    )
+    known_origin_ids = {row["origin_event_id"] for row in await cursor.fetchall() if row["origin_event_id"]}
+
+    # Get main calendar
+    cursor = await db.execute(
+        "SELECT main_calendar_id, email FROM users WHERE id = ?", (user_id,),
+    )
+    user_row = await cursor.fetchone()
+    if not user_row:
+        return
+    main_cal_id = user_row["main_calendar_id"]
+
+    # Get all calendars to scan
+    cursor = await db.execute(
+        """SELECT cc.google_calendar_id, ot.google_account_email
+           FROM client_calendars cc
+           JOIN oauth_tokens ot ON cc.oauth_token_id = ot.id
+           WHERE cc.user_id = ? AND cc.is_active = TRUE""",
+        (user_id,),
+    )
+    client_cals = await cursor.fetchall()
+
+    # Scan main calendar
+    try:
+        token = await get_valid_access_token(user_id, user_row["email"])
+        main_client = GoogleCalendarClient(token)
+        await _dedup_calendar(
+            main_client, main_cal_id, known_main_ids,
+            time_min, time_max, summary, dry_run, "main",
+        )
+    except Exception as e:
+        logger.warning("Orphan scan: failed to scan main calendar: %s", e)
+        summary["errors"] += 1
+
+    # Scan each client calendar
+    for cal in client_cals:
+        cal_id = cal["google_calendar_id"]
+        email = cal["google_account_email"]
+        try:
+            token = await get_valid_access_token(user_id, email)
+            client = GoogleCalendarClient(token)
+            await _dedup_calendar(
+                client, cal_id, known_block_ids | known_origin_ids,
+                time_min, time_max, summary, dry_run, "client",
+            )
+        except Exception as e:
+            logger.warning("Orphan scan: failed to scan %s: %s", cal_id[:25], e)
+            summary["errors"] += 1
+
+
+async def _dedup_calendar(
+    client: GoogleCalendarClient,
+    calendar_id: str,
+    known_ids: set[str],
+    time_min: str,
+    time_max: str,
+    summary: dict,
+    dry_run: bool,
+    cal_label: str,
+) -> None:
+    """Scan one calendar for orphans and duplicates.
+
+    Groups events by bb_origin_id.  For each origin:
+    - If the DB knows one of the event IDs → keep that, delete the rest.
+    - If the DB knows none → keep the newest, delete the rest.
+    - Single events unknown to the DB → orphan, delete.
+    """
+    from app.config import get_settings
+    settings = get_settings()
+
+    our_events = client.list_our_events(
+        calendar_id, time_min=time_min, time_max=time_max,
+    )
+    summary["calendars_scanned"] += 1
+    summary["our_events_found"] += len(our_events)
+
+    # Group by bb_origin_id
+    by_origin: dict[str, list[dict]] = {}
+    no_origin: list[dict] = []
+
+    for event in our_events:
+        eid = event["id"]
+        if eid in known_ids:
+            continue  # DB knows about it, it's fine
+
+        props = event.get("extendedProperties", {}).get("private", {})
+        origin_id = props.get("bb_origin_id")
+
+        # On client calendars, skip events without our bb_type metadata
+        # (they could be the user's own events, not busy blocks we created).
+        if cal_label == "client":
+            bb_type = props.get("bb_type", "")
+            if not bb_type and settings.calendar_sync_tag not in props:
+                continue  # Not our event
+
+        if origin_id:
+            by_origin.setdefault(origin_id, []).append(event)
+        else:
+            no_origin.append(event)
+
+    # Handle groups with the same bb_origin_id
+    for origin_id, events in by_origin.items():
+        # Determine the bb_type from any event in the group
+        sample_props = events[0].get("extendedProperties", {}).get("private", {})
+        bb_type = sample_props.get("bb_type", "")
+        is_real_copy = bb_type == "client_copy"
+
+        db_known = [e for e in events if e["id"] in known_ids]
+
+        if len(events) == 1 and not db_known:
+            if is_real_copy:
+                # Single client copy the DB lost track of — keep it,
+                # next sync will re-adopt it via the origin event.
+                logger.info(
+                    "Orphan scan: keeping orphaned client_copy for origin %s "
+                    "on %s (next sync will adopt)",
+                    origin_id, calendar_id[:25],
+                )
+            else:
+                # Single orphaned busy block — delete it.  Busy blocks are
+                # created by us, not the user.  No adoption path exists.
+                _mark_orphan(
+                    summary, events[0], calendar_id, cal_label, dry_run, client,
+                )
+        elif len(events) > 1:
+            # Multiple events for same origin — duplicates!
+            if db_known:
+                keep = db_known[0]
+            elif is_real_copy:
+                # Keep newest — next sync will adopt it
+                keep = max(events, key=lambda e: e.get("updated", ""))
+            else:
+                # All are orphaned busy blocks — delete all of them
+                keep = None
+
+            for event in events:
+                if keep and event["id"] == keep["id"]:
+                    continue
+                summary["orphans_found"] += 1
+                keep_note = f"keeping {keep['id'][:20]}" if keep else "deleting all"
+                detail = (
+                    f"{cal_label}:{calendar_id[:25]}:{event['id'][:20]} "
+                    f"DUPLICATE origin={origin_id} ({keep_note})"
+                )
+                if not dry_run:
+                    try:
+                        client.delete_event(calendar_id, event["id"])
+                        summary["orphans_deleted"] += 1
+                        logger.info("Orphan scan: deleted duplicate: %s", detail)
+                    except Exception as e:
+                        logger.warning("Orphan scan: failed to delete %s: %s", detail, e)
+                        summary["errors"] += 1
+                else:
+                    logger.info("Orphan scan [dry-run]: would delete duplicate: %s", detail)
+                summary["details"].append({
+                    "calendar": calendar_id, "event_id": event["id"],
+                    "origin_id": origin_id, "action": "delete_duplicate",
+                })
+
+            if keep and not db_known and is_real_copy:
+                logger.info(
+                    "Orphan scan: kept newest of %d duplicates for origin %s "
+                    "on %s (DB doesn't know any — next sync will adopt)",
+                    len(events), origin_id, calendar_id[:25],
+                )
+
+    # Handle events with no bb_origin_id (legacy or untagged)
+    for event in no_origin:
+        _mark_orphan(summary, event, calendar_id, cal_label, dry_run, client)
+
+
+def _mark_orphan(
+    summary: dict,
+    event: dict,
+    calendar_id: str,
+    cal_label: str,
+    dry_run: bool,
+    client: GoogleCalendarClient,
+) -> None:
+    """Mark a single event as orphan and optionally delete it."""
+    eid = event["id"]
+    props = event.get("extendedProperties", {}).get("private", {})
+    origin_id = props.get("bb_origin_id", "unknown")
+    bb_type = props.get("bb_type", "unknown")
+    summary["orphans_found"] += 1
+    detail = f"{cal_label}:{calendar_id[:25]}:{eid[:20]} type={bb_type} origin={origin_id}"
+
+    if not dry_run:
+        try:
+            client.delete_event(calendar_id, eid)
+            summary["orphans_deleted"] += 1
+            logger.info("Orphan scan: deleted orphan: %s", detail)
+        except Exception as e:
+            logger.warning("Orphan scan: failed to delete %s: %s", detail, e)
+            summary["errors"] += 1
+    else:
+        logger.info("Orphan scan [dry-run]: would delete orphan: %s", detail)
+
+    summary["details"].append({
+        "calendar": calendar_id, "event_id": eid,
+        "type": bb_type, "action": "delete",
+    })
+
+
+async def _scan_db_duplicates(
+    user_id: int, summary: dict, dry_run: bool
+) -> None:
+    """Check for duplicate DB records pointing to different Google events."""
+    db = await get_database()
+
+    # Check for duplicate main_event_ids (two mappings claiming the same
+    # main calendar event — shouldn't happen).
+    cursor = await db.execute(
+        """SELECT main_event_id, COUNT(*) as cnt
+           FROM event_mappings
+           WHERE user_id = ? AND deleted_at IS NULL AND main_event_id IS NOT NULL
+           GROUP BY main_event_id
+           HAVING cnt > 1""",
+        (user_id,),
+    )
+    for row in await cursor.fetchall():
+        summary["db_duplicates_found"] += 1
+        logger.warning(
+            "Orphan scan: duplicate main_event_id %s appears in %d mappings",
+            row["main_event_id"], row["cnt"],
+        )
+
+    # Check for duplicate busy_block_event_ids (two DB rows claiming the
+    # same Google Calendar busy block — shouldn't happen).
+    cursor = await db.execute(
+        """SELECT bb.busy_block_event_id, COUNT(*) as cnt
+           FROM busy_blocks bb
+           JOIN event_mappings em ON bb.event_mapping_id = em.id
+           WHERE em.user_id = ?
+           GROUP BY bb.busy_block_event_id
+           HAVING cnt > 1""",
+        (user_id,),
+    )
+    for row in await cursor.fetchall():
+        summary["db_duplicates_found"] += 1
+        logger.warning(
+            "Orphan scan: duplicate busy_block_event_id %s appears in %d rows",
+            row["busy_block_event_id"], row["cnt"],
+        )

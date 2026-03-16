@@ -75,6 +75,15 @@ def setup_scheduler() -> AsyncIOScheduler:
         replace_existing=True,
     )
 
+    # Orphan scan - every 6 hours (finds events on Google that DB doesn't know about)
+    _scheduler.add_job(
+        "app.jobs.sync_job:run_orphan_scan_job",
+        trigger=IntervalTrigger(hours=6),
+        id="orphan_scan",
+        name="Orphan Scan",
+        replace_existing=True,
+    )
+
     # Retention cleanup - daily at 3 AM
     _scheduler.add_job(
         "app.jobs.cleanup:run_retention_cleanup",
