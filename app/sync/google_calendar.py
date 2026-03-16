@@ -337,6 +337,61 @@ class GoogleCalendarClient:
                 return True
             raise
 
+    def batch_delete_events(
+        self,
+        calendar_id: str,
+        event_ids: list[str],
+        batch_size: int = 50,
+    ) -> tuple[int, list[str]]:
+        """Delete multiple events in batch requests.
+
+        Returns (deleted_count, failed_event_ids).
+        404/410 responses are treated as success (already gone).
+        """
+        deleted = 0
+        failed: list[str] = []
+
+        for i in range(0, len(event_ids), batch_size):
+            chunk = event_ids[i : i + batch_size]
+            batch = self.service.new_batch_http_request()
+
+            # Track results per event in this chunk
+            chunk_results: dict[str, bool] = {}
+
+            def _make_callback(eid: str):
+                def _cb(request_id, response, exception):
+                    if exception is None:
+                        chunk_results[eid] = True
+                    elif isinstance(exception, HttpError) and exception.resp.status in (404, 410):
+                        chunk_results[eid] = True  # Already gone
+                    else:
+                        chunk_results[eid] = False
+                return _cb
+
+            for eid in chunk:
+                batch.add(
+                    self.service.events().delete(
+                        calendarId=calendar_id, eventId=eid,
+                    ),
+                    callback=_make_callback(eid),
+                )
+
+            try:
+                batch.execute()
+            except Exception:
+                # Entire batch failed — mark all as failed
+                for eid in chunk:
+                    if eid not in chunk_results:
+                        chunk_results[eid] = False
+
+            for eid, ok in chunk_results.items():
+                if ok:
+                    deleted += 1
+                else:
+                    failed.append(eid)
+
+        return deleted, failed
+
     def is_our_event(self, event: dict) -> bool:
         """Check if an event was created by our sync engine."""
         ext_props = event.get("extendedProperties", {})

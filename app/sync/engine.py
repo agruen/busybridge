@@ -1651,25 +1651,23 @@ async def _cleanup_managed_events_impl(
                 step_label="Deleting managed events from main calendar...",
                 current=0, total=len(main_cal_mappings),
             )
-            for i, mapping in enumerate(main_cal_mappings):
-                try:
-                    await _throttled_delete(
-                        delete_client,
-                        user["main_calendar_id"],
-                        mapping["main_event_id"],
-                    )
-                    summary["db_main_events_deleted"] += 1
-                    cleaned_mapping_ids.add(mapping["id"])
-                except Exception as e:
+            # Build mapping from event_id -> mapping row for tracking
+            main_id_to_mapping = {m["main_event_id"]: m for m in main_cal_mappings if m["main_event_id"]}
+            main_event_ids = list(main_id_to_mapping.keys())
+
+            deleted_count, failed_ids = await asyncio.to_thread(
+                delete_client.batch_delete_events,
+                user["main_calendar_id"],
+                main_event_ids,
+            )
+            summary["db_main_events_deleted"] = deleted_count
+            for eid, mapping in main_id_to_mapping.items():
+                if eid in failed_ids:
                     failed_mapping_ids.add(mapping["id"])
-                    summary["errors"].append(f"main_delete:{mapping['main_event_id']}:{type(e).__name__}")
-                    logger.warning(
-                        "Failed DB-driven main event delete for user=%s event=%s: %s",
-                        user_id,
-                        mapping["main_event_id"],
-                        e,
-                    )
-                _update_cleanup_progress(user_id, current=i + 1)
+                    summary["errors"].append(f"main_delete:{eid}:{type(Exception).__name__}")
+                else:
+                    cleaned_mapping_ids.add(mapping["id"])
+            _update_cleanup_progress(user_id, current=len(main_cal_mappings))
         else:
             # No client available — mark ALL mappings as failed so their
             # DB records are retained for retry.
@@ -1698,35 +1696,41 @@ async def _cleanup_managed_events_impl(
         step_label="Deleting busy blocks from client calendars...",
         current=0, total=len(busy_blocks),
     )
-    for i, block in enumerate(busy_blocks):
-        client = await _get_client_for_email(block["google_account_email"])
+
+    # Group busy blocks by (email, calendar_id) for batch deletion
+    from collections import defaultdict
+    bb_groups: dict[tuple[str, str], list[dict]] = defaultdict(list)
+    for block in busy_blocks:
+        key = (block["google_account_email"], block["google_calendar_id"])
+        bb_groups[key].append(block)
+
+    bb_deleted_total = 0
+    for (email, cal_id), blocks_in_group in bb_groups.items():
+        client = await _get_client_for_email(email)
         if not client:
-            failed_mapping_ids.add(block["event_mapping_id"])
-            summary["errors"].append(
-                f"busy_block_token_unavailable:{block['busy_block_event_id']}"
-            )
-            _update_cleanup_progress(user_id, current=i + 1)
+            for block in blocks_in_group:
+                failed_mapping_ids.add(block["event_mapping_id"])
+                summary["errors"].append(
+                    f"busy_block_token_unavailable:{block['busy_block_event_id']}"
+                )
             continue
 
-        try:
-            await _throttled_delete(
-                client,
-                block["google_calendar_id"],
-                block["busy_block_event_id"],
-            )
-            summary["db_busy_blocks_deleted"] += 1
-        except Exception as e:
-            failed_mapping_ids.add(block["event_mapping_id"])
-            summary["errors"].append(
-                f"busy_block_delete:{block['busy_block_event_id']}:{type(e).__name__}"
-            )
-            logger.warning(
-                "Failed DB-driven busy block delete for user=%s event=%s: %s",
-                user_id,
-                block["busy_block_event_id"],
-                e,
-            )
-        _update_cleanup_progress(user_id, current=i + 1)
+        event_ids = [b["busy_block_event_id"] for b in blocks_in_group]
+        deleted_count, failed_ids = await asyncio.to_thread(
+            client.batch_delete_events, cal_id, event_ids,
+        )
+        bb_deleted_total += deleted_count
+
+        failed_set = set(failed_ids)
+        for block in blocks_in_group:
+            if block["busy_block_event_id"] in failed_set:
+                failed_mapping_ids.add(block["event_mapping_id"])
+                summary["errors"].append(
+                    f"busy_block_delete:{block['busy_block_event_id']}:BatchError"
+                )
+
+    summary["db_busy_blocks_deleted"] = bb_deleted_total
+    _update_cleanup_progress(user_id, current=len(busy_blocks))
 
     logger.info("Cleanup: Pass 1b done (%d deleted). Starting Pass 2 (prefix sweep) for user %s",
                 summary["db_busy_blocks_deleted"], user_id)
@@ -1772,26 +1776,24 @@ async def _cleanup_managed_events_impl(
                 )
                 return
 
+            # Collect matching event IDs for batch deletion
+            ids_to_delete = []
             for event in events:
                 event_id = event.get("id")
                 if not event_id:
                     continue
                 if not _event_has_managed_prefix(event, managed_prefix):
                     continue
-
                 summary["prefix_matches_found"] += 1
-                try:
-                    await _throttled_delete(client, calendar_id, event_id)
-                    summary["prefix_events_deleted"] += 1
-                except Exception as e:
-                    summary["errors"].append(f"prefix_delete:{event_id}:{type(e).__name__}")
-                    logger.warning(
-                        "Failed prefix delete for user=%s calendar=%s event=%s: %s",
-                        user_id,
-                        calendar_id,
-                        event_id,
-                        e,
-                    )
+                ids_to_delete.append(event_id)
+
+            if ids_to_delete:
+                deleted_count, failed_ids = await asyncio.to_thread(
+                    client.batch_delete_events, calendar_id, ids_to_delete,
+                )
+                summary["prefix_events_deleted"] += deleted_count
+                for eid in failed_ids:
+                    summary["errors"].append(f"prefix_delete:{eid}:BatchError")
 
         # Build list of calendars to sweep so we can report progress.
         sweep_list: list[tuple[str, str, str]] = []  # (cal_id, email, label)
