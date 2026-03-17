@@ -720,18 +720,60 @@ async def _retry_missing_busy_blocks(
     created = 0
     for m in missing:
         try:
-            event = main_client.get_event(main_calendar_id, m["main_event_id"])
-            if event and event.get("status") != "cancelled":
-                blocks = await sync_main_event_to_clients(
-                    main_client=main_client,
-                    event=event,
-                    user_id=user_id,
-                    main_calendar_id=main_calendar_id,
-                    user_email=user_email,
+            if m["origin_type"] == "personal":
+                # Personal events use sync_personal_event_to_all, not
+                # sync_main_event_to_clients.  Re-fetch the origin event
+                # from the personal calendar and re-sync it.
+                from app.auth.google import get_valid_access_token as _get_token
+                origin_db_id = m["origin_calendar_id"]
+                cursor = await db.execute(
+                    """SELECT cc.google_calendar_id, ot.google_account_email
+                       FROM client_calendars cc
+                       JOIN oauth_tokens ot ON cc.oauth_token_id = ot.id
+                       WHERE cc.id = ?""",
+                    (origin_db_id,),
                 )
-                created += len(blocks)
+                cal_row = await cursor.fetchone()
+                if not cal_row:
+                    continue
+                token = await _get_token(user_id, cal_row["google_account_email"])
+                personal_client = GoogleCalendarClient(token)
+                origin_event = personal_client.get_event(
+                    cal_row["google_calendar_id"], m["origin_event_id"],
+                )
+                if origin_event and origin_event.get("status") != "cancelled":
+                    sa_main = None
+                    cursor2 = await db.execute("SELECT sa_tier FROM users WHERE id = ?", (user_id,))
+                    sa_row = await cursor2.fetchone()
+                    if sa_row and sa_row["sa_tier"] == 2:
+                        from app.auth.service_account import get_sa_main_client
+                        sa_main = get_sa_main_client(main_calendar_id)
+
+                    result = await sync_personal_event_to_all(
+                        personal_client=personal_client,
+                        main_client=main_client,
+                        event=origin_event,
+                        user_id=user_id,
+                        personal_calendar_id=origin_db_id,
+                        main_calendar_id=main_calendar_id,
+                        user_email=user_email,
+                        sa_main_client=sa_main,
+                    )
+                    if result:
+                        created += 1
+            else:
+                event = main_client.get_event(main_calendar_id, m["main_event_id"])
+                if event and event.get("status") != "cancelled":
+                    blocks = await sync_main_event_to_clients(
+                        main_client=main_client,
+                        event=event,
+                        user_id=user_id,
+                        main_calendar_id=main_calendar_id,
+                        user_email=user_email,
+                    )
+                    created += len(blocks)
         except Exception as e:
-            logger.warning(f"Retry failed for event {m['main_event_id']}: {e}")
+            logger.warning(f"Retry failed for mapping {m['id']} event {m['main_event_id']}: {e}")
 
     if created:
         logger.info(f"Retry created {created} missing busy block(s) for user {user_id}")
