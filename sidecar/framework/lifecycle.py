@@ -436,20 +436,30 @@ class LifecycleManager:
             elif len(found) > 1:
                 errors.append(f"Duplicate DB mappings: {len(found)}")
 
-            # 3. Main calendar copy — search by summary on Google (not by DB ID)
-            #    to catch orphans the DB doesn't know about.
-            main_matches = await _in_thread(
-                main_client.find_events_by_prefix,
-                main_cal_id,
-                ev.summary,
-                time_min=self._search_min(ev),
-                time_max=self._search_max(ev),
-            )
-            details["main_copy_count"] = len(main_matches)
-            if len(main_matches) == 0:
-                errors.append("Main calendar copy missing")
-            elif len(main_matches) > 1:
-                errors.append(f"DUPLICATE main copies: {len(main_matches)}")
+            # 3. Main calendar copy — verify via get_event (reliable) +
+            #    find_by_origin for duplicate detection (metadata filter,
+            #    not fulltext search — no search index lag).
+            if found:
+                main_eid = found[0].get("main_event_id")
+                if main_eid:
+                    main_event = await _in_thread(
+                        main_client.get_event, main_cal_id, main_eid,
+                    )
+                    if not main_event:
+                        errors.append("Main calendar copy missing from Google")
+                    details["main_copy_exists"] = main_event is not None
+                else:
+                    errors.append("No main_event_id in DB mapping")
+
+                # Check for duplicates via metadata
+                dupes = await _in_thread(
+                    main_client.find_by_origin,
+                    main_cal_id,
+                    origin_id=ev.origin_event_id,
+                )
+                details["main_copy_count"] = len(dupes)
+                if len(dupes) > 1:
+                    errors.append(f"DUPLICATE main copies: {len(dupes)}")
 
             # 4. Busy block check via DB (not Google search — busy blocks are
             #    generic "Busy" titles so Google searches can't distinguish
@@ -519,26 +529,50 @@ class LifecycleManager:
             t_min, t_max = self._portfolio_time_window()
 
             # --- Main calendar drift ---
-            main_events = await _in_thread(
-                main_client.find_events_by_prefix,
-                main_cal_id, LIFECYCLE_PREFIX,
-                time_min=t_min, time_max=t_max,
-            )
+            # For each active event, check via get_event (reliable) and
+            # find_by_origin (metadata filter, no fulltext lag).
+            main_exists = 0
+            main_missing = 0
+            main_dupes = 0
+            for ev in active:
+                ev_mappings = [
+                    m for m in (await self._ctx.db.get_event_mappings(acct["user_id"]))
+                    if m.get("origin_event_id") == ev.origin_event_id
+                    and m.get("deleted_at") is None
+                ]
+                if ev_mappings and ev_mappings[0].get("main_event_id"):
+                    main_eid = ev_mappings[0]["main_event_id"]
+                    main_ev = await _in_thread(
+                        main_client.get_event, main_cal_id, main_eid,
+                    )
+                    if main_ev:
+                        main_exists += 1
+                    else:
+                        main_missing += 1
+                    # Check for duplicates
+                    dupes = await _in_thread(
+                        main_client.find_by_origin,
+                        main_cal_id,
+                        origin_id=ev.origin_event_id,
+                    )
+                    if len(dupes) > 1:
+                        main_dupes += len(dupes) - 1
+                else:
+                    main_missing += 1
+
             expected_main = len(active)
-            actual_main = len(main_events)
             details["main_expected"] = expected_main
-            details["main_actual"] = actual_main
-            if actual_main > expected_main:
-                orphan_summaries = [e.get("summary", "?") for e in main_events]
+            details["main_exists"] = main_exists
+            details["main_missing"] = main_missing
+            details["main_duplicates"] = main_dupes
+            if main_missing > 0:
                 errors.append(
-                    f"Main calendar drift: {actual_main} copies vs "
-                    f"{expected_main} expected (orphans!)"
+                    f"Main calendar drift: {main_missing} copies missing "
+                    f"out of {expected_main} expected"
                 )
-                details["main_orphan_summaries"] = orphan_summaries
-            elif actual_main < expected_main:
+            if main_dupes > 0:
                 errors.append(
-                    f"Main calendar drift: {actual_main} copies vs "
-                    f"{expected_main} expected (missing!)"
+                    f"Main calendar drift: {main_dupes} duplicate copies found"
                 )
 
             # --- DB-level busy block drift ---

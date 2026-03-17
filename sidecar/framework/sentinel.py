@@ -344,34 +344,52 @@ class SentinelManager:
             else:
                 errors.append("No main calendar client available")
 
-            # 4. Busy blocks on other client calendars?
-            client_cals = [
-                c for c in acct["calendars"]
-                if c["calendar_type"] == "client"
-                and c["google_calendar_id"] != sentinel.origin_calendar_id
-            ]
-            for cal_info in client_cals:
-                cal_client: CalendarTestClient = cal_info["client"]
-                cal_id = cal_info["google_calendar_id"]
-                try:
-                    busy_events = await _in_thread(
-                        cal_client.list_events,
-                        cal_id,
-                        q="BusyBridge",
-                        time_min=self._search_time_min(sentinel),
-                        time_max=self._search_time_max(sentinel),
+            # 4. Busy blocks on other client calendars
+            #    Use DB to find the busy_block_event_id, then get_event to
+            #    verify it exists on Google (reliable, no search index lag).
+            #    Also use find_by_origin to check for duplicates.
+            if found:
+                blocks = await self._ctx.db.get_busy_blocks(found[0]["id"])
+                details["db_busy_blocks"] = len(blocks)
+                if not blocks:
+                    errors.append("No busy blocks in DB for sentinel mapping")
+                for block in blocks:
+                    bb_eid = block.get("busy_block_event_id", "")
+                    bb_cal_id_db = block.get("client_calendar_id")
+                    # Find the calendar info for this busy block
+                    bb_cal_info = next(
+                        (c for c in acct["calendars"]
+                         if c["calendar"]["id"] == bb_cal_id_db),
+                        None,
                     )
-                    has_block = any(
-                        "BusyBridge" in (e.get("summary") or "")
-                        for e in busy_events
-                    )
-                    if not has_block:
-                        errors.append(f"No busy block on {cal_id[:25]}")
-                except Exception as e:
-                    errors.append(f"Error checking busy block on {cal_id[:25]}: {e}")
-
-            if found and len(client_cals) > 0 and details.get("db_busy_blocks", 0) == 0:
-                errors.append("No busy blocks in DB for sentinel mapping")
+                    if not bb_cal_info:
+                        continue
+                    bb_client: CalendarTestClient = bb_cal_info["client"]
+                    bb_cal_id = bb_cal_info["google_calendar_id"]
+                    try:
+                        # Existence check via direct ID lookup (always consistent)
+                        bb_event = await _in_thread(
+                            bb_client.get_event, bb_cal_id, bb_eid,
+                        )
+                        if not bb_event:
+                            errors.append(f"Busy block missing from Google on {bb_cal_id[:25]}")
+                        # Duplicate check via metadata filter (not fulltext search)
+                        dupes = await _in_thread(
+                            bb_client.find_by_origin,
+                            bb_cal_id,
+                            origin_id=sentinel.origin_event_id,
+                            bb_type="busy_block",
+                        )
+                        if len(dupes) > 1:
+                            errors.append(
+                                f"DUPLICATE busy blocks on {bb_cal_id[:25]}: {len(dupes)}"
+                            )
+                        details[f"busy_block_dupes_{bb_cal_id[:15]}"] = len(dupes)
+                    except Exception as e:
+                        errors.append(f"Error checking busy block on {bb_cal_id[:25]}: {e}")
+            else:
+                # No mapping found — check was already reported above
+                pass
 
         except Exception as e:
             errors.append(f"Verification exception: {type(e).__name__}: {e}")

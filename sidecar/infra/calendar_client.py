@@ -143,6 +143,40 @@ class CalendarTestClient:
                 return True
             raise
 
+    def find_by_origin(
+        self,
+        calendar_id: str,
+        origin_id: str,
+        bb_type: Optional[str] = None,
+    ) -> list[dict]:
+        """Find events by bb_origin_id in extendedProperties.private.
+
+        Uses Google's privateExtendedProperty filter — a metadata query,
+        not fulltext search, so it's immediate and consistent.
+        """
+        try:
+            params: dict = {
+                "calendarId": calendar_id,
+                "privateExtendedProperty": f"bb_origin_id={origin_id}",
+                "showDeleted": False,
+                "maxResults": 50,
+                "singleEvents": False,
+            }
+            if bb_type:
+                params["privateExtendedProperty"] = [
+                    f"bb_origin_id={origin_id}",
+                    f"bb_type={bb_type}",
+                ]
+            result = self.service.events().list(**params).execute()
+            return [
+                e for e in result.get("items", [])
+                if e.get("status") != "cancelled"
+            ]
+        except HttpError as e:
+            if e.resp.status in (404, 403):
+                return []
+            raise
+
     def find_events_by_prefix(
         self,
         calendar_id: str,

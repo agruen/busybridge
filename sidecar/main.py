@@ -175,14 +175,12 @@ async def main() -> None:
     logger.info("Built %d accounts", len(accounts))
 
     # 8. Run startup cleanup
+    # Only sweep CLIENT calendars — never the main calendar.
+    # Main calendar copies are managed by BusyBridge's sync engine.
+    # Deleting them triggers cascade deletes of origins + busy blocks.
     all_cal_clients: list[tuple[CalendarTestClient, str]] = []
     for acct in accounts:
-        if acct["main_client"] and acct["main_calendar_id"]:
-            all_cal_clients.append(
-                (acct["main_client"], acct["main_calendar_id"])
-            )
         for ci in acct["calendars"]:
-            # Skip personal calendars — sidecar only has read access
             if ci.get("calendar_type") == "personal":
                 continue
             all_cal_clients.append(
