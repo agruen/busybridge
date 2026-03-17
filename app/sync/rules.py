@@ -120,18 +120,10 @@ async def sync_client_event_to_main(
                 logger.info(f"Updated main event {main_event_id} from client event {event_id}")
             except HttpError as e:
                 if e.resp.status in (404, 410):
-                    # Old event is gone — check for orphaned copy before creating
-                    logger.warning(f"Main event {main_event_id} gone ({e.resp.status}), looking for orphan or creating replacement")
-                    orphans = write_client.find_by_origin(
-                        main_calendar_id, origin_id=event_id, bb_type="client_copy",
-                    )
-                    if orphans:
-                        main_event_id = orphans[0]["id"]
-                        write_client.update_event(main_calendar_id, main_event_id, main_event_data)
-                        logger.info(f"Adopted orphaned main event {main_event_id}")
-                    else:
-                        result = write_client.create_event(main_calendar_id, main_event_data)
-                        main_event_id = result["id"]
+                    # Old event is gone — create replacement
+                    logger.warning(f"Main event {main_event_id} gone ({e.resp.status}), creating replacement")
+                    result = write_client.create_event(main_calendar_id, main_event_data)
+                    main_event_id = result["id"]
                 else:
                     # Transient/server error -- re-raise so we don't create a duplicate
                     logger.error(f"Failed to update main event (HTTP {e.resp.status}): {e}")
@@ -218,23 +210,14 @@ async def sync_client_event_to_main(
                                 f"Failed to cancel series busy block instance {bb_instance_id}: {e}"
                             )
 
-        # Pre-create guard: check if a copy already exists from a prior
-        # crashed attempt.  Uses bb_origin_id in extendedProperties to find
-        # orphaned copies that the DB doesn't know about.
+        # Create new main calendar copy.  Orphaned copies from prior crashes
+        # are cleaned up by the periodic orphan scanner (every 6 hours).
         try:
-            existing_copies = write_client.find_by_origin(
-                main_calendar_id, origin_id=event_id, bb_type="client_copy",
-            )
-            if existing_copies:
-                main_event_id = existing_copies[0]["id"]
-                write_client.update_event(main_calendar_id, main_event_id, main_event_data)
-                logger.info(f"Adopted existing main event {main_event_id} for client event {event_id}")
-            else:
-                result = write_client.create_event(main_calendar_id, main_event_data)
-                main_event_id = result["id"]
-                logger.info(f"Created main event {main_event_id} from client event {event_id}")
+            result = write_client.create_event(main_calendar_id, main_event_data)
+            main_event_id = result["id"]
+            logger.info(f"Created main event {main_event_id} from client event {event_id}")
         except Exception as e:
-            logger.error(f"Failed to create/adopt main event: {e}")
+            logger.error(f"Failed to create main event: {e}")
             return None
 
         # Track RSVP status for events with attendees (invites).
@@ -458,19 +441,8 @@ async def sync_main_event_to_clients(
                     continue
 
             if not existing_block:
-                # Pre-create guard: check for orphaned busy block from prior crash
-                orphaned = client_calendar_client.find_by_origin(
-                    cal["google_calendar_id"],
-                    origin_id=bb_origin_props["bb_origin_id"],
-                    bb_type="busy_block",
-                )
-                if orphaned:
-                    block_id = orphaned[0]["id"]
-                    client_calendar_client.update_event(cal["google_calendar_id"], block_id, busy_block)
-                    logger.info(f"Adopted orphaned busy block {block_id} on calendar {cal['id']}")
-                else:
-                    result = client_calendar_client.create_event(cal["google_calendar_id"], busy_block)
-                    block_id = result["id"]
+                result = client_calendar_client.create_event(cal["google_calendar_id"], busy_block)
+                block_id = result["id"]
 
                 await db.execute(
                     """INSERT INTO busy_blocks (event_mapping_id, client_calendar_id, busy_block_event_id)
@@ -1126,16 +1098,8 @@ async def sync_personal_event_to_all(
                 logger.info(f"Updated personal busy block {main_event_id} on main calendar")
             except HttpError as e:
                 if e.resp.status in (404, 410):
-                    orphans = write_client.find_by_origin(
-                        main_calendar_id, origin_id=event_id, bb_type="personal_block",
-                    )
-                    if orphans:
-                        main_event_id = orphans[0]["id"]
-                        write_client.update_event(main_calendar_id, main_event_id, busy_block)
-                        logger.info(f"Adopted orphaned personal block {main_event_id}")
-                    else:
-                        result = write_client.create_event(main_calendar_id, busy_block)
-                        main_event_id = result["id"]
+                    result = write_client.create_event(main_calendar_id, busy_block)
+                    main_event_id = result["id"]
                 else:
                     logger.error(f"Failed to update personal main event: {e}")
                     raise
@@ -1153,19 +1117,10 @@ async def sync_personal_event_to_all(
         mapping_id = existing["id"]
 
     else:
-        # Pre-create guard: check for orphaned personal block from prior crash
         try:
-            orphans = write_client.find_by_origin(
-                main_calendar_id, origin_id=event_id, bb_type="personal_block",
-            )
-            if orphans:
-                main_event_id = orphans[0]["id"]
-                write_client.update_event(main_calendar_id, main_event_id, busy_block)
-                logger.info(f"Adopted orphaned personal block {main_event_id} on main calendar")
-            else:
-                result = write_client.create_event(main_calendar_id, busy_block)
-                main_event_id = result["id"]
-                logger.info(f"Created personal busy block {main_event_id} on main calendar")
+            result = write_client.create_event(main_calendar_id, busy_block)
+            main_event_id = result["id"]
+            logger.info(f"Created personal busy block {main_event_id} on main calendar")
         except Exception as e:
             logger.error(f"Failed to create personal main event: {e}")
             return None
@@ -1253,23 +1208,10 @@ async def sync_personal_event_to_all(
                     except Exception as ce:
                         logger.error(f"Failed to replace personal busy block on calendar {cal['id']}: {ce}")
             else:
-                # Pre-create guard for personal client busy blocks
-                orphaned = client_calendar_client.find_by_origin(
-                    cal["google_calendar_id"],
-                    origin_id=event_id,
-                    bb_type="personal_client_block",
+                result = client_calendar_client.create_event(
+                    cal["google_calendar_id"], client_busy_block,
                 )
-                if orphaned:
-                    block_id = orphaned[0]["id"]
-                    client_calendar_client.update_event(
-                        cal["google_calendar_id"], block_id, client_busy_block,
-                    )
-                    logger.info(f"Adopted orphaned personal client block {block_id} on calendar {cal['id']}")
-                else:
-                    orphaned_result = client_calendar_client.create_event(
-                        cal["google_calendar_id"], client_busy_block,
-                    )
-                    block_id = orphaned_result["id"]
+                block_id = result["id"]
                 await db.execute(
                     """INSERT INTO busy_blocks (event_mapping_id, client_calendar_id, busy_block_event_id)
                        VALUES (?, ?, ?)""",
