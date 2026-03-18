@@ -724,24 +724,44 @@ async def _retry_missing_busy_blocks(
                 # Personal events use sync_personal_event_to_all, not
                 # sync_main_event_to_clients.  Re-fetch the origin event
                 # from the personal calendar and re-sync it.
-                from app.auth.google import get_valid_access_token as _get_token
                 origin_db_id = m["origin_calendar_id"]
-                cursor = await db.execute(
-                    """SELECT cc.google_calendar_id, ot.google_account_email
-                       FROM client_calendars cc
-                       JOIN oauth_tokens ot ON cc.oauth_token_id = ot.id
-                       WHERE cc.id = ?""",
-                    (origin_db_id,),
-                )
-                cal_row = await cursor.fetchone()
-                if not cal_row:
+                origin_event = None
+                try:
+                    from app.auth.google import get_valid_access_token as _get_token
+                    cursor = await db.execute(
+                        """SELECT cc.google_calendar_id, ot.google_account_email
+                           FROM client_calendars cc
+                           JOIN oauth_tokens ot ON cc.oauth_token_id = ot.id
+                           WHERE cc.id = ?""",
+                        (origin_db_id,),
+                    )
+                    cal_row = await cursor.fetchone()
+                    if cal_row:
+                        token = await _get_token(user_id, cal_row["google_account_email"])
+                        personal_client = GoogleCalendarClient(token)
+                        origin_event = personal_client.get_event(
+                            cal_row["google_calendar_id"], m["origin_event_id"],
+                        )
+                except Exception:
+                    origin_event = None
+                if not origin_event or origin_event.get("status") == "cancelled":
+                    # Origin gone — clean up the stale mapping so we stop retrying
+                    try:
+                        await handle_deleted_personal_event(
+                            user_id, m["origin_event_id"],
+                            recurring_event_id=m.get("origin_recurring_event_id"),
+                        )
+                        logger.info("Retry: cleaned up dead personal mapping %d (origin gone)", m["id"])
+                    except Exception as cleanup_err:
+                        # Last resort: just soft-delete the mapping directly
+                        await db.execute(
+                            "UPDATE event_mappings SET deleted_at = ? WHERE id = ?",
+                            (datetime.utcnow().isoformat(), m["id"]),
+                        )
+                        await db.commit()
+                        logger.info("Retry: force-deleted dead personal mapping %d: %s", m["id"], cleanup_err)
                     continue
-                token = await _get_token(user_id, cal_row["google_account_email"])
-                personal_client = GoogleCalendarClient(token)
-                origin_event = personal_client.get_event(
-                    cal_row["google_calendar_id"], m["origin_event_id"],
-                )
-                if origin_event and origin_event.get("status") != "cancelled":
+                if origin_event:
                     sa_main = None
                     cursor2 = await db.execute("SELECT sa_tier FROM users WHERE id = ?", (user_id,))
                     sa_row = await cursor2.fetchone()
@@ -763,7 +783,16 @@ async def _retry_missing_busy_blocks(
                         created += 1
             else:
                 event = main_client.get_event(main_calendar_id, m["main_event_id"])
-                if event and event.get("status") != "cancelled":
+                if not event or event.get("status") == "cancelled":
+                    # Main event gone — mark mapping as deleted
+                    await db.execute(
+                        "UPDATE event_mappings SET deleted_at = ? WHERE id = ?",
+                        (datetime.utcnow().isoformat(), m["id"]),
+                    )
+                    await db.commit()
+                    logger.info("Retry: cleaned up dead mapping %d (main event gone)", m["id"])
+                    continue
+                if event:
                     blocks = await sync_main_event_to_clients(
                         main_client=main_client,
                         event=event,
