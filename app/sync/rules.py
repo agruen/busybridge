@@ -389,32 +389,6 @@ async def sync_main_event_to_clients(
             client_calendar_client = GoogleCalendarClient(client_token)
 
             if existing_block:
-                is_event_recurring = "recurrence" in event
-                if is_event_recurring:
-                    # Delete and recreate recurring busy blocks to clear any
-                    # cancelled instances from prior sync cascades.
-                    try:
-                        client_calendar_client.delete_event(
-                            cal["google_calendar_id"],
-                            existing_block["busy_block_event_id"],
-                        )
-                    except Exception:
-                        pass
-                    try:
-                        replacement = client_calendar_client.create_event(
-                            cal["google_calendar_id"], busy_block,
-                        )
-                        await db.execute(
-                            "UPDATE busy_blocks SET busy_block_event_id = ? WHERE id = ?",
-                            (replacement["id"], existing_block["id"]),
-                        )
-                        await db.commit()
-                        created_blocks.append(replacement["id"])
-                        logger.info(f"Recreated recurring busy block {replacement['id']} on calendar {cal['id']}")
-                    except Exception as e:
-                        logger.error(f"Failed to recreate recurring busy block on calendar {cal['id']}: {e}")
-                    continue
-                # Non-recurring: update in place
                 try:
                     client_calendar_client.update_event(
                         cal["google_calendar_id"],
@@ -1099,26 +1073,16 @@ async def sync_personal_event_to_all(
 
         # Update main calendar busy block
         if main_event_id:
-            if is_recurring:
-                # Delete and recreate recurring events to clear cancelled instances
-                try:
-                    write_client.delete_event(main_calendar_id, main_event_id)
-                except Exception:
-                    pass
-                result = write_client.create_event(main_calendar_id, busy_block)
-                main_event_id = result["id"]
-                logger.info(f"Recreated recurring personal busy block {main_event_id} on main calendar")
-            else:
-                try:
-                    write_client.update_event(main_calendar_id, main_event_id, busy_block)
-                    logger.info(f"Updated personal busy block {main_event_id} on main calendar")
-                except HttpError as e:
-                    if e.resp.status in (404, 410):
-                        result = write_client.create_event(main_calendar_id, busy_block)
-                        main_event_id = result["id"]
-                    else:
-                        logger.error(f"Failed to update personal main event: {e}")
-                        raise
+            try:
+                write_client.update_event(main_calendar_id, main_event_id, busy_block)
+                logger.info(f"Updated personal busy block {main_event_id} on main calendar")
+            except HttpError as e:
+                if e.resp.status in (404, 410):
+                    result = write_client.create_event(main_calendar_id, busy_block)
+                    main_event_id = result["id"]
+                else:
+                    logger.error(f"Failed to update personal main event: {e}")
+                    raise
 
         # Update mapping
         await db.execute(
@@ -1206,18 +1170,13 @@ async def sync_personal_event_to_all(
             client_calendar_client = GoogleCalendarClient(client_token)
 
             if existing_block:
-                if is_recurring:
-                    # For recurring events, delete and recreate to clear any
-                    # cancelled instances that accumulated from prior syncs.
-                    # update_event only changes the parent — cancelled
-                    # instances are separate resources that persist.
-                    try:
-                        client_calendar_client.delete_event(
-                            cal["google_calendar_id"],
-                            existing_block["busy_block_event_id"],
-                        )
-                    except Exception:
-                        pass  # Already gone
+                try:
+                    client_calendar_client.update_event(
+                        cal["google_calendar_id"],
+                        existing_block["busy_block_event_id"],
+                        client_busy_block
+                    )
+                except Exception:
                     try:
                         replacement = client_calendar_client.create_event(
                             cal["google_calendar_id"], client_busy_block
@@ -1227,25 +1186,7 @@ async def sync_personal_event_to_all(
                             (replacement["id"], existing_block["id"])
                         )
                     except Exception as ce:
-                        logger.error(f"Failed to recreate recurring personal busy block on calendar {cal['id']}: {ce}")
-                else:
-                    try:
-                        client_calendar_client.update_event(
-                            cal["google_calendar_id"],
-                            existing_block["busy_block_event_id"],
-                            client_busy_block
-                        )
-                    except Exception:
-                        try:
-                            replacement = client_calendar_client.create_event(
-                                cal["google_calendar_id"], client_busy_block
-                            )
-                            await db.execute(
-                                "UPDATE busy_blocks SET busy_block_event_id = ? WHERE id = ?",
-                                (replacement["id"], existing_block["id"])
-                            )
-                        except Exception as ce:
-                            logger.error(f"Failed to replace personal busy block on calendar {cal['id']}: {ce}")
+                        logger.error(f"Failed to replace personal busy block on calendar {cal['id']}: {ce}")
             else:
                 result = client_calendar_client.create_event(
                     cal["google_calendar_id"], client_busy_block,
