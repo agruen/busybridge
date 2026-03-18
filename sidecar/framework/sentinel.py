@@ -36,22 +36,29 @@ class SentinelSpec:
     location: str = ""
     recurrence: list[str] = field(default_factory=list)
     multi_day_span: int = 0  # 0 = single day
+    calendar_index: int = 0  # 0 = first client cal, 1 = second
 
 
+# Sentinels spread across both client calendars so we test both directions:
+#   Calendar A (andrew.gruen) → main copy → busy block on Calendar B (agyttv)
+#   Calendar B (agyttv) → main copy → busy block on Calendar A (andrew.gruen)
 SENTINEL_SPECS = [
-    SentinelSpec(label="timed-1hr", days_out=10),
-    SentinelSpec(label="allday", all_day=True, days_out=12),
-    SentinelSpec(label="multiday", all_day=True, days_out=11, multi_day_span=3),
-    SentinelSpec(
-        label="with-metadata", days_out=10, duration_hours=1.5,
+    # On calendar A (andrew.gruen)
+    SentinelSpec(label="timed-1hr", calendar_index=0, days_out=10),
+    SentinelSpec(label="allday", calendar_index=0, all_day=True, days_out=12),
+    SentinelSpec(label="with-metadata", calendar_index=0, days_out=10, duration_hours=1.5,
         description="Sentinel test event with metadata for persistence testing",
         location="123 Test Street, Testville",
     ),
+    # On calendar B (agyttv)
+    SentinelSpec(label="timed-1hr-b", calendar_index=1, days_out=11),
+    SentinelSpec(label="allday-b", calendar_index=1, all_day=True, days_out=14),
+    SentinelSpec(label="multiday-b", calendar_index=1, all_day=True, days_out=13, multi_day_span=3),
+    SentinelSpec(label="short-30min-b", calendar_index=1, days_out=15, duration_hours=0.5),
     SentinelSpec(
-        label="recurring-weekly", days_out=9,
+        label="recurring-weekly-b", calendar_index=1, days_out=9,
         recurrence=["RRULE:FREQ=WEEKLY;COUNT=8"],
     ),
-    SentinelSpec(label="short-30min", days_out=13, duration_hours=0.5),
 ]
 
 
@@ -147,21 +154,21 @@ class SentinelManager:
         client_cals = [
             c for c in acct["calendars"] if c["calendar_type"] == "client"
         ]
-        if not client_cals:
-            logger.warning("Sentinel: no client calendars available")
+        if len(client_cals) < 2:
+            logger.warning("Sentinel: need 2 client calendars, have %d", len(client_cals))
             return
-
-        # Use first client calendar as origin
-        origin_cal = client_cals[0]
-        origin_client: CalendarTestClient = origin_cal["client"]
-        origin_cal_id: str = origin_cal["google_calendar_id"]
-        origin_db_id: int = origin_cal["calendar"]["id"]
 
         existing_labels = {s.spec_label for s in self._sentinels}
         created = 0
 
         for spec in SENTINEL_SPECS:
             try:
+                cal_idx = min(spec.calendar_index, len(client_cals) - 1)
+                origin_cal = client_cals[cal_idx]
+                origin_client: CalendarTestClient = origin_cal["client"]
+                origin_cal_id: str = origin_cal["google_calendar_id"]
+                origin_db_id: int = origin_cal["calendar"]["id"]
+
                 # Already have this sentinel?
                 if spec.label in existing_labels:
                     existing = next(s for s in self._sentinels if s.spec_label == spec.label)
