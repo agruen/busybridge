@@ -50,7 +50,7 @@ services:
       - TEST_LOG_DIR=/data/test-logs
       - DASHBOARD_PORT=8100
       - TZ=America/New_York
-      - SOAK_MIN_DELAY=10
+      - SOAK_MIN_DELAY=30
       - SOAK_MAX_DELAY=300
       - SYNC_WAIT_TIMEOUT=120
       - POLL_INTERVAL=3

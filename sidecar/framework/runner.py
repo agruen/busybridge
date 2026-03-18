@@ -13,9 +13,9 @@ logger = logging.getLogger(__name__)
 
 # Delay ranges per timing category (seconds)
 TIMING_DELAYS = {
-    TestTiming.QUICK: (10, 30),
-    TestTiming.NORMAL: (30, 120),
-    TestTiming.SLOW: (120, 300),
+    TestTiming.QUICK: (30, 60),
+    TestTiming.NORMAL: (60, 180),
+    TestTiming.SLOW: (180, 300),
 }
 
 
