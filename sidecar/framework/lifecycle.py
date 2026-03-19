@@ -488,10 +488,24 @@ class LifecycleManager:
             if found:
                 blocks = await self._ctx.db.get_busy_blocks(found[0]["id"])
                 details["db_busy_block_count"] = len(blocks)
+                # Main-origin: busy blocks on ALL client cals
+                # Client-origin: busy blocks on OTHER client cals (exclude origin)
+                if is_main_origin:
+                    expected_bb = len(client_cals)
+                else:
+                    expected_bb = len([
+                        c for c in client_cals
+                        if c["google_calendar_id"] != ev.origin_calendar_id
+                    ])
+                details["db_busy_block_expected"] = expected_bb
                 if len(blocks) == 0:
                     errors.append("No busy blocks in DB")
-                elif len(blocks) > 1:
-                    errors.append(f"Duplicate DB busy blocks: {len(blocks)}")
+                elif len(blocks) != expected_bb:
+                    errors.append(f"Wrong DB busy block count: {len(blocks)} (expected {expected_bb})")
+                # Check no two blocks on the same calendar (real duplicate)
+                bb_cal_ids = [b.get("client_calendar_id") for b in blocks]
+                if len(bb_cal_ids) != len(set(bb_cal_ids)):
+                    errors.append("Duplicate busy blocks on same calendar")
 
                 # Verify at least one DB busy block's Google event still exists
                 if blocks:
