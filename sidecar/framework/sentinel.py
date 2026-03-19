@@ -37,11 +37,13 @@ class SentinelSpec:
     recurrence: list[str] = field(default_factory=list)
     multi_day_span: int = 0  # 0 = single day
     calendar_index: int = 0  # 0 = first client cal, 1 = second
+    origin_type: str = "client"  # "client" or "main"
 
 
-# Sentinels spread across both client calendars so we test both directions:
-#   Calendar A (andrew.gruen) → main copy → busy block on Calendar B (agyttv)
-#   Calendar B (agyttv) → main copy → busy block on Calendar A (andrew.gruen)
+# Sentinels spread across both client calendars AND the main calendar:
+#   Calendar A (andrew.gruen) → main copy → busy block on Calendar B
+#   Calendar B (agyttv) → main copy → busy block on Calendar A
+#   Main calendar → busy blocks on BOTH client calendars
 SENTINEL_SPECS = [
     # On calendar A (andrew.gruen)
     SentinelSpec(label="timed-1hr", calendar_index=0, days_out=10),
@@ -59,6 +61,9 @@ SENTINEL_SPECS = [
         label="recurring-weekly-b", calendar_index=1, days_out=9,
         recurrence=["RRULE:FREQ=WEEKLY;COUNT=8"],
     ),
+    # On main calendar (busy blocks on ALL client calendars)
+    SentinelSpec(label="main-timed", origin_type="main", days_out=10, duration_hours=1.0),
+    SentinelSpec(label="main-allday", origin_type="main", all_day=True, days_out=14),
 ]
 
 
@@ -73,6 +78,7 @@ class SentinelState:
     created_at: str
     start_time: str
     end_time: str
+    origin_type: str = "client"  # "client" or "main"
     last_verified_at: Optional[str] = None
     last_status: Optional[str] = None
     consecutive_failures: int = 0
@@ -163,11 +169,17 @@ class SentinelManager:
 
         for spec in SENTINEL_SPECS:
             try:
-                cal_idx = min(spec.calendar_index, len(client_cals) - 1)
-                origin_cal = client_cals[cal_idx]
-                origin_client: CalendarTestClient = origin_cal["client"]
-                origin_cal_id: str = origin_cal["google_calendar_id"]
-                origin_db_id: int = origin_cal["calendar"]["id"]
+                # Pick the right calendar based on origin_type
+                if spec.origin_type == "main":
+                    origin_client = acct["main_client"]
+                    origin_cal_id = acct["main_calendar_id"]
+                    origin_db_id = 0  # No DB ID for main calendar
+                else:
+                    cal_idx = min(spec.calendar_index, len(client_cals) - 1)
+                    origin_cal = client_cals[cal_idx]
+                    origin_client = origin_cal["client"]
+                    origin_cal_id = origin_cal["google_calendar_id"]
+                    origin_db_id = origin_cal["calendar"]["id"]
 
                 # Already have this sentinel?
                 if spec.label in existing_labels:
@@ -202,12 +214,13 @@ class SentinelManager:
                     origin_calendar_id=origin_cal_id,
                     origin_event_id=event["id"],
                     client_calendar_db_id=origin_db_id,
+                    origin_type=spec.origin_type,
                     created_at=datetime.now(timezone.utc).isoformat(),
                     start_time=start,
                     end_time=end,
                 ))
                 created += 1
-                logger.info("Sentinel: created %s (%s)", spec.label, event["id"])
+                logger.info("Sentinel: created %s (%s) on %s", spec.label, event["id"], origin_cal_id[:25])
             except Exception as e:
                 logger.warning("Sentinel: failed to reconcile %s: %s", spec.label, e)
 
@@ -285,18 +298,26 @@ class SentinelManager:
 
         acct = self._ctx.accounts[0]
 
+        is_main_origin = sentinel.origin_type == "main"
+
         try:
             # 1. Origin event still exists?
-            origin_client = self._find_client(sentinel.origin_calendar_id)
+            if is_main_origin:
+                origin_client = acct.get("main_client")
+                origin_cal = acct.get("main_calendar_id")
+            else:
+                origin_client = self._find_client(sentinel.origin_calendar_id)
+                origin_cal = sentinel.origin_calendar_id
+
             if not origin_client:
                 errors.append(f"No client for origin calendar {sentinel.origin_calendar_id[:20]}")
             else:
                 origin_event = await _in_thread(
                     origin_client.get_event,
-                    sentinel.origin_calendar_id, sentinel.origin_event_id,
+                    origin_cal, sentinel.origin_event_id,
                 )
                 if not origin_event:
-                    errors.append("Origin event missing from client calendar")
+                    errors.append("Origin event missing")
                 else:
                     details["origin_status"] = origin_event.get("status")
 
@@ -319,42 +340,36 @@ class SentinelManager:
                 blocks = await self._ctx.db.get_busy_blocks(found[0]["id"])
                 details["db_busy_blocks"] = len(blocks)
 
-            # 3. Main calendar copy exists?
-            # Fetch by the ID stored in the DB mapping rather than searching
-            # by summary — summary search can find orphaned duplicates from
-            # prior cleanup cycles, causing false mismatches.
-            main_client = acct.get("main_client")
-            main_cal_id = acct.get("main_calendar_id")
-            main_event = None
+            # 3. Main calendar copy (client-origin only — main-origin IS the main event)
+            if not is_main_origin:
+                main_client = acct.get("main_client")
+                main_cal_id = acct.get("main_calendar_id")
 
-            if main_client and main_cal_id:
-                if found and db_main_id:
-                    main_event = await _in_thread(
-                        main_client.get_event,
-                        main_cal_id, db_main_id,
-                    )
-                if not main_event:
-                    errors.append("Main calendar copy missing")
+                if main_client and main_cal_id:
+                    main_event = None
+                    if found and db_main_id:
+                        main_event = await _in_thread(
+                            main_client.get_event,
+                            main_cal_id, db_main_id,
+                        )
+                    if not main_event:
+                        errors.append("Main calendar copy missing")
+                    else:
+                        details["main_event_id"] = main_event["id"]
+                        if spec and spec.description:
+                            desc = main_event.get("description", "")
+                            if spec.description not in desc:
+                                errors.append("Description not preserved on main copy")
+                        if spec and spec.location:
+                            loc = main_event.get("location", "")
+                            if spec.location not in loc:
+                                errors.append("Location not preserved on main copy")
                 else:
-                    details["main_event_id"] = main_event["id"]
+                    errors.append("No main calendar client available")
 
-                    # Check metadata preservation
-                    if spec and spec.description:
-                        desc = main_event.get("description", "")
-                        if spec.description not in desc:
-                            errors.append("Description not preserved on main copy")
-
-                    if spec and spec.location:
-                        loc = main_event.get("location", "")
-                        if spec.location not in loc:
-                            errors.append("Location not preserved on main copy")
-            else:
-                errors.append("No main calendar client available")
-
-            # 4. Busy blocks on other client calendars
-            #    Use DB to find the busy_block_event_id, then get_event to
-            #    verify it exists on Google (reliable, no search index lag).
-            #    Also use find_by_origin to check for duplicates.
+            # 4. Busy blocks on client calendars
+            #    Client-origin: busy blocks on OTHER client calendars
+            #    Main-origin: busy blocks on ALL client calendars
             if found:
                 blocks = await self._ctx.db.get_busy_blocks(found[0]["id"])
                 details["db_busy_blocks"] = len(blocks)
@@ -363,7 +378,6 @@ class SentinelManager:
                 for block in blocks:
                     bb_eid = block.get("busy_block_event_id", "")
                     bb_cal_id_db = block.get("client_calendar_id")
-                    # Find the calendar info for this busy block
                     bb_cal_info = next(
                         (c for c in acct["calendars"]
                          if c["calendar"]["id"] == bb_cal_id_db),
@@ -374,13 +388,11 @@ class SentinelManager:
                     bb_client: CalendarTestClient = bb_cal_info["client"]
                     bb_cal_id = bb_cal_info["google_calendar_id"]
                     try:
-                        # Existence check via direct ID lookup (always consistent)
                         bb_event = await _in_thread(
                             bb_client.get_event, bb_cal_id, bb_eid,
                         )
                         if not bb_event:
                             errors.append(f"Busy block missing from Google on {bb_cal_id[:25]}")
-                        # Duplicate check via metadata filter (not fulltext search)
                         dupes = await _in_thread(
                             bb_client.find_by_origin,
                             bb_cal_id,
@@ -395,7 +407,6 @@ class SentinelManager:
                     except Exception as e:
                         errors.append(f"Error checking busy block on {bb_cal_id[:25]}: {e}")
             else:
-                # No mapping found — check was already reported above
                 pass
 
         except Exception as e:

@@ -57,6 +57,7 @@ class LifecycleSpec:
     multi_day_span: int = 0
     description: str = ""
     location: str = ""
+    origin_type: str = "client"  # "client" or "main"
 
 
 # Portfolio of 18 events spread across two calendars and multiple days.
@@ -99,6 +100,9 @@ LIFECYCLE_SPECS = [
     LifecycleSpec(label="allday-b",       calendar_index=1, all_day=True, days_out=19),
     LifecycleSpec(label="multiday-a",     calendar_index=0, all_day=True, days_out=20, multi_day_span=3),
     LifecycleSpec(label="multiday-b",     calendar_index=1, all_day=True, days_out=24, multi_day_span=2),
+    # -- Main-origin events: busy blocks on ALL client calendars --
+    LifecycleSpec(label="main-meeting",  origin_type="main", days_out=8, hour=10, minute=0, duration_hours=1.0),
+    LifecycleSpec(label="main-allday",   origin_type="main", all_day=True, days_out=21),
 ]
 
 
@@ -119,6 +123,7 @@ class LifecycleEventState:
     start_time: str
     end_time: str
     all_day: bool = False
+    origin_type: str = "client"  # "client" or "main"
     mutation_count: int = 0
     last_mutated_at: Optional[str] = None
     last_mutation_type: Optional[str] = None
@@ -273,9 +278,13 @@ class LifecycleManager:
                         e for e in self._active_events()
                         if e.spec_label == spec.label
                     )
-                    cal_info = client_cals[min(existing.calendar_index, len(client_cals) - 1)]
+                    if existing.origin_type == "main":
+                        check_client, _ = self._get_main()
+                    else:
+                        cal_info = client_cals[min(existing.calendar_index, len(client_cals) - 1)]
+                        check_client = cal_info["client"]
                     event = await _in_thread(
-                        cal_info["client"].get_event,
+                        check_client.get_event,
                         existing.origin_calendar_id,
                         existing.origin_event_id,
                     )
@@ -305,11 +314,18 @@ class LifecycleManager:
         self, spec: LifecycleSpec, client_cals: list[dict],
     ) -> LifecycleEventState:
         """Create a single portfolio event on the appropriate calendar."""
-        cal_idx = min(spec.calendar_index, len(client_cals) - 1)
-        cal_info = client_cals[cal_idx]
-        client: CalendarTestClient = cal_info["client"]
-        cal_id: str = cal_info["google_calendar_id"]
-        db_id: int = cal_info["calendar"]["id"]
+        if spec.origin_type == "main":
+            main_client, main_cal_id = self._get_main()
+            client = main_client
+            cal_id = main_cal_id
+            cal_idx = -1
+            db_id = 0
+        else:
+            cal_idx = min(spec.calendar_index, len(client_cals) - 1)
+            cal_info = client_cals[cal_idx]
+            client = cal_info["client"]
+            cal_id = cal_info["google_calendar_id"]
+            db_id = cal_info["calendar"]["id"]
 
         short_id = uuid.uuid4().hex[:8]
         summary = f"{LIFECYCLE_PREFIX} {spec.label}-{short_id}"
@@ -337,6 +353,7 @@ class LifecycleManager:
             start_time=start,
             end_time=end,
             all_day=spec.all_day,
+            origin_type=spec.origin_type,
         )
         self._portfolio.events.append(state)
         logger.info("Lifecycle: created %s (%s) on %s",
@@ -408,10 +425,15 @@ class LifecycleManager:
         client_cals = self._get_client_cals()
         main_client, main_cal_id = self._get_main()
 
+        is_main_origin = ev.origin_type == "main"
+
         try:
             # Find the calendar client for this event's origin
-            cal_idx = min(ev.calendar_index, len(client_cals) - 1)
-            origin_client: CalendarTestClient = client_cals[cal_idx]["client"]
+            if is_main_origin:
+                origin_client = main_client
+            else:
+                cal_idx = min(ev.calendar_index, len(client_cals) - 1)
+                origin_client = client_cals[cal_idx]["client"]
 
             # 1. Origin event still exists?
             origin_event = await _in_thread(
@@ -436,10 +458,8 @@ class LifecycleManager:
             elif len(found) > 1:
                 errors.append(f"Duplicate DB mappings: {len(found)}")
 
-            # 3. Main calendar copy — verify via get_event (reliable) +
-            #    find_by_origin for duplicate detection (metadata filter,
-            #    not fulltext search — no search index lag).
-            if found:
+            # 3. Main calendar copy (client-origin only — main-origin IS the main event)
+            if not is_main_origin and found:
                 main_eid = found[0].get("main_event_id")
                 if main_eid:
                     main_event = await _in_thread(
@@ -534,7 +554,10 @@ class LifecycleManager:
             main_exists = 0
             main_missing = 0
             main_dupes = 0
-            for ev in active:
+            # Only check client-origin events for main copies
+            # (main-origin events ARE the main event — no separate copy)
+            client_origin_active = [e for e in active if e.origin_type != "main"]
+            for ev in client_origin_active:
                 ev_mappings = [
                     m for m in (await self._ctx.db.get_event_mappings(acct["user_id"]))
                     if m.get("origin_event_id") == ev.origin_event_id
@@ -560,7 +583,7 @@ class LifecycleManager:
                 else:
                     main_missing += 1
 
-            expected_main = len(active)
+            expected_main = len(client_origin_active)
             details["main_expected"] = expected_main
             details["main_exists"] = main_exists
             details["main_missing"] = main_missing
