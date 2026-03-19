@@ -358,6 +358,27 @@ async def sync_main_event_to_clients(
     )
     client_calendars = await cursor.fetchall()
 
+    # Check if times actually changed — skip busy block updates if they haven't.
+    # Busy blocks only carry time data, so unchanged times = unchanged busy block.
+    # This avoids hundreds of unnecessary API calls per sync cycle.
+    #
+    # Only compare for main-origin events where `mapping` holds the PRE-update
+    # times.  For client-origin events, `existing_origin` already has the
+    # post-update times (set by sync_client_event_to_main), so we can't tell
+    # if times changed — always update those.
+    times_changed = True
+    if mapping and not existing_origin:
+        try:
+            prev_start = mapping["event_start"] or ""
+            prev_end = mapping["event_end"] or ""
+            times_changed = (
+                prev_start != event_start
+                or prev_end != event_end
+                or bool(mapping["is_all_day"]) != is_all_day
+            )
+        except (KeyError, TypeError):
+            times_changed = True
+
     # Create busy block data
     bb_origin_props = {
         "bb_origin_id": event.get("id", ""),
@@ -389,6 +410,8 @@ async def sync_main_event_to_clients(
             client_calendar_client = GoogleCalendarClient(client_token)
 
             if existing_block:
+                if not times_changed:
+                    continue  # Busy block is already correct — skip the API call
                 try:
                     client_calendar_client.update_event(
                         cal["google_calendar_id"],
@@ -1068,11 +1091,23 @@ async def sync_personal_event_to_all(
     if "recurrence" in event:
         busy_block["recurrence"] = event["recurrence"]
 
+    # Check if times changed — skip updates if they haven't
+    personal_times_changed = True
+    if existing:
+        try:
+            personal_times_changed = (
+                (existing["event_start"] or "") != event_start
+                or (existing["event_end"] or "") != event_end
+                or bool(existing["is_all_day"]) != is_all_day
+            )
+        except (KeyError, TypeError):
+            personal_times_changed = True
+
     if existing:
         main_event_id = existing["main_event_id"]
 
         # Update main calendar busy block
-        if main_event_id:
+        if main_event_id and personal_times_changed:
             try:
                 write_client.update_event(main_calendar_id, main_event_id, busy_block)
                 logger.info(f"Updated personal busy block {main_event_id} on main calendar")
@@ -1084,16 +1119,17 @@ async def sync_personal_event_to_all(
                     logger.error(f"Failed to update personal main event: {e}")
                     raise
 
-        # Update mapping
-        await db.execute(
-            """UPDATE event_mappings SET
-               main_event_id = ?, event_start = ?, event_end = ?,
-               is_all_day = ?, is_recurring = ?, updated_at = ?
-               WHERE id = ?""",
-            (main_event_id, event_start, event_end, is_all_day, is_recurring,
-             datetime.utcnow().isoformat(), existing["id"])
-        )
-        await db.commit()
+        # Update mapping (only if times or main_event_id changed)
+        if personal_times_changed or main_event_id != existing["main_event_id"]:
+            await db.execute(
+                """UPDATE event_mappings SET
+                   main_event_id = ?, event_start = ?, event_end = ?,
+                   is_all_day = ?, is_recurring = ?, updated_at = ?
+                   WHERE id = ?""",
+                (main_event_id, event_start, event_end, is_all_day, is_recurring,
+                 datetime.utcnow().isoformat(), existing["id"])
+            )
+            await db.commit()
         mapping_id = existing["id"]
 
     else:
@@ -1170,6 +1206,8 @@ async def sync_personal_event_to_all(
             client_calendar_client = GoogleCalendarClient(client_token)
 
             if existing_block:
+                if not personal_times_changed:
+                    continue  # Times unchanged — busy block already correct
                 try:
                     client_calendar_client.update_event(
                         cal["google_calendar_id"],
