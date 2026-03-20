@@ -43,11 +43,11 @@ async def sync_client_event_to_main(
     # Skip events we created (busy blocks)
     if client.is_our_event(event):
         logger.debug(f"Skipping our own event: {event.get('id')}")
-        return None
+        return None, False
 
     # Skip cancelled events (handle deletion separately)
     if event.get("status") == "cancelled":
-        return None
+        return None, False
 
     event_id = event["id"]
     recurring_event_id = event.get("recurringEventId")
@@ -114,6 +114,13 @@ async def sync_client_event_to_main(
         # Update existing mapping
         main_event_id = existing["main_event_id"]
 
+        # Track whether times changed (used by caller to skip busy block updates)
+        _times_changed = (
+            (existing["event_start"] or "") != event_start
+            or (existing["event_end"] or "") != event_end
+            or bool(existing["is_all_day"]) != is_all_day
+        )
+
         if main_event_id:
             try:
                 write_client.update_event(main_calendar_id, main_event_id, main_event_data)
@@ -151,7 +158,7 @@ async def sync_client_event_to_main(
         )
         await db.commit()
 
-        return main_event_id
+        return main_event_id, _times_changed
 
     else:
         # If this is a modified instance of a recurring series we already
@@ -218,7 +225,7 @@ async def sync_client_event_to_main(
             logger.info(f"Created main event {main_event_id} from client event {event_id}")
         except Exception as e:
             logger.error(f"Failed to create main event: {e}")
-            return None
+            return None, False
 
         # Track RSVP status for events with attendees (invites).
         # Use the live client RSVP (e.g. already "accepted") so we don't
@@ -251,7 +258,7 @@ async def sync_client_event_to_main(
             except Exception:
                 pass  # Non-critical — origin_id is the primary dedup key
 
-        return main_event_id
+        return main_event_id, True  # New event — times always "changed"
 
 
 async def sync_main_event_to_clients(
@@ -260,6 +267,8 @@ async def sync_main_event_to_clients(
     user_id: int,
     main_calendar_id: str,
     user_email: str,
+    *,
+    skip_busy_block_update: bool = False,
 ) -> list[str]:
     """
     Sync a main calendar event to all client calendars as busy blocks.
@@ -362,12 +371,13 @@ async def sync_main_event_to_clients(
     # Busy blocks only carry time data, so unchanged times = unchanged busy block.
     # This avoids hundreds of unnecessary API calls per sync cycle.
     #
-    # Only compare for main-origin events where `mapping` holds the PRE-update
-    # times.  For client-origin events, `existing_origin` already has the
-    # post-update times (set by sync_client_event_to_main), so we can't tell
-    # if times changed — always update those.
+    # For client-origin events, the caller (sync_client_event_to_main) tells us
+    # via skip_busy_block_update.  For main-origin events, compare against the
+    # pre-update mapping values.
     times_changed = True
-    if mapping and not existing_origin:
+    if skip_busy_block_update:
+        times_changed = False
+    elif mapping and not existing_origin:
         try:
             prev_start = mapping["event_start"] or ""
             prev_end = mapping["event_end"] or ""

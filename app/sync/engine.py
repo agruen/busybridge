@@ -379,7 +379,7 @@ async def _sync_client_calendar(
                         continue
 
                     # Sync event to main
-                    main_event_id = await sync_client_event_to_main(
+                    main_event_id, client_times_changed = await sync_client_event_to_main(
                         client=client,
                         main_client=main_client,
                         event=event,
@@ -403,6 +403,7 @@ async def _sync_client_calendar(
                                 user_id=user_id,
                                 main_calendar_id=main_calendar_id,
                                 user_email=user_email,
+                                skip_busy_block_update=not client_times_changed,
                             )
                         synced_count += 1
                     processed_ids.append(event["id"])
