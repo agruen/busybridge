@@ -377,7 +377,14 @@ async def sync_main_event_to_clients(
     times_changed = True
     if skip_busy_block_update:
         times_changed = False
-    elif mapping and not existing_origin:
+    else:
+        # Compare against whichever mapping we have.
+        # For main-origin: `mapping` has pre-update times.
+        # For client-origin via main sync: `existing_origin` has post-update
+        #   times which match the event — comparison yields False (no change).
+        # For client-origin via client sync: caller passes skip_busy_block_update.
+        prev = mapping or existing_origin
+        if prev:
         try:
             prev_start = mapping["event_start"] or ""
             prev_end = mapping["event_end"] or ""
