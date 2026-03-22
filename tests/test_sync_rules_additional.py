@@ -85,7 +85,7 @@ async def test_sync_client_event_to_main_all_day_and_update_success(test_db):
         "organizer": {"email": "client@example.com"},
     }
 
-    first_main_id = await sync_client_event_to_main(
+    first_main_id, first_changed = await sync_client_event_to_main(
         client=client,
         main_client=main_client,
         event=all_day_event,
@@ -95,8 +95,9 @@ async def test_sync_client_event_to_main_all_day_and_update_success(test_db):
         client_email="client@example.com",
     )
     assert first_main_id == "main-created"
+    assert first_changed is True  # New event
 
-    second_main_id = await sync_client_event_to_main(
+    second_main_id, second_changed = await sync_client_event_to_main(
         client=client,
         main_client=main_client,
         event=all_day_event,
@@ -106,6 +107,7 @@ async def test_sync_client_event_to_main_all_day_and_update_success(test_db):
         client_email="client@example.com",
     )
     assert second_main_id == "main-created"
+    assert second_changed is False  # Same times
     assert main_client.updated == ["main-created"]
 
     cursor = await db.execute(

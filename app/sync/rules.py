@@ -32,11 +32,13 @@ async def sync_client_event_to_main(
     color_id: Optional[str] = None,
     main_email: Optional[str] = None,
     sa_main_client: Optional[GoogleCalendarClient] = None,
-) -> Optional[str]:
+) -> tuple[Optional[str], bool]:
     """
     Sync a client calendar event to the main calendar.
 
-    Returns the main event ID if created/updated.
+    Returns (main_event_id, times_changed) — the main event ID if
+    created/updated, and whether the event times changed compared
+    to the previously stored mapping.
     """
     db = await get_database()
 
@@ -261,6 +263,48 @@ async def sync_client_event_to_main(
         return main_event_id, True  # New event — times always "changed"
 
 
+def _propagate_cancelled_instances(
+    source_client: GoogleCalendarClient,
+    source_calendar_id: str,
+    source_recurring_id: str,
+    target_client: GoogleCalendarClient,
+    target_calendar_id: str,
+    target_recurring_id: str,
+) -> int:
+    """Cancel instances on a target recurring event that are cancelled on the source.
+
+    After creating a recurring busy block that mirrors a source recurring
+    event, the busy block blindly expands all instances — including ones
+    that were cancelled on the source.  This function queries the source
+    for cancelled instances and cancels the matching instances on the target.
+
+    Returns the number of instances cancelled.
+    """
+    cancelled = source_client.list_cancelled_instances(
+        source_calendar_id, source_recurring_id
+    )
+    if not cancelled:
+        return 0
+
+    count = 0
+    for inst in cancelled:
+        original_start = inst.get("originalStartTime")
+        if not original_start:
+            continue
+        try:
+            instance_id = derive_instance_event_id(target_recurring_id, original_start)
+            target_client.delete_event(target_calendar_id, instance_id)
+            count += 1
+        except Exception:
+            pass  # Instance may not exist yet or already cancelled
+    if count:
+        logger.info(
+            f"Cancelled {count} instance(s) on busy block {target_recurring_id[:25]} "
+            f"to match source {source_recurring_id[:25]}"
+        )
+    return count
+
+
 async def sync_main_event_to_clients(
     main_client: GoogleCalendarClient,
     event: dict,
@@ -374,6 +418,11 @@ async def sync_main_event_to_clients(
     # For client-origin events, the caller (sync_client_event_to_main) tells us
     # via skip_busy_block_update.  For main-origin events, compare against the
     # pre-update mapping values.
+    #
+    # ORDERING NOTE: For main-origin events, `mapping` holds the row fetched
+    # BEFORE the UPDATE at line ~390.  The comparison works because `mapping`
+    # still has the old times.  Do NOT re-fetch `mapping` between the UPDATE
+    # and this comparison — doing so would make old == new, defeating the skip.
     times_changed = True
     if skip_busy_block_update:
         times_changed = False
@@ -385,16 +434,16 @@ async def sync_main_event_to_clients(
         # For client-origin via client sync: caller passes skip_busy_block_update.
         prev = mapping or existing_origin
         if prev:
-        try:
-            prev_start = mapping["event_start"] or ""
-            prev_end = mapping["event_end"] or ""
-            times_changed = (
-                prev_start != event_start
-                or prev_end != event_end
-                or bool(mapping["is_all_day"]) != is_all_day
-            )
-        except (KeyError, TypeError):
-            times_changed = True
+            try:
+                prev_start = prev["event_start"] or ""
+                prev_end = prev["event_end"] or ""
+                times_changed = (
+                    prev_start != event_start
+                    or prev_end != event_end
+                    or bool(prev["is_all_day"]) != is_all_day
+                )
+            except (KeyError, TypeError):
+                times_changed = True
 
     # Create busy block data
     bb_origin_props = {
@@ -456,6 +505,15 @@ async def sync_main_event_to_clients(
                             )
                         except Exception:
                             pass
+                        if "recurrence" in event:
+                            _propagate_cancelled_instances(
+                                source_client=main_client,
+                                source_calendar_id=main_calendar_id,
+                                source_recurring_id=event_id,
+                                target_client=client_calendar_client,
+                                target_calendar_id=cal["google_calendar_id"],
+                                target_recurring_id=replacement["id"],
+                            )
                     except Exception as create_error:
                         logger.error(f"Failed to create replacement busy block on calendar {cal['id']}: {create_error}")
                     continue
@@ -473,6 +531,19 @@ async def sync_main_event_to_clients(
 
                 created_blocks.append(block_id)
                 logger.info(f"Created busy block {block_id} on calendar {cal['id']}")
+
+                # For recurring events, cancel instances that are cancelled
+                # on the main calendar so the busy block doesn't show phantom
+                # occurrences.
+                if "recurrence" in event:
+                    _propagate_cancelled_instances(
+                        source_client=main_client,
+                        source_calendar_id=main_calendar_id,
+                        source_recurring_id=event_id,
+                        target_client=client_calendar_client,
+                        target_calendar_id=cal["google_calendar_id"],
+                        target_recurring_id=block_id,
+                    )
 
         except Exception as e:
             logger.error(f"Failed to create busy block on calendar {cal['id']}: {e}")
@@ -1182,6 +1253,24 @@ async def sync_personal_event_to_all(
             except Exception:
                 pass  # Non-critical
 
+        # For recurring personal events, cancel instances on the main-calendar
+        # busy block that are cancelled on the personal calendar.
+        if "recurrence" in event and main_event_id:
+            cursor = await db.execute(
+                "SELECT google_calendar_id FROM client_calendars WHERE id = ?",
+                (personal_calendar_id,)
+            )
+            pcal_row = await cursor.fetchone()
+            if pcal_row:
+                _propagate_cancelled_instances(
+                    source_client=personal_client,
+                    source_calendar_id=pcal_row["google_calendar_id"],
+                    source_recurring_id=event_id,
+                    target_client=write_client,
+                    target_calendar_id=main_calendar_id,
+                    target_recurring_id=main_event_id,
+                )
+
     # Create/update busy blocks on all client calendars
     cursor = await db.execute(
         """SELECT cc.*, ot.google_account_email
@@ -1240,6 +1329,15 @@ async def sync_personal_event_to_all(
                             "UPDATE busy_blocks SET busy_block_event_id = ? WHERE id = ?",
                             (replacement["id"], existing_block["id"])
                         )
+                        if "recurrence" in event and main_event_id:
+                            _propagate_cancelled_instances(
+                                source_client=write_client,
+                                source_calendar_id=main_calendar_id,
+                                source_recurring_id=main_event_id,
+                                target_client=client_calendar_client,
+                                target_calendar_id=cal["google_calendar_id"],
+                                target_recurring_id=replacement["id"],
+                            )
                     except Exception as ce:
                         logger.error(f"Failed to replace personal busy block on calendar {cal['id']}: {ce}")
             else:
@@ -1252,6 +1350,16 @@ async def sync_personal_event_to_all(
                        VALUES (?, ?, ?)""",
                     (mapping_id, cal["id"], block_id)
                 )
+
+                if "recurrence" in event and main_event_id:
+                    _propagate_cancelled_instances(
+                        source_client=write_client,
+                        source_calendar_id=main_calendar_id,
+                        source_recurring_id=main_event_id,
+                        target_client=client_calendar_client,
+                        target_calendar_id=cal["google_calendar_id"],
+                        target_recurring_id=block_id,
+                    )
 
         except Exception as e:
             logger.error(f"Failed to sync personal busy block to calendar {cal['id']}: {e}")

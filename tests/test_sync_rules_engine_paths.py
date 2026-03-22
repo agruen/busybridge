@@ -63,33 +63,29 @@ async def test_sync_client_event_to_main_skip_paths(test_db):
     client = SimpleNamespace(is_our_event=lambda _event: True)
     main_client = SimpleNamespace()
     event = {"id": "evt-1", "start": {"dateTime": "2026-01-01T10:00:00Z"}, "end": {"dateTime": "2026-01-01T11:00:00Z"}}
-    assert (
-        await sync_client_event_to_main(
-            client=client,
-            main_client=main_client,
-            event=event,
-            user_id=1,
-            client_calendar_id=1,
-            main_calendar_id="main",
-            client_email="user@example.com",
-        )
-        is None
+    result = await sync_client_event_to_main(
+        client=client,
+        main_client=main_client,
+        event=event,
+        user_id=1,
+        client_calendar_id=1,
+        main_calendar_id="main",
+        client_email="user@example.com",
     )
+    assert result == (None, False)
 
     client = SimpleNamespace(is_our_event=lambda _event: False)
     cancelled = {"id": "evt-2", "status": "cancelled"}
-    assert (
-        await sync_client_event_to_main(
-            client=client,
-            main_client=main_client,
-            event=cancelled,
-            user_id=1,
-            client_calendar_id=1,
-            main_calendar_id="main",
-            client_email="user@example.com",
-        )
-        is None
+    result = await sync_client_event_to_main(
+        client=client,
+        main_client=main_client,
+        event=cancelled,
+        user_id=1,
+        client_calendar_id=1,
+        main_calendar_id="main",
+        client_email="user@example.com",
     )
+    assert result == (None, False)
 
 
 @pytest.mark.asyncio
@@ -139,7 +135,7 @@ async def test_sync_client_event_to_main_create_update_and_failure_paths(test_db
         "organizer": {"email": "user@example.com"},
     }
 
-    created_main_id = await sync_client_event_to_main(
+    created_main_id, created_times_changed = await sync_client_event_to_main(
         client=client,
         main_client=main_client,
         event=event,
@@ -149,6 +145,7 @@ async def test_sync_client_event_to_main_create_update_and_failure_paths(test_db
         client_email="user@example.com",
     )
     assert created_main_id == "main-1"
+    assert created_times_changed is True  # New event — always changed
 
     cursor = await db.execute(
         "SELECT main_event_id, user_can_edit FROM event_mappings WHERE user_id = ? AND origin_event_id = ?",
@@ -160,7 +157,7 @@ async def test_sync_client_event_to_main_create_update_and_failure_paths(test_db
 
     # Existing mapping update path: 404 triggers replacement creation.
     main_client.fail_update_404 = True
-    updated_id = await sync_client_event_to_main(
+    updated_id, updated_times_changed = await sync_client_event_to_main(
         client=client,
         main_client=main_client,
         event={**event, "summary": "Changed"},
@@ -194,7 +191,7 @@ async def test_sync_client_event_to_main_create_update_and_failure_paths(test_db
 
     # New event with create failure should return None and not create mapping.
     main_client.fail_create = True
-    failed = await sync_client_event_to_main(
+    failed_id, failed_changed = await sync_client_event_to_main(
         client=client,
         main_client=main_client,
         event={**event, "id": "origin-fail"},
@@ -203,7 +200,8 @@ async def test_sync_client_event_to_main_create_update_and_failure_paths(test_db
         main_calendar_id="main-cal",
         client_email="user@example.com",
     )
-    assert failed is None
+    assert failed_id is None
+    assert failed_changed is False
     cursor = await db.execute(
         "SELECT COUNT(*) FROM event_mappings WHERE user_id = ? AND origin_event_id = ?",
         (user_id, "origin-fail"),
@@ -324,19 +322,6 @@ async def test_sync_main_event_to_clients_skip_and_existing_update_paths(test_db
     monkeypatch.setattr("app.auth.google.get_valid_access_token", fake_get_valid_access_token)
     monkeypatch.setattr("app.sync.rules.GoogleCalendarClient", FakeGoogleClient)
 
-    # Skip own event.
-    main_client = SimpleNamespace(is_our_event=lambda _event: True)
-    assert (
-        await sync_main_event_to_clients(
-            main_client=main_client,
-            event={"id": "main-1", "status": "confirmed", "start": {"dateTime": "x"}, "end": {"dateTime": "y"}},
-            user_id=user_id,
-            main_calendar_id="main",
-            user_email="u@example.com",
-        )
-        == []
-    )
-
     # Skip non-blocking event.
     main_client = SimpleNamespace(is_our_event=lambda _event: False)
     assert (
@@ -356,14 +341,15 @@ async def test_sync_main_event_to_clients_skip_and_existing_update_paths(test_db
         == []
     )
 
-    # Existing mapping + existing busy block update path.
+    # Existing mapping + existing busy block update path (times unchanged → skip).
     db = await get_database()
     cursor = await db.execute(
         """INSERT INTO event_mappings
-           (user_id, origin_type, origin_event_id, main_event_id, is_recurring, user_can_edit)
-           VALUES (?, 'main', ?, ?, FALSE, TRUE)
+           (user_id, origin_type, origin_event_id, main_event_id,
+            event_start, event_end, is_all_day, is_recurring, user_can_edit)
+           VALUES (?, 'main', ?, ?, ?, ?, FALSE, FALSE, TRUE)
            RETURNING id""",
-        (user_id, "main-3", "main-3"),
+        (user_id, "main-3", "main-3", "2026-01-01T10:00:00Z", "2026-01-01T11:00:00Z"),
     )
     mapping_id = (await cursor.fetchone())["id"]
     await db.execute(

@@ -138,6 +138,9 @@ async def test_trigger_sync_for_calendar_token_expired_success_paths(test_db, mo
                 "end": {"dateTime": "2026-01-01T11:00:00Z"},
             }
 
+        def is_our_event(self, _event: dict) -> bool:
+            return False
+
     deleted_calls: list[str] = []
     client_to_main_calls: list[str] = []
     main_to_clients_calls: list[str] = []
@@ -147,7 +150,7 @@ async def test_trigger_sync_for_calendar_token_expired_success_paths(test_db, mo
 
     async def fake_sync_client_event_to_main(**kwargs):
         client_to_main_calls.append(kwargs["event"]["id"])
-        return "main-event-1"
+        return "main-event-1", True
 
     async def fake_sync_main_event_to_clients(**kwargs):
         main_to_clients_calls.append(kwargs["event"]["id"])
@@ -323,6 +326,9 @@ async def test_trigger_sync_for_main_calendar_state_creation_token_expiry_and_su
     class FakeGoogleCalendarClient:
         def __init__(self, _token: str):
             pass
+
+        def is_our_event(self, _event: dict) -> bool:
+            return False
 
         def list_events(self, _calendar_id: str, sync_token: str | None = None):
             state["list_calls"] += 1
@@ -684,7 +690,12 @@ async def test_cleanup_managed_events_for_user_uses_db_and_prefix_sweep(test_db,
             deleted_calls.append((calendar_id, event_id))
             return True
 
-        def search_events(self, calendar_id: str, query: str):
+        def batch_delete_events(self, calendar_id: str, event_ids: list[str], **_kw):
+            for eid in event_ids:
+                deleted_calls.append((calendar_id, eid))
+            return len(event_ids), []
+
+        def search_events(self, calendar_id: str, query: str, **_kwargs):
             assert query == "[BusyBridge]"
             if self.token == "managed-home@example.com" and calendar_id == "managed-main-cal":
                 return [
@@ -766,7 +777,10 @@ async def test_cleanup_managed_events_for_user_without_prefix_runs_db_cleanup(te
         def delete_event(self, _calendar_id: str, _event_id: str):
             return True
 
-        def search_events(self, _calendar_id: str, _query: str):
+        def batch_delete_events(self, _calendar_id: str, event_ids: list[str], **_kw):
+            return len(event_ids), []
+
+        def search_events(self, _calendar_id: str, _query: str, **_kwargs):
             raise AssertionError("prefix sweep should be skipped when prefix is empty")
 
     monkeypatch.setattr("app.sync.engine.get_settings", lambda: type("S", (), {"managed_event_prefix": ""})())

@@ -305,7 +305,7 @@ async def test_sync_client_event_modified_instance_forks_and_cancels_old_slots(t
         fake_other.delete_event = fake_delete
         MockClient.return_value = fake_other
 
-        result = await sync_client_event_to_main(
+        result_id, result_changed = await sync_client_event_to_main(
             client=client_obj,
             main_client=main_client,
             event=modified_instance,
@@ -321,7 +321,8 @@ async def test_sync_client_event_modified_instance_forks_and_cancels_old_slots(t
 
     # A new standalone event should have been created on main
     assert len(created) == 1
-    assert result == new_main_event_id
+    assert result_id == new_main_event_id
+    assert result_changed is True
 
     # A new instance-level mapping should exist in the DB
     cursor = await db.execute(
@@ -369,7 +370,7 @@ async def test_sync_client_event_modified_instance_no_parent_creates_standalone(
         "end": {"dateTime": "2026-03-01T12:00:00-05:00"},
     }
 
-    result = await sync_client_event_to_main(
+    result_id, result_changed = await sync_client_event_to_main(
         client=client_obj,
         main_client=main_client,
         event=modified_instance,
@@ -382,5 +383,5 @@ async def test_sync_client_event_modified_instance_no_parent_creates_standalone(
     # No old slots to cancel (no parent mapping)
     main_client.delete_event.assert_not_called()
     # A new standalone event should still be created
-    assert result == "main-new-standalone"
+    assert result_id == "main-new-standalone"
     assert len(created) == 1

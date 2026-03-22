@@ -110,6 +110,40 @@ class GoogleCalendarClient:
             logger.error(f"Network error fetching events for calendar {calendar_id}: {type(e).__name__}")
             raise
 
+    def list_cancelled_instances(self, calendar_id: str, recurring_event_id: str) -> list[dict]:
+        """Return cancelled instances of a recurring event.
+
+        Uses the ``events().instances()`` endpoint with ``showDeleted=True``
+        and filters for ``status == 'cancelled'``.  Each returned dict
+        contains at minimum ``originalStartTime`` which can be fed to
+        ``derive_instance_event_id`` to construct the instance ID on a
+        different recurring event (e.g. a busy-block copy).
+        """
+        try:
+            all_items: list[dict] = []
+            page_token = None
+            while True:
+                params: dict = {
+                    "calendarId": calendar_id,
+                    "eventId": recurring_event_id,
+                    "showDeleted": True,
+                    "maxResults": 250,
+                }
+                if page_token:
+                    params["pageToken"] = page_token
+                result = self.service.events().instances(**params).execute()
+                all_items.extend(result.get("items", []))
+                page_token = result.get("nextPageToken")
+                if not page_token:
+                    break
+            return [i for i in all_items if i.get("status") == "cancelled"]
+        except HttpError as e:
+            if e.resp.status in (404, 410):
+                return []
+            raise
+        except Exception:
+            return []
+
     def get_event(self, calendar_id: str, event_id: str) -> Optional[dict]:
         """Get a single event."""
         try:

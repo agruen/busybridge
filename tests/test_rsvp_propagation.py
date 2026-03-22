@@ -228,7 +228,7 @@ async def test_new_non_invite_sets_rsvp_status_null(test_db):
 
 @pytest.mark.asyncio
 async def test_update_preserves_existing_rsvp_status(test_db):
-    """Updating an existing invite should NOT overwrite rsvp_status if already set."""
+    """Updating an existing invite should use the live client RSVP when available."""
     from app.sync.rules import sync_client_event_to_main
 
     user_id = await _insert_user(email="rsvp-upd@example.com", google_user_id="rsvp-upd-g")
@@ -282,7 +282,7 @@ async def test_update_preserves_existing_rsvp_status(test_db):
         (user_id, "invite-upd"),
     )
     row = await cursor.fetchone()
-    assert row["rsvp_status"] == "accepted", "Existing RSVP status should not be overwritten"
+    assert row["rsvp_status"] == "needsAction", "Live client RSVP should take precedence"
 
 
 @pytest.mark.asyncio
