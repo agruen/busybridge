@@ -1977,3 +1977,78 @@ async def _cleanup_managed_events_impl(
     await db.commit()
 
     return summary
+
+
+async def recolor_calendar_events(client_calendar_id: int, new_color_id: str) -> dict:
+    """Patch colorId on all main-calendar events belonging to a client calendar.
+
+    Runs as a background task after a user changes a calendar's color.
+    Returns a summary dict with counts.
+    """
+    db = await get_database()
+
+    cursor = await db.execute(
+        """SELECT cc.user_id, u.email AS user_email, u.main_calendar_id,
+                  u.sa_tier
+           FROM client_calendars cc
+           JOIN users u ON cc.user_id = u.id
+           WHERE cc.id = ? AND cc.is_active = TRUE""",
+        (client_calendar_id,),
+    )
+    cal = await cursor.fetchone()
+    if not cal or not cal["main_calendar_id"]:
+        logger.warning("recolor: calendar %s not found or no main calendar", client_calendar_id)
+        return {"patched": 0, "errors": 0}
+
+    # Collect all main_event_ids for this client calendar
+    cursor = await db.execute(
+        """SELECT main_event_id FROM event_mappings
+           WHERE origin_calendar_id = ? AND deleted_at IS NULL
+                 AND main_event_id IS NOT NULL""",
+        (client_calendar_id,),
+    )
+    rows = await cursor.fetchall()
+    main_event_ids = [r["main_event_id"] for r in rows]
+
+    if not main_event_ids:
+        logger.info("recolor: no events to recolor for calendar %s", client_calendar_id)
+        return {"patched": 0, "errors": 0}
+
+    from app.auth.google import get_valid_access_token
+
+    main_token = await get_valid_access_token(cal["user_id"], cal["user_email"])
+    main_client = GoogleCalendarClient(main_token)
+
+    # Use SA client if available
+    sa_main_client = None
+    if cal["sa_tier"] == 2:
+        from app.auth.service_account import get_sa_main_client
+        sa_main_client = get_sa_main_client(cal["main_calendar_id"])
+
+    writer = sa_main_client or main_client
+    main_calendar_id = cal["main_calendar_id"]
+
+    patched = 0
+    errors = 0
+    for event_id in main_event_ids:
+        try:
+            writer.patch_event(
+                main_calendar_id,
+                event_id,
+                {"colorId": new_color_id},
+            )
+            patched += 1
+        except Exception as e:
+            # 404 = event was already deleted on Google side, skip quietly
+            from googleapiclient.errors import HttpError
+            if isinstance(e, HttpError) and e.resp.status == 404:
+                logger.debug("recolor: event %s not found, skipping", event_id)
+            else:
+                logger.warning("recolor: failed to patch event %s: %s", event_id, e)
+                errors += 1
+
+    logger.info(
+        "recolor complete for calendar %s: %d patched, %d errors out of %d",
+        client_calendar_id, patched, errors, len(main_event_ids),
+    )
+    return {"patched": patched, "errors": errors}

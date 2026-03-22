@@ -27,6 +27,11 @@ class ClientCalendarResponse(BaseModel):
     consecutive_failures: int = 0
 
 
+class UpdateColorRequest(BaseModel):
+    """Request to change a client calendar's color."""
+    color_id: str
+
+
 class ConnectCalendarRequest(BaseModel):
     """Request to connect a client calendar."""
     token_id: int
@@ -406,3 +411,52 @@ async def get_calendar_status(
         event_count=event_count,
         busy_block_count=busy_block_count,
     )
+
+
+@router.patch("/{calendar_id}/color")
+async def update_calendar_color(
+    calendar_id: int,
+    request: UpdateColorRequest,
+    user: User = Depends(get_current_user),
+):
+    """Change a client calendar's color and recolor all its events on main."""
+    valid_colors = {str(i) for i in range(1, 12)}
+    if request.color_id not in valid_colors:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="color_id must be '1' through '11'",
+        )
+
+    db = await get_database()
+
+    cursor = await db.execute(
+        """SELECT * FROM client_calendars
+           WHERE id = ? AND user_id = ? AND is_active = TRUE""",
+        (calendar_id, user.id),
+    )
+    calendar = await cursor.fetchone()
+    if not calendar:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Calendar not found",
+        )
+
+    old_color = calendar["color_id"]
+    if old_color == request.color_id:
+        return {"status": "ok", "message": "Color unchanged"}
+
+    await db.execute(
+        "UPDATE client_calendars SET color_id = ? WHERE id = ?",
+        (request.color_id, calendar_id),
+    )
+    await db.commit()
+
+    # Kick off background task to recolor existing events on main
+    from app.sync.engine import recolor_calendar_events
+    from app.utils.tasks import create_background_task
+    create_background_task(
+        recolor_calendar_events(calendar_id, request.color_id),
+        f"recolor_calendar_{calendar_id}",
+    )
+
+    return {"status": "ok", "message": "Color updated, recoloring events in background"}

@@ -277,7 +277,7 @@
                         <div class="ml-3 sm:ml-4 min-w-0 flex-1">
                             <p class="text-sm font-medium text-gray-900 truncate">
                                 {% if cal['color_id'] %}
-                                <span class="inline-block w-3 h-3 rounded-full mr-1.5 align-middle gcal-color-{{ cal['color_id'] }}" title="Events from this calendar appear in this color on your main calendar"></span>
+                                <span class="inline-block w-3 h-3 rounded-full mr-1.5 align-middle cursor-pointer ring-2 ring-transparent hover:ring-gray-300 gcal-color-{{ cal['color_id'] }}" id="color-dot-{{ cal['id'] }}" title="Click to change color" onclick="toggleColorPicker(event, {{ cal['id'] }}, '{{ cal['color_id'] }}')"></span>
                                 {% endif %}
                                 {{ cal['display_name'] or cal['google_calendar_id'] }}
                             </p>
@@ -365,6 +365,74 @@
 
 {% block scripts %}
 <script>
+const _gcalColors = {
+    '1': '#7986CB', '2': '#33B679', '3': '#8E24AA', '4': '#E67C73',
+    '5': '#F6BF26', '6': '#F4511E', '7': '#039BE5', '8': '#616161',
+    '9': '#3F51B5', '10': '#0B8043', '11': '#D50000'
+};
+
+let _activeColorPicker = null;
+
+function toggleColorPicker(e, calId, currentColorId) {
+    e.stopPropagation();
+    // Close any existing picker
+    if (_activeColorPicker) {
+        _activeColorPicker.remove();
+        if (_activeColorPicker.dataset.calId === String(calId)) {
+            _activeColorPicker = null;
+            return;
+        }
+        _activeColorPicker = null;
+    }
+
+    const dot = document.getElementById('color-dot-' + calId);
+    const li = dot.closest('li');
+    const picker = document.createElement('div');
+    picker.dataset.calId = String(calId);
+
+    // Position below the dot
+    li.style.position = 'relative';
+    const dotRect = dot.getBoundingClientRect();
+    const liRect = li.getBoundingClientRect();
+    const left = dotRect.left - liRect.left;
+    const top = dotRect.bottom - liRect.top + 4;
+    picker.style.cssText = 'position:absolute;z-index:50;background:#fff;border:1px solid #e5e7eb;border-radius:8px;box-shadow:0 4px 12px rgba(0,0,0,.15);padding:8px;display:flex;flex-wrap:wrap;gap:6px;width:140px;left:' + left + 'px;top:' + top + 'px;';
+
+    for (let cid = 1; cid <= 11; cid++) {
+        const swatch = document.createElement('span');
+        swatch.style.cssText = 'display:inline-block;width:24px;height:24px;border-radius:50%;cursor:pointer;background:' + _gcalColors[cid] + ';border:2px solid ' + (String(cid) === currentColorId ? '#1f2937' : 'transparent') + ';transition:transform .1s;';
+        swatch.title = 'Color ' + cid;
+        swatch.onmouseenter = function() { this.style.transform = 'scale(1.15)'; };
+        swatch.onmouseleave = function() { this.style.transform = ''; };
+        swatch.onclick = function(ev) {
+            ev.stopPropagation();
+            picker.remove();
+            _activeColorPicker = null;
+            // Update dot immediately
+            dot.className = dot.className.replace(/gcal-color-\d+/g, 'gcal-color-' + cid);
+            // Send to server
+            fetch('/api/client-calendars/' + calId + '/color', {
+                method: 'PATCH',
+                credentials: 'same-origin',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ color_id: String(cid) })
+            }).catch(function(err) { console.error('Color update failed:', err); });
+        };
+        picker.appendChild(swatch);
+    }
+
+    li.appendChild(picker);
+    _activeColorPicker = picker;
+}
+
+// Close picker when clicking anywhere else
+document.addEventListener('click', function() {
+    if (_activeColorPicker) {
+        _activeColorPicker.remove();
+        _activeColorPicker = null;
+    }
+});
+
 const _syncPolls = {};
 
 function startCalendarSync(calId) {
