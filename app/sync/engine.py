@@ -960,6 +960,18 @@ async def _sync_main_calendar(
                             # sync so the stale times don't propagate.
                             continue
 
+                    # Sync busy blocks BEFORE propagating time/RSVP to
+                    # the client.  propagate_time_to_client updates the
+                    # mapping's stored times; if that runs first, the busy
+                    # block comparison sees old == new and skips the update.
+                    await sync_main_event_to_clients(
+                        main_client=main_client,
+                        event=event,
+                        user_id=user_id,
+                        main_calendar_id=main_calendar_id,
+                        user_email=user_email,
+                    )
+
                     # Propagate time changes on editable events back to the client calendar.
                     if client_origin_mapping and client_origin_mapping["user_can_edit"]:
                         await propagate_time_to_client(
@@ -983,15 +995,6 @@ async def _sync_main_calendar(
                                 mapping=dict(client_origin_mapping),
                                 new_rsvp_status=current_rsvp,
                             )
-
-                    # Sync busy blocks (handles time changes, etc.)
-                    await sync_main_event_to_clients(
-                        main_client=main_client,
-                        event=event,
-                        user_id=user_id,
-                        main_calendar_id=main_calendar_id,
-                        user_email=user_email,
-                    )
                     processed_ids.append(event["id"])
             except Exception as e:
                 logger.error(f"Error processing main event {event.get('id')}: {e}")

@@ -413,37 +413,29 @@ async def sync_main_event_to_clients(
 
     # Check if times actually changed — skip busy block updates if they haven't.
     # Busy blocks only carry time data, so unchanged times = unchanged busy block.
-    # This avoids hundreds of unnecessary API calls per sync cycle.
     #
-    # For client-origin events, the caller (sync_client_event_to_main) tells us
-    # via skip_busy_block_update.  For main-origin events, compare against the
-    # pre-update mapping values.
+    # For client-origin events, the caller controls this via skip_busy_block_update.
+    # We must NOT second-guess the caller by comparing against existing_origin,
+    # because the mapping's stored times are already updated by the time we run.
     #
-    # ORDERING NOTE: For main-origin events, `mapping` holds the row fetched
-    # BEFORE the UPDATE at line ~390.  The comparison works because `mapping`
-    # still has the old times.  Do NOT re-fetch `mapping` between the UPDATE
-    # and this comparison — doing so would make old == new, defeating the skip.
+    # For main-origin events, compare against the pre-update `mapping` row.
+    # ORDERING NOTE: `mapping` holds the row fetched BEFORE the UPDATE at
+    # line ~390.  Do NOT re-fetch between the UPDATE and this comparison.
     times_changed = True
     if skip_busy_block_update:
         times_changed = False
-    else:
-        # Compare against whichever mapping we have.
-        # For main-origin: `mapping` has pre-update times.
-        # For client-origin via main sync: `existing_origin` has post-update
-        #   times which match the event — comparison yields False (no change).
-        # For client-origin via client sync: caller passes skip_busy_block_update.
-        prev = mapping or existing_origin
-        if prev:
-            try:
-                prev_start = prev["event_start"] or ""
-                prev_end = prev["event_end"] or ""
-                times_changed = (
-                    prev_start != event_start
-                    or prev_end != event_end
-                    or bool(prev["is_all_day"]) != is_all_day
-                )
-            except (KeyError, TypeError):
-                times_changed = True
+    elif not existing_origin and mapping:
+        # Main-origin only: compare against pre-update mapping times.
+        try:
+            prev_start = mapping["event_start"] or ""
+            prev_end = mapping["event_end"] or ""
+            times_changed = (
+                prev_start != event_start
+                or prev_end != event_end
+                or bool(mapping["is_all_day"]) != is_all_day
+            )
+        except (KeyError, TypeError):
+            times_changed = True
 
     # Create busy block data
     bb_origin_props = {
