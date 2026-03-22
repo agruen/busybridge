@@ -62,7 +62,7 @@ class Settings(BaseSettings):
     calendar_sync_tag: str = "calendarSyncEngine"
     managed_event_prefix: str = "[BusyBridge]"
     busy_block_title: str = "Busy"
-    personal_busy_block_title: str = "Busy (Personal)"
+    personal_busy_block_title: str = "Personal"
 
     class Config:
         env_file = ".env"
