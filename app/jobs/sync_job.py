@@ -52,6 +52,20 @@ async def run_periodic_sync() -> None:
             except Exception as e:
                 logger.error(f"Error syncing personal calendar {cal['id']}: {e}")
 
+        # Sync webcal subscriptions
+        cursor = await db.execute(
+            "SELECT id FROM webcal_subscriptions WHERE is_active = TRUE"
+        )
+        webcal_subs = await cursor.fetchall()
+        if webcal_subs:
+            logger.info(f"Running periodic sync for {len(webcal_subs)} webcal subscriptions")
+            from app.sync.webcal_sync import sync_webcal_subscription
+            for sub in webcal_subs:
+                try:
+                    await sync_webcal_subscription(sub["id"])
+                except Exception as e:
+                    logger.error(f"Error syncing webcal subscription {sub['id']}: {e}")
+
         # Also sync main calendars
         cursor = await db.execute(
             "SELECT id FROM users WHERE main_calendar_id IS NOT NULL"

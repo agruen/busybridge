@@ -249,6 +249,112 @@
         {% endif %}
     </div>
 
+    <!-- Webcal Subscriptions -->
+    <div class="mb-8 bg-white shadow rounded-lg">
+        <div class="px-6 py-4 border-b border-gray-200 sm:flex sm:justify-between sm:items-center">
+            <div>
+                <h2 class="text-lg font-medium text-gray-900">Webcal Subscriptions</h2>
+                <p class="text-sm text-gray-500 mt-1">External ICS feeds synced one-way to your main calendar with busy blocks on client calendars</p>
+            </div>
+        </div>
+
+        <!-- Add subscription form -->
+        <div class="px-6 py-4 border-b border-gray-200 bg-gray-50" x-data="{ showForm: false, url: '', prefix: '', submitting: false }">
+            <button @click="showForm = !showForm" class="text-sm text-indigo-600 hover:text-indigo-500 flex items-center">
+                <i class="fas mr-2" :class="showForm ? 'fa-chevron-down' : 'fa-plus'"></i>
+                <span x-text="showForm ? 'Cancel' : 'Add Subscription'"></span>
+            </button>
+            <div x-show="showForm" x-cloak class="mt-4 space-y-3">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700">ICS/Webcal URL</label>
+                    <input type="url" x-model="url" placeholder="https://example.com/calendar.ics or webcal://..."
+                        class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm py-2 px-3 border">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700">Display Prefix</label>
+                    <input type="text" x-model="prefix" placeholder="[Travel]"
+                        class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm py-2 px-3 border">
+                    <p class="mt-1 text-xs text-gray-500">Events will appear as: <span class="font-mono">🔐 [Travel] Event Name</span></p>
+                </div>
+                <button type="button"
+                    @click="
+                        submitting = true;
+                        fetch('/api/webcal-subscriptions', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({url: url, display_prefix: prefix})
+                        }).then(r => {
+                            if (r.ok) { window.location.reload(); }
+                            else { r.json().then(d => { alert(d.detail || 'Failed'); submitting = false; }); }
+                        }).catch(e => { alert('Error: ' + e); submitting = false; });
+                    "
+                    :disabled="!url || submitting"
+                    class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50">
+                    <span x-show="!submitting">Add &amp; Sync</span>
+                    <span x-show="submitting" x-cloak><i class="fas fa-spinner fa-spin mr-1"></i> Validating...</span>
+                </button>
+            </div>
+        </div>
+
+        {% if webcal_subscriptions %}
+        <ul class="divide-y divide-gray-200">
+            {% for sub in webcal_subscriptions %}
+            <li class="px-4 sm:px-6 py-4">
+                <div class="flex items-start sm:items-center justify-between">
+                    <div class="min-w-0 flex-1">
+                        <div class="flex items-center">
+                            {% if sub['display_prefix'] %}
+                            <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-indigo-100 text-indigo-800 mr-2">
+                                {{ sub['display_prefix'] }}
+                            </span>
+                            {% endif %}
+                            <p class="text-sm font-medium text-gray-900 truncate">{{ sub['url'][:60] }}{% if sub['url']|length > 60 %}...{% endif %}</p>
+                        </div>
+                        <div class="mt-1 flex items-center text-xs text-gray-500 space-x-3">
+                            <span>{{ sub['event_count'] or 0 }} events</span>
+                            {% if sub['last_success_at'] %}
+                            <span>Last sync: {{ sub['last_success_at'][:16] }}</span>
+                            {% endif %}
+                            {% if sub['consecutive_failures'] and sub['consecutive_failures'] >= 5 %}
+                            <span class="text-red-600"><i class="fas fa-exclamation-circle mr-1"></i>Failing</span>
+                            {% elif sub['consecutive_failures'] and sub['consecutive_failures'] >= 1 %}
+                            <span class="text-yellow-600"><i class="fas fa-exclamation-triangle mr-1"></i>{{ sub['consecutive_failures'] }} failures</span>
+                            {% elif sub['last_success_at'] %}
+                            <span class="text-green-600"><i class="fas fa-check-circle mr-1"></i>OK</span>
+                            {% else %}
+                            <span class="text-gray-400">Pending</span>
+                            {% endif %}
+                        </div>
+                    </div>
+                    <div class="ml-4 flex items-center space-x-2">
+                        <button type="button"
+                            hx-post="/api/webcal-subscriptions/{{ sub['id'] }}/sync"
+                            hx-swap="none"
+                            class="inline-flex items-center px-3 py-1.5 border border-gray-300 text-xs font-medium rounded text-gray-700 bg-white hover:bg-gray-50">
+                            <i class="fas fa-sync mr-1"></i> Sync
+                        </button>
+                        <button type="button"
+                            hx-delete="/api/webcal-subscriptions/{{ sub['id'] }}"
+                            hx-confirm="Remove this webcal subscription? All synced events will be deleted from your calendars."
+                            hx-swap="none"
+                            hx-on::after-request="if(event.detail.successful) window.location.reload()"
+                            class="text-xs text-red-600 hover:text-red-500">
+                            <i class="fas fa-times"></i>
+                        </button>
+                    </div>
+                </div>
+            </li>
+            {% endfor %}
+        </ul>
+        {% else %}
+        <div class="px-6 py-8 text-center text-gray-500">
+            <i class="fas fa-rss text-gray-300 text-2xl mb-2"></i>
+            <h3 class="text-sm font-medium text-gray-900">No webcal subscriptions</h3>
+            <p class="mt-1 text-sm text-gray-500">Add an ICS/webcal URL to sync external calendar events.</p>
+        </div>
+        {% endif %}
+    </div>
+
     <!-- Connected Client Calendars -->
     <div class="bg-white shadow rounded-lg">
         <div class="px-6 py-4 border-b border-gray-200 sm:flex sm:justify-between sm:items-center">

@@ -680,7 +680,8 @@ async def _revert_personal_block_on_main(
     cursor = await db.execute(
         """SELECT em.event_start, em.event_end, em.is_all_day
            FROM event_mappings em
-           WHERE em.user_id = ? AND em.main_event_id = ? AND em.origin_type = 'personal'""",
+           WHERE em.user_id = ? AND em.main_event_id = ?
+             AND em.origin_type IN ('personal', 'webcal')""",
         (user_id, event_id),
     )
     row = await cursor.fetchone()
@@ -1366,6 +1367,19 @@ async def trigger_sync_for_user(user_id: int) -> None:
             await trigger_sync_for_personal_calendar(cal["id"])
         else:
             await trigger_sync_for_calendar(cal["id"])
+
+    # Sync webcal subscriptions
+    cursor = await db.execute(
+        "SELECT id FROM webcal_subscriptions WHERE user_id = ? AND is_active = TRUE",
+        (user_id,),
+    )
+    webcal_subs = await cursor.fetchall()
+    for sub in webcal_subs:
+        try:
+            from app.sync.webcal_sync import sync_webcal_subscription
+            await sync_webcal_subscription(sub["id"])
+        except Exception as e:
+            logger.error(f"Error syncing webcal subscription {sub['id']}: {e}")
 
     # Sync main calendar
     await trigger_sync_for_main_calendar(user_id)

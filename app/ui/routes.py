@@ -107,10 +107,23 @@ async def dashboard(request: Request, error: Optional[str] = None):
             "consecutive_check_failures": integrity_row["consecutive_check_failures"] or 0,
         }
 
+    # Get webcal subscriptions
+    cursor = await db.execute(
+        """SELECT ws.*,
+                  (SELECT COUNT(*) FROM event_mappings em
+                   WHERE em.webcal_subscription_id = ws.id AND em.deleted_at IS NULL) as event_count
+           FROM webcal_subscriptions ws
+           WHERE ws.user_id = ? AND ws.is_active = TRUE
+           ORDER BY ws.created_at DESC""",
+        (user.id,)
+    )
+    webcal_subscriptions = await cursor.fetchall()
+
     return templates.TemplateResponse(request, "dashboard.html", context={
         "user": user,
         "calendars": calendars,
         "personal_calendars": personal_calendars,
+        "webcal_subscriptions": webcal_subscriptions,
         "status": status_row,
         "event_count": event_count,
         "managed_event_prefix": managed_event_prefix,

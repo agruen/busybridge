@@ -207,6 +207,24 @@ CREATE TABLE IF NOT EXISTS integrity_status (
     details_json TEXT,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+-- Webcal/ICS subscriptions
+CREATE TABLE IF NOT EXISTS webcal_subscriptions (
+    id INTEGER PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    url TEXT NOT NULL,
+    display_prefix TEXT NOT NULL DEFAULT '',
+    is_active BOOLEAN DEFAULT TRUE,
+    poll_interval_minutes INTEGER DEFAULT 5,
+    last_poll_at TIMESTAMP,
+    last_etag TEXT,
+    last_success_at TIMESTAMP,
+    consecutive_failures INTEGER DEFAULT 0,
+    last_error TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP,
+    UNIQUE(user_id, url)
+);
 """
 
 
@@ -240,6 +258,7 @@ async def init_schema(db: aiosqlite.Connection) -> None:
         "ALTER TABLE event_mappings ADD COLUMN rsvp_status TEXT",
         "ALTER TABLE users ADD COLUMN sa_tier INTEGER DEFAULT 0",
         "ALTER TABLE client_calendars ADD COLUMN calendar_type TEXT NOT NULL DEFAULT 'client'",
+        "ALTER TABLE event_mappings ADD COLUMN webcal_subscription_id INTEGER REFERENCES webcal_subscriptions(id)",
     ]
     for stmt in migrations:
         try:
@@ -247,6 +266,16 @@ async def init_schema(db: aiosqlite.Connection) -> None:
             await db.commit()
         except Exception:
             pass  # column already exists
+
+    try:
+        await db.execute(
+            """CREATE INDEX IF NOT EXISTS idx_event_mappings_webcal
+               ON event_mappings(webcal_subscription_id, origin_event_id)
+               WHERE webcal_subscription_id IS NOT NULL"""
+        )
+        await db.commit()
+    except Exception:
+        pass
 
     logger.info("Database schema initialized")
 
