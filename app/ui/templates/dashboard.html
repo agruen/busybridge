@@ -455,6 +455,13 @@
                     <a href="/api/client-calendars/{{ cal['id'] }}/status" class="text-xs text-indigo-600 hover:text-indigo-500">View Details</a>
                     <span class="text-gray-300">|</span>
                     <button
+                        onclick="if(confirm('Clean up all synced events for this calendar and re-sync from scratch?')) fetch('/api/client-calendars/{{ cal['id'] }}/cleanup-resync', {method:'POST'}).then(r => { if(r.ok) { alert('Cleanup & re-sync started'); window.location.reload(); } else r.json().then(d => alert(d.detail || 'Failed')); })"
+                        class="text-xs text-indigo-600 hover:text-indigo-500"
+                    >
+                        Cleanup &amp; Re-sync
+                    </button>
+                    <span class="text-gray-300">|</span>
+                    <button
                         hx-delete="/api/client-calendars/{{ cal['id'] }}"
                         hx-confirm="Are you sure you want to disconnect this calendar? All synced events will be removed."
                         hx-swap="none"

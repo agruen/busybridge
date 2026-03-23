@@ -1,35 +1,24 @@
 """Webcal/ICS subscription sync engine."""
 
-import asyncio
-import hashlib
 import json
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from app.config import get_settings
 from app.database import get_database
-from app.sync.google_calendar import GoogleCalendarClient, create_busy_block
+from app.sync.google_calendar import GoogleCalendarClient
 from app.sync.ics_parser import fetch_ics_feed, parse_ics_events, build_webcal_google_event
 
 logger = logging.getLogger(__name__)
 
 
-def _content_hash(event: dict) -> str:
-    """Create a stable hash of event content for change detection."""
-    key_fields = (
-        event.get("summary", ""),
-        json.dumps(event.get("start", {}), sort_keys=True),
-        json.dumps(event.get("end", {}), sort_keys=True),
-        event.get("location", ""),
-        event.get("description", ""),
-        event.get("transparency", "opaque"),
-    )
-    return hashlib.md5("|".join(key_fields).encode()).hexdigest()
-
-
 async def sync_webcal_subscription(subscription_id: int) -> None:
-    """Sync a single webcal subscription."""
+    """Sync a single webcal subscription.
+
+    Creates/updates events on the user's main calendar only.
+    Busy blocks on client calendars are handled by the regular
+    main→client sync flow.
+    """
     db = await get_database()
 
     # Load subscription
@@ -100,18 +89,6 @@ async def sync_webcal_subscription(subscription_id: int) -> None:
             for row in await cursor.fetchall()
         }
 
-        # Get client calendars for busy blocks
-        cursor = await db.execute(
-            """SELECT cc.*, ot.google_account_email
-               FROM client_calendars cc
-               JOIN oauth_tokens ot ON cc.oauth_token_id = ot.id
-               WHERE cc.user_id = ? AND cc.is_active = TRUE
-                 AND cc.calendar_type = 'client'""",
-            (user_id,),
-        )
-        client_calendars = await cursor.fetchall()
-
-        settings = get_settings()
         prefix = (sub["display_prefix"] or "").strip()
 
         seen_uids = set()
@@ -173,12 +150,6 @@ async def sync_webcal_subscription(subscription_id: int) -> None:
                 )
                 updated_count += 1
 
-                # Update busy blocks on client calendars
-                await _update_client_busy_blocks(
-                    db, user_id, existing["id"], parsed,
-                    client_calendars, settings,
-                )
-
             else:
                 # Create new event
                 try:
@@ -204,14 +175,7 @@ async def sync_webcal_subscription(subscription_id: int) -> None:
                     (user_id, ics_uid, main_event_id, event_start, event_end,
                      parsed["is_all_day"], subscription_id),
                 )
-                row = await cursor.fetchone()
-                mapping_id = row["id"]
-
-                # Create busy blocks on client calendars
-                await _create_client_busy_blocks(
-                    db, user_id, mapping_id, parsed,
-                    client_calendars, settings,
-                )
+                await cursor.fetchone()
                 created_count += 1
 
         # Removal sweep: delete events no longer in the feed
@@ -231,11 +195,6 @@ async def sync_webcal_subscription(subscription_id: int) -> None:
                         logger.error(
                             f"Failed to delete webcal event {mapping['main_event_id']}: {e}"
                         )
-
-            # Delete busy blocks
-            await _delete_busy_blocks_for_mapping(
-                db, user_id, mapping["id"], client_calendars
-            )
 
             # Soft-delete mapping
             await db.execute(
@@ -302,144 +261,6 @@ async def sync_webcal_subscription(subscription_id: int) -> None:
         await db.commit()
 
 
-async def _create_client_busy_blocks(
-    db, user_id: int, mapping_id: int, parsed_event: dict,
-    client_calendars: list, settings,
-) -> None:
-    """Create busy blocks on all client calendars for a webcal event."""
-    busy_block = create_busy_block(
-        parsed_event["start"], parsed_event["end"],
-        is_all_day=parsed_event["is_all_day"],
-        origin_props={
-            "bb_origin_id": parsed_event["ics_uid"],
-            "bb_mapping_id": str(mapping_id),
-            "bb_type": "webcal_client_block",
-        },
-    )
-
-    from app.auth.google import get_valid_access_token
-
-    for cal in client_calendars:
-        try:
-            client_token = await get_valid_access_token(
-                user_id, cal["google_account_email"]
-            )
-            client = GoogleCalendarClient(client_token)
-            result = client.create_event(cal["google_calendar_id"], busy_block)
-
-            await db.execute(
-                """INSERT INTO busy_blocks
-                   (event_mapping_id, client_calendar_id, busy_block_event_id)
-                   VALUES (?, ?, ?)""",
-                (mapping_id, cal["id"], result["id"]),
-            )
-        except Exception as e:
-            logger.error(
-                f"Failed to create webcal busy block on calendar {cal['id']}: {e}"
-            )
-
-
-async def _update_client_busy_blocks(
-    db, user_id: int, mapping_id: int, parsed_event: dict,
-    client_calendars: list, settings,
-) -> None:
-    """Update busy blocks on all client calendars for a webcal event."""
-    busy_block = create_busy_block(
-        parsed_event["start"], parsed_event["end"],
-        is_all_day=parsed_event["is_all_day"],
-        origin_props={
-            "bb_origin_id": parsed_event["ics_uid"],
-            "bb_mapping_id": str(mapping_id),
-            "bb_type": "webcal_client_block",
-        },
-    )
-
-    from app.auth.google import get_valid_access_token
-
-    for cal in client_calendars:
-        # Check for existing busy block
-        cursor = await db.execute(
-            """SELECT * FROM busy_blocks
-               WHERE event_mapping_id = ? AND client_calendar_id = ?""",
-            (mapping_id, cal["id"]),
-        )
-        existing_block = await cursor.fetchone()
-
-        try:
-            client_token = await get_valid_access_token(
-                user_id, cal["google_account_email"]
-            )
-            client = GoogleCalendarClient(client_token)
-
-            if existing_block:
-                try:
-                    client.update_event(
-                        cal["google_calendar_id"],
-                        existing_block["busy_block_event_id"],
-                        busy_block,
-                    )
-                except Exception:
-                    # Recreate if update fails
-                    result = client.create_event(
-                        cal["google_calendar_id"], busy_block
-                    )
-                    await db.execute(
-                        "UPDATE busy_blocks SET busy_block_event_id = ? WHERE id = ?",
-                        (result["id"], existing_block["id"]),
-                    )
-            else:
-                result = client.create_event(
-                    cal["google_calendar_id"], busy_block
-                )
-                await db.execute(
-                    """INSERT INTO busy_blocks
-                       (event_mapping_id, client_calendar_id, busy_block_event_id)
-                       VALUES (?, ?, ?)""",
-                    (mapping_id, cal["id"], result["id"]),
-                )
-        except Exception as e:
-            logger.error(
-                f"Failed to update webcal busy block on calendar {cal['id']}: {e}"
-            )
-
-
-async def _delete_busy_blocks_for_mapping(
-    db, user_id: int, mapping_id: int, client_calendars: list,
-) -> None:
-    """Delete all busy blocks for a mapping from client calendars."""
-    cursor = await db.execute(
-        """SELECT bb.*, cc.google_calendar_id, ot.google_account_email
-           FROM busy_blocks bb
-           JOIN client_calendars cc ON bb.client_calendar_id = cc.id
-           JOIN oauth_tokens ot ON cc.oauth_token_id = ot.id
-           WHERE bb.event_mapping_id = ?""",
-        (mapping_id,),
-    )
-    blocks = await cursor.fetchall()
-
-    from app.auth.google import get_valid_access_token
-
-    for block in blocks:
-        try:
-            token = await get_valid_access_token(
-                user_id, block["google_account_email"]
-            )
-            client = GoogleCalendarClient(token)
-            client.delete_event(
-                block["google_calendar_id"], block["busy_block_event_id"]
-            )
-        except Exception as e:
-            if not (hasattr(e, 'resp') and e.resp.status in (404, 410)):
-                logger.error(
-                    f"Failed to delete webcal busy block {block['busy_block_event_id']}: {e}"
-                )
-
-    await db.execute(
-        "DELETE FROM busy_blocks WHERE event_mapping_id = ?",
-        (mapping_id,),
-    )
-
-
 async def cleanup_webcal_subscription(subscription_id: int, user_id: int) -> None:
     """Clean up all events for a webcal subscription being disconnected."""
     db = await get_database()
@@ -461,17 +282,6 @@ async def cleanup_webcal_subscription(subscription_id: int, user_id: int) -> Non
     )
     mappings = await cursor.fetchall()
 
-    # Get client calendars for busy block cleanup
-    cursor = await db.execute(
-        """SELECT cc.*, ot.google_account_email
-           FROM client_calendars cc
-           JOIN oauth_tokens ot ON cc.oauth_token_id = ot.id
-           WHERE cc.user_id = ? AND cc.is_active = TRUE
-             AND cc.calendar_type = 'client'""",
-        (user_id,),
-    )
-    client_calendars = await cursor.fetchall()
-
     try:
         from app.auth.google import get_valid_access_token
         main_token = await get_valid_access_token(user_id, user["email"])
@@ -491,10 +301,29 @@ async def cleanup_webcal_subscription(subscription_id: int, user_id: int) -> Non
             except Exception:
                 pass
 
-        # Delete busy blocks
-        await _delete_busy_blocks_for_mapping(
-            db, user_id, mapping["id"], client_calendars
+        # Clean up any busy blocks that may exist from before this fix
+        cursor = await db.execute(
+            """SELECT bb.*, cc.google_calendar_id, ot.google_account_email
+               FROM busy_blocks bb
+               JOIN client_calendars cc ON bb.client_calendar_id = cc.id
+               JOIN oauth_tokens ot ON cc.oauth_token_id = ot.id
+               WHERE bb.event_mapping_id = ?""",
+            (mapping["id"],),
         )
+        blocks = await cursor.fetchall()
+        if blocks:
+            from app.auth.google import get_valid_access_token
+            for block in blocks:
+                try:
+                    token = await get_valid_access_token(user_id, block["google_account_email"])
+                    client = GoogleCalendarClient(token)
+                    client.delete_event(block["google_calendar_id"], block["busy_block_event_id"])
+                except Exception:
+                    pass
+            await db.execute(
+                "DELETE FROM busy_blocks WHERE event_mapping_id = ?",
+                (mapping["id"],),
+            )
 
         # Soft-delete mapping
         await db.execute(

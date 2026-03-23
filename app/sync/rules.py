@@ -62,6 +62,36 @@ async def sync_client_event_to_main(
     )
     existing = await cursor.fetchone()
 
+    # If this is a rescheduled recurring instance (_R prefix) and we don't
+    # have a mapping for it, look for the original instance it replaced.
+    # This prevents duplicate events when Google sends both the cancelled
+    # original and the replacement.
+    if not existing and recurring_event_id:
+        original_start = event.get("originalStartTime", {})
+        orig_dt = original_start.get("dateTime") or original_start.get("date", "")
+        if orig_dt:
+            cursor = await db.execute(
+                """SELECT * FROM event_mappings
+                   WHERE user_id = ? AND origin_calendar_id = ?
+                     AND origin_event_id LIKE ? AND deleted_at IS NULL""",
+                (user_id, client_calendar_id, f"{recurring_event_id}_%")
+            )
+            candidates = await cursor.fetchall()
+            for candidate in candidates:
+                cand_start = candidate["event_start"] or ""
+                if orig_dt in cand_start or cand_start in orig_dt:
+                    existing = candidate
+                    await db.execute(
+                        "UPDATE event_mappings SET origin_event_id = ?, updated_at = ? WHERE id = ?",
+                        (event_id, datetime.utcnow().isoformat(), candidate["id"])
+                    )
+                    await db.commit()
+                    logger.info(
+                        f"Re-keyed mapping {candidate['id']} from "
+                        f"{candidate['origin_event_id']} to {event_id}"
+                    )
+                    break
+
     # Determine if user can edit
     user_can_edit = can_user_edit_event(event, client_email)
 
@@ -1034,27 +1064,41 @@ async def handle_deleted_main_event(
                 f"cleaning up mapping only (client event untouched)"
             )
         else:
-            # Incremental sync: Google is explicitly telling us this event was
-            # deleted since the last sync.  The user intentionally removed it
-            # from their main calendar, so cascade the delete to the client.
-            cursor = await db.execute(
-                """SELECT cc.*, ot.google_account_email
-                   FROM client_calendars cc
-                   JOIN oauth_tokens ot ON cc.oauth_token_id = ot.id
-                   WHERE cc.id = ?""",
-                (mapping["origin_calendar_id"],)
-            )
-            cal = await cursor.fetchone()
+            # Incremental sync: user removed the event from main calendar.
+            # If this was an invite (has rsvp_status), propagate "declined"
+            # back to the client rather than deleting the event.
+            if mapping["rsvp_status"] is not None:
+                await propagate_rsvp_to_client(
+                    user_id=user_id,
+                    main_event={},
+                    mapping=dict(mapping),
+                    new_rsvp_status="declined",
+                )
+                logger.info(
+                    f"Propagated 'declined' RSVP for removed main event "
+                    f"{mapping['origin_event_id']}"
+                )
+            else:
+                # No RSVP tracking — this was a non-invite event the user
+                # created or fully owns.  Cascade delete to client.
+                cursor = await db.execute(
+                    """SELECT cc.*, ot.google_account_email
+                       FROM client_calendars cc
+                       JOIN oauth_tokens ot ON cc.oauth_token_id = ot.id
+                       WHERE cc.id = ?""",
+                    (mapping["origin_calendar_id"],)
+                )
+                cal = await cursor.fetchone()
 
-            if cal:
-                try:
-                    from app.auth.google import get_valid_access_token
-                    token = await get_valid_access_token(user_id, cal["google_account_email"])
-                    client = GoogleCalendarClient(token)
-                    client.delete_event(cal["google_calendar_id"], mapping["origin_event_id"])
-                    logger.info(f"Deleted client event {mapping['origin_event_id']}")
-                except Exception as e:
-                    logger.warning(f"Failed to delete client event: {e}")
+                if cal:
+                    try:
+                        from app.auth.google import get_valid_access_token
+                        token = await get_valid_access_token(user_id, cal["google_account_email"])
+                        client = GoogleCalendarClient(token)
+                        client.delete_event(cal["google_calendar_id"], mapping["origin_event_id"])
+                        logger.info(f"Deleted client event {mapping['origin_event_id']}")
+                    except Exception as e:
+                        logger.warning(f"Failed to delete client event: {e}")
 
     # Delete all busy blocks for this event -- only remove DB records for
     # blocks that were successfully deleted remotely.
