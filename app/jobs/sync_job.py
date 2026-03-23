@@ -3,9 +3,12 @@
 import logging
 from datetime import datetime, timedelta
 
-from app.database import get_database, get_setting
+from app.database import get_database, get_setting, set_setting
 
 logger = logging.getLogger(__name__)
+
+# Auto-pause when every active calendar has this many consecutive failures
+_CIRCUIT_BREAKER_THRESHOLD = 3
 
 
 async def run_periodic_sync() -> None:
@@ -65,8 +68,65 @@ async def run_periodic_sync() -> None:
 
         logger.info("Periodic sync completed")
 
+        # Circuit breaker: auto-pause if ALL calendars are failing
+        await _check_circuit_breaker()
+
     finally:
         await release_job_lock("periodic_sync")
+
+
+async def _check_circuit_breaker() -> None:
+    """Auto-pause sync if every active calendar is consistently failing.
+
+    Triggers when ALL calendars for a user have >= _CIRCUIT_BREAKER_THRESHOLD
+    consecutive failures. Sends an alert and pauses sync to prevent
+    wasting API quota and flooding logs.
+    """
+    db = await get_database()
+
+    # Get all users with active calendars
+    cursor = await db.execute(
+        """SELECT DISTINCT user_id FROM client_calendars WHERE is_active = TRUE"""
+    )
+    user_ids = [row["user_id"] for row in await cursor.fetchall()]
+
+    for user_id in user_ids:
+        # Count active calendars and how many are at/above the failure threshold
+        cursor = await db.execute(
+            """SELECT COUNT(*) as total,
+                      SUM(CASE WHEN COALESCE(css.consecutive_failures, 0) >= ? THEN 1 ELSE 0 END) as failing
+               FROM client_calendars cc
+               LEFT JOIN calendar_sync_state css ON cc.id = css.client_calendar_id
+               WHERE cc.user_id = ? AND cc.is_active = TRUE""",
+            (_CIRCUIT_BREAKER_THRESHOLD, user_id),
+        )
+        row = await cursor.fetchone()
+        total = row["total"] or 0
+        failing = row["failing"] or 0
+
+        if total == 0 or failing < total:
+            continue  # Not all calendars are failing
+
+        # Every calendar is failing — trip the circuit breaker
+        logger.error(
+            "Circuit breaker: ALL %d calendars for user %d have %d+ consecutive failures. "
+            "Auto-pausing sync.",
+            total, user_id, _CIRCUIT_BREAKER_THRESHOLD,
+        )
+        await set_setting("sync_paused", "true")
+
+        from app.alerts.email import queue_alert
+        await queue_alert(
+            alert_type="circuit_breaker",
+            user_id=user_id,
+            details=(
+                f"Sync has been automatically paused because all {total} calendars "
+                f"have failed {_CIRCUIT_BREAKER_THRESHOLD}+ times consecutively. "
+                f"This usually means OAuth tokens have expired or Google is having an outage. "
+                f"Check your connected accounts and resume sync from the settings page."
+            ),
+        )
+        return  # Paused globally, no need to check other users
 
 
 async def run_consistency_check_job() -> None:
