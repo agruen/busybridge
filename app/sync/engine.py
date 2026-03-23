@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -1851,16 +1852,36 @@ async def _cleanup_managed_events_impl(
                 )
                 return
 
-            # Collect matching event IDs for batch deletion
-            ids_to_delete = []
+            # Collect matching event IDs for batch deletion.
+            # Deduplicate recurring event instances to their parent ID —
+            # deleting the parent cascades to all instances, avoiding
+            # hundreds of individual API calls that trigger rate limits.
+            _instance_re = re.compile(r'^(.+)_\d{8}(?:T\d{6}Z)?$')
+
+            raw_ids = []
             for event in events:
                 event_id = event.get("id")
                 if not event_id:
                     continue
+                if event.get("status") == "cancelled":
+                    continue  # Already deleted/in trash
                 if not _event_has_managed_prefix(event, managed_prefix):
                     continue
                 summary["prefix_matches_found"] += 1
-                ids_to_delete.append(event_id)
+                raw_ids.append(event_id)
+
+            # Extract parent IDs from instance IDs and deduplicate
+            parent_ids: set[str] = set()
+            standalone_ids: list[str] = []
+            for eid in raw_ids:
+                m = _instance_re.match(eid)
+                if m:
+                    parent_ids.add(m.group(1))
+                else:
+                    standalone_ids.append(eid)
+
+            # Delete parent recurring events first (cascades to instances)
+            ids_to_delete = list(parent_ids) + standalone_ids
 
             if ids_to_delete:
                 deleted_count, failed_ids = await asyncio.to_thread(

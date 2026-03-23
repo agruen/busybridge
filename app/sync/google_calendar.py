@@ -381,50 +381,90 @@ class GoogleCalendarClient:
 
         Returns (deleted_count, failed_event_ids).
         404/410 responses are treated as success (already gone).
+        Includes throttling and retry to avoid Google API rate limits.
         """
+        import time
+
         deleted = 0
         failed: list[str] = []
 
         for i in range(0, len(event_ids), batch_size):
             chunk = event_ids[i : i + batch_size]
-            batch = self.service.new_batch_http_request()
 
-            # Track results per event in this chunk
-            chunk_results: dict[str, bool] = {}
+            # Throttle between chunks to avoid rate limits
+            if i > 0:
+                time.sleep(1)
 
-            def _make_callback(eid: str):
-                def _cb(request_id, response, exception):
-                    if exception is None:
-                        chunk_results[eid] = True
-                    elif isinstance(exception, HttpError) and exception.resp.status in (404, 410):
-                        chunk_results[eid] = True  # Already gone
-                    else:
-                        chunk_results[eid] = False
-                return _cb
+            chunk_ok, chunk_fail = self._execute_batch_delete_chunk(
+                calendar_id, chunk,
+            )
 
-            for eid in chunk:
-                batch.add(
-                    self.service.events().delete(
-                        calendarId=calendar_id, eventId=eid,
-                    ),
-                    callback=_make_callback(eid),
-                )
+            # Retry failed events from this chunk individually with backoff
+            if chunk_fail:
+                time.sleep(2)
+                for eid in chunk_fail:
+                    try:
+                        self.service.events().delete(
+                            calendarId=calendar_id, eventId=eid,
+                        ).execute()
+                        chunk_ok += 1
+                    except HttpError as e:
+                        if e.resp.status in (403, 404, 410):
+                            # 403 = no delete permission (not our event), skip
+                            # 404/410 = already gone
+                            chunk_ok += 1
+                        else:
+                            logger.warning(
+                                "Retry delete failed for %s: HTTP %s %s",
+                                eid, e.resp.status, e.resp.reason,
+                            )
+                            failed.append(eid)
+                    except Exception as e:
+                        logger.warning("Retry delete failed for %s: %s", eid, e)
+                        failed.append(eid)
 
-            try:
-                batch.execute()
-            except Exception:
-                # Entire batch failed — mark all as failed
-                for eid in chunk:
-                    if eid not in chunk_results:
-                        chunk_results[eid] = False
-
-            for eid, ok in chunk_results.items():
-                if ok:
-                    deleted += 1
-                else:
-                    failed.append(eid)
+            deleted += chunk_ok
 
         return deleted, failed
+
+    def _execute_batch_delete_chunk(
+        self,
+        calendar_id: str,
+        chunk: list[str],
+    ) -> tuple[int, list[str]]:
+        """Execute a single batch delete chunk. Returns (ok_count, failed_ids)."""
+        chunk_results: dict[str, bool] = {}
+
+        def _make_callback(eid: str):
+            def _cb(request_id, response, exception):
+                if exception is None:
+                    chunk_results[eid] = True
+                elif isinstance(exception, HttpError) and exception.resp.status in (403, 404, 410):
+                    chunk_results[eid] = True  # 403=no permission, 404/410=already gone
+                else:
+                    chunk_results[eid] = False
+            return _cb
+
+        batch = self.service.new_batch_http_request()
+        for eid in chunk:
+            batch.add(
+                self.service.events().delete(
+                    calendarId=calendar_id, eventId=eid,
+                ),
+                callback=_make_callback(eid),
+            )
+
+        try:
+            batch.execute()
+        except Exception:
+            # Entire batch failed — mark unprocessed as failed
+            for eid in chunk:
+                if eid not in chunk_results:
+                    chunk_results[eid] = False
+
+        ok = sum(1 for v in chunk_results.values() if v)
+        fail = [eid for eid, v in chunk_results.items() if not v]
+        return ok, fail
 
     def is_our_event(self, event: dict) -> bool:
         """Check if an event was created by our sync engine."""
