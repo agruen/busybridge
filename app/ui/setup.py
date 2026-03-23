@@ -65,7 +65,6 @@ async def setup_wizard(request: Request, step: int = 1, error: Optional[str] = N
     settings = get_settings()
 
     context = {
-        "request": request,
         "step": step,
         "oobe_data": _oobe_data,
         "error": error,
@@ -82,7 +81,7 @@ async def setup_wizard(request: Request, step: int = 1, error: Optional[str] = N
     elif step == 5:
         context["encryption_key_b64"] = _oobe_data.get("encryption_key_b64")
 
-    return templates.TemplateResponse(template, context)
+    return templates.TemplateResponse(request, template, context=context)
 
 
 @router.post("/step/2")
@@ -97,16 +96,14 @@ async def setup_step_2(request: Request):
 
     # Validate
     if not client_id or not client_secret:
-        return templates.TemplateResponse("setup/step2_credentials.html", {
-            "request": request,
+        return templates.TemplateResponse(request, "setup/step2_credentials.html", context={
             "step": 2,
             "error": "Client ID and Client Secret are required",
             "client_id": client_id,
         })
 
     if not client_id.endswith(".apps.googleusercontent.com"):
-        return templates.TemplateResponse("setup/step2_credentials.html", {
-            "request": request,
+        return templates.TemplateResponse(request, "setup/step2_credentials.html", context={
             "step": 2,
             "error": "Invalid Client ID format",
             "client_id": client_id,
@@ -260,8 +257,7 @@ async def setup_step_5(request: Request):
     confirmed = form.get("confirmed") == "on"
 
     if not confirmed:
-        return templates.TemplateResponse("setup/step5_encryption.html", {
-            "request": request,
+        return templates.TemplateResponse(request, "setup/step5_encryption.html", context={
             "step": 5,
             "error": "You must confirm that you have saved the encryption key",
             "encryption_key_b64": _oobe_data.get("encryption_key_b64"),

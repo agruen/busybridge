@@ -107,8 +107,7 @@ async def dashboard(request: Request, error: Optional[str] = None):
             "consecutive_check_failures": integrity_row["consecutive_check_failures"] or 0,
         }
 
-    return templates.TemplateResponse("dashboard.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "dashboard.html", context={
         "user": user,
         "calendars": calendars,
         "personal_calendars": personal_calendars,
@@ -146,8 +145,7 @@ async def login_page(
         org = await cursor.fetchone()
         required_domain = domain or (org["google_workspace_domain"] if org else None)
 
-    return templates.TemplateResponse("login.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "login.html", context={
         "error": error,
         "required_domain": required_domain,
         "test_mode": settings.test_mode,
@@ -180,8 +178,7 @@ async def settings_page(request: Request):
     except Exception as e:
         logger.error(f"Failed to get calendars: {e}")
 
-    return templates.TemplateResponse("settings.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "settings.html", context={
         "user": user,
         "calendars": calendars,
     })
@@ -198,8 +195,7 @@ async def sync_control_page(request: Request):
     sync_paused = bool(paused_setting and paused_setting.get("value_plain") == "true")
     managed_event_prefix = (get_settings().managed_event_prefix or "").strip()
 
-    return templates.TemplateResponse("sync_control.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "sync_control.html", context={
         "user": user,
         "sync_paused": sync_paused,
         "managed_event_prefix": managed_event_prefix,
@@ -216,8 +212,7 @@ async def exports_page(request: Request):
     from app.sync.ics_export import list_ics_backups
     backups = list_ics_backups()
 
-    return templates.TemplateResponse("exports.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "exports.html", context={
         "user": user,
         "backups": backups,
     })
@@ -276,8 +271,7 @@ async def logs_page(
 
     total_pages = (total + page_size - 1) // page_size
 
-    return templates.TemplateResponse("logs.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "logs.html", context={
         "user": user,
         "logs": logs,
         "calendars": calendars,
@@ -347,8 +341,7 @@ async def select_calendar_page(
     )
     connected_ids = {row["google_calendar_id"] for row in await cursor.fetchall()}
 
-    return templates.TemplateResponse("select_calendar.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "select_calendar.html", context={
         "user": user,
         "token_id": token_id,
         "email": email,
@@ -394,8 +387,7 @@ async def admin_dashboard(request: Request):
     )
     recent_alerts = await cursor.fetchall()
 
-    return templates.TemplateResponse("admin/dashboard.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "admin/dashboard.html", context={
         "user": user,
         "total_users": total_users,
         "active_calendars": active_calendars,
@@ -430,8 +422,7 @@ async def admin_users(request: Request, search: Optional[str] = None):
     cursor = await db.execute(query, params)
     users = await cursor.fetchall()
 
-    return templates.TemplateResponse("admin/users.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "admin/users.html", context={
         "user": user,
         "users": users,
         "search": search,
@@ -476,8 +467,7 @@ async def admin_user_detail(request: Request, user_id: int):
     )
     logs = await cursor.fetchall()
 
-    return templates.TemplateResponse("admin/user_detail.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "admin/user_detail.html", context={
         "user": user,
         "target_user": target_user,
         "calendars": calendars,
@@ -533,8 +523,7 @@ async def admin_logs(
 
     total_pages = (total + page_size - 1) // page_size
 
-    return templates.TemplateResponse("admin/logs.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "admin/logs.html", context={
         "user": user,
         "logs": logs,
         "page": page,
@@ -560,8 +549,7 @@ async def admin_settings(request: Request):
         if setting:
             settings[key] = setting.get("value_plain", "")
 
-    return templates.TemplateResponse("admin/settings.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "admin/settings.html", context={
         "user": user,
         "settings": settings,
     })
