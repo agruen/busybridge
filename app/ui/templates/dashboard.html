@@ -185,6 +185,13 @@
                             {% else %}
                             <p class="text-xs text-gray-400">Never synced</p>
                             {% endif %}
+                            <p class="text-xs text-gray-400">
+                                {{ cal['busy_block_count'] or 0 }} busy blocks
+                                {% set failures = cal['consecutive_failures'] or 0 %}
+                                {% if failures > 0 %}
+                                · <span class="text-amber-600" {% if cal['last_error'] %}title="{{ cal['last_error'][:200] }}"{% endif %}>{{ failures }} failure{{ 's' if failures != 1 }}</span>
+                                {% endif %}
+                            </p>
                             <div class="mt-2 flex items-center space-x-2 sm:hidden">
                                 <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-purple-100 text-purple-800">Personal</span>
                                 <button
@@ -288,6 +295,13 @@
                             {% else %}
                             <p class="text-xs text-gray-400">Never synced</p>
                             {% endif %}
+                            <p class="text-xs text-gray-400">
+                                {{ cal['event_count'] or 0 }} events · {{ cal['busy_block_count'] or 0 }} busy blocks
+                                {% set failures = cal['consecutive_failures'] or 0 %}
+                                {% if failures > 0 %}
+                                · <span class="text-amber-600" {% if cal['last_error'] %}title="{{ cal['last_error'][:200] }}"{% endif %}>{{ failures }} failure{{ 's' if failures != 1 }}</span>
+                                {% endif %}
+                            </p>
                             <!-- Sync progress (inline, hidden by default) -->
                             <div id="sync-progress-{{ cal['id'] }}" class="hidden mt-2">
                                 <div class="flex items-center space-x-2">
@@ -359,6 +373,19 @@
             </div>
         </div>
         {% endif %}
+    </div>
+
+    <!-- Live Sync Activity Feed -->
+    <div class="mt-8 bg-white shadow rounded-lg">
+        <div class="px-6 py-4 border-b border-gray-200 flex justify-between items-center cursor-pointer" onclick="document.getElementById('activity-body').classList.toggle('hidden')">
+            <h2 class="text-lg font-medium text-gray-900"><i class="fas fa-stream text-gray-400 mr-2"></i>Sync Activity</h2>
+            <i class="fas fa-chevron-down text-gray-400 text-sm"></i>
+        </div>
+        <div id="activity-body" class="max-h-64 overflow-y-auto">
+            <div id="activity-feed" class="divide-y divide-gray-100 px-4">
+                <p class="text-sm text-gray-400 py-4 text-center">Loading...</p>
+            </div>
+        </div>
     </div>
 </div>
 {% endblock %}
@@ -479,8 +506,16 @@ function checkSyncProgress(calId) {
             barEl.style.width = pct + '%';
             statusEl.textContent = 'Waiting for changes to settle... ' + data.remaining + 's';
         } else if (data.status === 'syncing') {
-            barEl.style.width = '80%';
-            statusEl.textContent = data.step || 'Syncing...';
+            if (data.events_total > 0) {
+                const done = data.events_processed || 0;
+                const total = data.events_total;
+                const pct = Math.round((done / total) * 100);
+                barEl.style.width = pct + '%';
+                statusEl.textContent = 'Processing event ' + done + ' of ' + total + '...';
+            } else {
+                barEl.style.width = '80%';
+                statusEl.textContent = data.step || 'Syncing...';
+            }
         } else if (data.status === 'complete') {
             barEl.style.width = '100%';
             const n = data.events_processed || 0;
@@ -517,5 +552,38 @@ function finishSyncUI(calId) {
         barEl.classList.add('bg-indigo-500');
     }, 4000);
 }
+
+// --- Live Activity Feed ---
+function refreshActivity() {
+    fetch('/api/sync/activity', { credentials: 'same-origin' })
+    .then(r => r.json())
+    .then(items => {
+        const feed = document.getElementById('activity-feed');
+        if (!items || items.length === 0) {
+            feed.innerHTML = '<p class="text-sm text-gray-400 py-4 text-center">No recent activity</p>';
+            return;
+        }
+        let html = '';
+        const shown = items.slice(0, 15);
+        for (const item of shown) {
+            const t = new Date(item.time);
+            const ts = t.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+            const levelClass = item.level === 'error' ? 'text-red-600' : item.level === 'warning' ? 'text-amber-600' : 'text-gray-500';
+            const icon = item.level === 'error' ? 'fa-times-circle text-red-400' : item.action === 'sync_complete' ? 'fa-check-circle text-green-400' : 'fa-sync-alt text-indigo-400';
+            html += '<div class="flex items-start py-2 text-xs gap-2">';
+            html += '<span class="text-gray-400 whitespace-nowrap flex-shrink-0">' + ts + '</span>';
+            html += '<i class="fas ' + icon + ' mt-0.5 flex-shrink-0"></i>';
+            html += '<span class="' + levelClass + '">';
+            if (item.calendar) html += '<span class="font-medium">' + item.calendar + '</span> ';
+            html += item.detail || item.action;
+            html += '</span></div>';
+        }
+        feed.innerHTML = html;
+    })
+    .catch(() => {});
+}
+
+refreshActivity();
+setInterval(refreshActivity, 5000);
 </script>
 {% endblock %}

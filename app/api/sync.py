@@ -288,6 +288,13 @@ async def get_cleanup_progress(user: User = Depends(get_current_user)):
     return progress
 
 
+@router.get("/activity")
+async def get_activity(user: User = Depends(get_current_user)):
+    """Return recent sync activity for the live feed."""
+    from app.sync.engine import get_sync_activity
+    return get_sync_activity()
+
+
 @router.get("/integrity")
 async def get_integrity_status(user: User = Depends(get_current_user)):
     """Get integrity check status for current user."""

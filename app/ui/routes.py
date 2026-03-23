@@ -41,7 +41,11 @@ async def dashboard(request: Request, error: Optional[str] = None):
     # Get connected client calendars
     cursor = await db.execute(
         """SELECT cc.*, ot.google_account_email, css.last_incremental_sync,
-                  css.last_full_sync, css.consecutive_failures
+                  css.last_full_sync, css.consecutive_failures, css.last_error,
+                  (SELECT COUNT(*) FROM event_mappings em
+                   WHERE em.origin_calendar_id = cc.id AND em.deleted_at IS NULL) as event_count,
+                  (SELECT COUNT(*) FROM busy_blocks bb
+                   WHERE bb.client_calendar_id = cc.id) as busy_block_count
            FROM client_calendars cc
            JOIN oauth_tokens ot ON cc.oauth_token_id = ot.id
            LEFT JOIN calendar_sync_state css ON cc.id = css.client_calendar_id
@@ -54,7 +58,9 @@ async def dashboard(request: Request, error: Optional[str] = None):
     # Get connected personal calendars
     cursor = await db.execute(
         """SELECT cc.*, ot.google_account_email, css.last_incremental_sync,
-                  css.last_full_sync, css.consecutive_failures
+                  css.last_full_sync, css.consecutive_failures, css.last_error,
+                  (SELECT COUNT(*) FROM busy_blocks bb
+                   WHERE bb.client_calendar_id = cc.id) as busy_block_count
            FROM client_calendars cc
            JOIN oauth_tokens ot ON cc.oauth_token_id = ot.id
            LEFT JOIN calendar_sync_state css ON cc.id = css.client_calendar_id

@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import re
+from collections import deque
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -42,6 +43,30 @@ _cleanup_progress: dict[int, dict] = {}
 
 # Manual sync progress tracking — keyed by client_calendar_id.
 _sync_progress: dict[int, dict] = {}
+
+# Live activity feed — recent sync events for the dashboard.
+_sync_activity: deque[dict] = deque(maxlen=50)
+
+
+def _log_activity(
+    action: str,
+    calendar: str = "",
+    detail: str = "",
+    level: str = "info",
+) -> None:
+    """Append an entry to the live activity feed."""
+    _sync_activity.append({
+        "time": datetime.now(timezone.utc).isoformat(),
+        "action": action,
+        "calendar": calendar,
+        "detail": detail,
+        "level": level,
+    })
+
+
+def get_sync_activity() -> list[dict]:
+    """Return recent sync activity, newest first."""
+    return list(reversed(_sync_activity))
 
 
 def get_cleanup_progress(user_id: int) -> Optional[dict]:
@@ -349,11 +374,19 @@ async def _sync_client_calendar(
             events = [events[i] for i in sorted(seen.values())]
 
         logger.info(f"Syncing {len(events)} events from client calendar {client_calendar_id}")
+        _log_activity("sync_start", source_label, f"{len(events)} events")
+
+        # Update manual sync progress with event counts
+        if client_calendar_id in _sync_progress:
+            _sync_progress[client_calendar_id].update({
+                "events_total": len(events), "events_processed": 0,
+            })
 
         # Process each event
         synced_count = 0
         deleted_count = 0
         processed_ids: list[str] = []
+        events_processed = 0
 
         for event in events:
             try:
@@ -409,6 +442,10 @@ async def _sync_client_calendar(
                         synced_count += 1
                     processed_ids.append(event["id"])
 
+                events_processed += 1
+                if client_calendar_id in _sync_progress:
+                    _sync_progress[client_calendar_id]["events_processed"] = events_processed
+
             except Exception as e:
                 logger.error(f"Error processing event {event.get('id')}: {e}")
                 event_errors.append(f"{event.get('id')}: {e}")
@@ -456,10 +493,12 @@ async def _sync_client_calendar(
         await db.commit()
 
         logger.info(f"Sync completed for calendar {client_calendar_id}: {synced_count} synced, {deleted_count} deleted")
+        _log_activity("sync_complete", source_label, f"{synced_count} synced, {deleted_count} deleted")
         return processed_ids
 
     except Exception as e:
         logger.exception(f"Sync failed for calendar {client_calendar_id}: {e}")
+        _log_activity("sync_error", source_label, str(e)[:120], level="error")
 
         # Update failure count
         await db.execute(
@@ -1042,6 +1081,7 @@ async def _sync_main_calendar(
         await db.commit()
 
         logger.info(f"Main calendar sync completed for user {user_id}")
+        _log_activity("sync_complete", "Main calendar", f"{len(events)} events processed")
 
         # Log success
         await db.execute(
@@ -1061,6 +1101,7 @@ async def _sync_main_calendar(
 
     except Exception as e:
         logger.exception(f"Main calendar sync failed for user {user_id}: {e}")
+        _log_activity("sync_error", "Main calendar", str(e)[:120], level="error")
 
         await db.execute(
             """UPDATE main_calendar_sync_state SET
@@ -1273,11 +1314,15 @@ async def _sync_personal_calendar(
         )
         await db.commit()
 
+        personal_label = calendar["display_name"] or personal_email
         logger.info(f"Personal calendar sync completed for calendar {personal_calendar_id}: {synced_count} synced, {deleted_count} deleted")
+        _log_activity("sync_complete", personal_label, f"{synced_count} synced, {deleted_count} deleted")
         return processed_ids
 
     except Exception as e:
+        personal_label = (calendar or {}).get("display_name") or str(personal_calendar_id)
         logger.exception(f"Personal calendar sync failed for calendar {personal_calendar_id}: {e}")
+        _log_activity("sync_error", personal_label, str(e)[:120], level="error")
 
         await db.execute(
             """UPDATE calendar_sync_state SET
