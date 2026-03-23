@@ -1,6 +1,7 @@
 """Google Calendar API wrapper."""
 
 import logging
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -11,6 +12,9 @@ from googleapiclient.errors import HttpError
 from app.config import get_settings
 
 logger = logging.getLogger(__name__)
+
+# HTTP status codes that are transient and worth retrying
+_RETRYABLE_STATUSES = {429, 500, 502, 503}
 
 
 class GoogleCalendarClient:
@@ -34,6 +38,25 @@ class GoogleCalendarClient:
             raise ValueError("Either access_token or credentials must be provided")
         self.service = build("calendar", "v3", credentials=self.credentials)
         self.settings = settings or get_settings()
+
+    def _execute_with_retry(self, request, max_retries: int = 5, base_delay: float = 1.0):
+        """Execute a Google API request with exponential backoff on transient errors.
+
+        Retries on 429 (rate limit), 500, 502, 503 (server errors).
+        Fails immediately on 400, 401, 403, 404, 409, 410, etc.
+        """
+        for attempt in range(max_retries + 1):
+            try:
+                return request.execute()
+            except HttpError as e:
+                if e.resp.status not in _RETRYABLE_STATUSES or attempt == max_retries:
+                    raise
+                delay = min(base_delay * (2 ** attempt), 30)
+                logger.warning(
+                    "Google API %s (attempt %d/%d), retrying in %.1fs",
+                    e.resp.status, attempt + 1, max_retries, delay,
+                )
+                time.sleep(delay)
 
     def list_events(
         self,
@@ -76,7 +99,9 @@ class GoogleCalendarClient:
                 if page_token:
                     request_params["pageToken"] = page_token
 
-                result = self.service.events().list(**request_params).execute()
+                result = self._execute_with_retry(
+                    self.service.events().list(**request_params),
+                )
                 all_events.extend(result.get("items", []))
 
                 page_token = result.get("nextPageToken")
@@ -131,7 +156,9 @@ class GoogleCalendarClient:
                 }
                 if page_token:
                     params["pageToken"] = page_token
-                result = self.service.events().instances(**params).execute()
+                result = self._execute_with_retry(
+                    self.service.events().instances(**params),
+                )
                 all_items.extend(result.get("items", []))
                 page_token = result.get("nextPageToken")
                 if not page_token:
@@ -147,10 +174,12 @@ class GoogleCalendarClient:
     def get_event(self, calendar_id: str, event_id: str) -> Optional[dict]:
         """Get a single event."""
         try:
-            return self.service.events().get(
-                calendarId=calendar_id,
-                eventId=event_id,
-            ).execute()
+            return self._execute_with_retry(
+                self.service.events().get(
+                    calendarId=calendar_id,
+                    eventId=event_id,
+                ),
+            )
         except HttpError as e:
             if e.resp.status == 404:
                 return None
@@ -180,7 +209,9 @@ class GoogleCalendarClient:
                     f"bb_origin_id={origin_id}",
                     f"bb_type={bb_type}",
                 ]
-            result = self.service.events().list(**params).execute()
+            result = self._execute_with_retry(
+                self.service.events().list(**params),
+            )
             return [
                 e for e in result.get("items", [])
                 if e.get("status") != "cancelled"
@@ -217,7 +248,9 @@ class GoogleCalendarClient:
             while True:
                 if page_token:
                     params["pageToken"] = page_token
-                result = self.service.events().list(**params).execute()
+                result = self._execute_with_retry(
+                    self.service.events().list(**params),
+                )
                 all_events.extend(
                     e for e in result.get("items", [])
                     if e.get("status") != "cancelled"
@@ -259,7 +292,9 @@ class GoogleCalendarClient:
                 if page_token:
                     request_params["pageToken"] = page_token
 
-                result = self.service.events().list(**request_params).execute()
+                result = self._execute_with_retry(
+                    self.service.events().list(**request_params),
+                )
                 all_events.extend(result.get("items", []))
 
                 page_token = result.get("nextPageToken")
@@ -296,13 +331,15 @@ class GoogleCalendarClient:
             event_data["extendedProperties"]["private"] = {}
         event_data["extendedProperties"]["private"][self.settings.calendar_sync_tag] = "true"
 
-        return self.service.events().insert(
-            calendarId=calendar_id,
-            body=event_data,
-            sendNotifications=send_notifications,
-            sendUpdates=send_updates,
-            conferenceDataVersion=1,
-        ).execute()
+        return self._execute_with_retry(
+            self.service.events().insert(
+                calendarId=calendar_id,
+                body=event_data,
+                sendNotifications=send_notifications,
+                sendUpdates=send_updates,
+                conferenceDataVersion=1,
+            ),
+        )
 
     def update_event(
         self,
@@ -321,14 +358,16 @@ class GoogleCalendarClient:
             event_data["extendedProperties"]["private"] = {}
         event_data["extendedProperties"]["private"][self.settings.calendar_sync_tag] = "true"
 
-        return self.service.events().update(
-            calendarId=calendar_id,
-            eventId=event_id,
-            body=event_data,
-            sendNotifications=send_notifications,
-            sendUpdates=send_updates,
-            conferenceDataVersion=1,
-        ).execute()
+        return self._execute_with_retry(
+            self.service.events().update(
+                calendarId=calendar_id,
+                eventId=event_id,
+                body=event_data,
+                sendNotifications=send_notifications,
+                sendUpdates=send_updates,
+                conferenceDataVersion=1,
+            ),
+        )
 
     def patch_event(
         self,
@@ -339,14 +378,16 @@ class GoogleCalendarClient:
         send_updates: str = "none",
     ) -> dict:
         """Patch (partial update) an event."""
-        return self.service.events().patch(
-            calendarId=calendar_id,
-            eventId=event_id,
-            body=event_patch,
-            sendNotifications=send_notifications,
-            sendUpdates=send_updates,
-            conferenceDataVersion=1,
-        ).execute()
+        return self._execute_with_retry(
+            self.service.events().patch(
+                calendarId=calendar_id,
+                eventId=event_id,
+                body=event_patch,
+                sendNotifications=send_notifications,
+                sendUpdates=send_updates,
+                conferenceDataVersion=1,
+            ),
+        )
 
     def delete_event(
         self,
@@ -356,11 +397,13 @@ class GoogleCalendarClient:
     ) -> bool:
         """Delete an event."""
         try:
-            self.service.events().delete(
-                calendarId=calendar_id,
-                eventId=event_id,
-                sendNotifications=send_notifications,
-            ).execute()
+            self._execute_with_retry(
+                self.service.events().delete(
+                    calendarId=calendar_id,
+                    eventId=event_id,
+                    sendNotifications=send_notifications,
+                ),
+            )
             return True
         except HttpError as e:
             if e.resp.status == 404:
@@ -474,13 +517,17 @@ class GoogleCalendarClient:
 
     def list_calendars(self) -> list[dict]:
         """List all calendars the user has access to."""
-        result = self.service.calendarList().list().execute()
+        result = self._execute_with_retry(
+            self.service.calendarList().list(),
+        )
         return result.get("items", [])
 
     def get_calendar(self, calendar_id: str) -> Optional[dict]:
         """Get calendar metadata."""
         try:
-            return self.service.calendars().get(calendarId=calendar_id).execute()
+            return self._execute_with_retry(
+                self.service.calendars().get(calendarId=calendar_id),
+            )
         except HttpError as e:
             if e.resp.status == 404:
                 return None
