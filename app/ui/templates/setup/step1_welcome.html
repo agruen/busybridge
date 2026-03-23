@@ -3,16 +3,18 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Setup - Calendar Sync</title>
+    <title>Setup - BusyBridge</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <style>[x-cloak] { display: none !important; }</style>
 </head>
 <body class="h-full">
     <div class="min-h-full flex flex-col justify-center py-12 sm:px-6 lg:px-8">
-        <div class="sm:mx-auto sm:w-full sm:max-w-lg">
+        <div class="sm:mx-auto sm:w-full sm:max-w-2xl">
             <div class="text-center">
                 <i class="fas fa-calendar-alt text-indigo-600 text-6xl mb-6"></i>
-                <h1 class="text-4xl font-bold text-gray-900 mb-2">Welcome to Calendar Sync</h1>
+                <h1 class="text-4xl font-bold text-gray-900 mb-2">Welcome to BusyBridge</h1>
                 <p class="text-lg text-gray-600 mb-8">
                     Let's get your calendar synchronization service set up.
                 </p>
@@ -22,46 +24,103 @@
                 <div class="mb-8">
                     <h2 class="text-lg font-medium text-gray-900 mb-4">What This App Does</h2>
                     <p class="text-gray-600 mb-4">
-                        Calendar Sync keeps your main calendar synchronized with multiple client organization calendars:
+                        BusyBridge keeps your main calendar synchronized with multiple client organization calendars:
                     </p>
                     <ul class="space-y-2 text-gray-600">
                         <li class="flex items-start">
-                            <i class="fas fa-check-circle text-green-500 mt-1 mr-2"></i>
+                            <i class="fas fa-check-circle text-green-500 mt-1 mr-2 flex-shrink-0"></i>
                             <span>Events from client calendars appear on your main calendar with full details</span>
                         </li>
                         <li class="flex items-start">
-                            <i class="fas fa-check-circle text-green-500 mt-1 mr-2"></i>
+                            <i class="fas fa-check-circle text-green-500 mt-1 mr-2 flex-shrink-0"></i>
                             <span>Your main calendar events appear as "Busy" blocks on client calendars</span>
                         </li>
                         <li class="flex items-start">
-                            <i class="fas fa-check-circle text-green-500 mt-1 mr-2"></i>
-                            <span>Changes sync bidirectionally and automatically</span>
+                            <i class="fas fa-check-circle text-green-500 mt-1 mr-2 flex-shrink-0"></i>
+                            <span>Changes sync bidirectionally and automatically via webhooks and periodic polling</span>
                         </li>
                     </ul>
                 </div>
 
                 <div class="mb-8">
                     <h2 class="text-lg font-medium text-gray-900 mb-4">Before You Begin</h2>
-                    <p class="text-gray-600 mb-4">Make sure you have:</p>
-                    <ul class="space-y-3">
-                        <li class="flex items-center">
-                            <input type="checkbox" class="h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500">
-                            <span class="ml-3 text-gray-700">A Google Cloud project with Calendar API enabled</span>
-                        </li>
-                        <li class="flex items-center">
-                            <input type="checkbox" class="h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500">
-                            <span class="ml-3 text-gray-700">OAuth 2.0 credentials (Client ID and Secret)</span>
-                        </li>
-                        <li class="flex items-center">
-                            <input type="checkbox" class="h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500">
-                            <span class="ml-3 text-gray-700">Admin access to your Google Workspace</span>
-                        </li>
-                    </ul>
-                    <p class="mt-4 text-sm text-gray-500">
-                        <a href="https://console.cloud.google.com/" target="_blank" class="text-indigo-600 hover:text-indigo-500">
-                            <i class="fas fa-external-link-alt mr-1"></i>Open Google Cloud Console
-                        </a>
+                    <p class="text-gray-600 mb-4">
+                        This setup wizard will walk you through each step in detail, but here's an overview of what you'll need to do:
                     </p>
+
+                    <div class="space-y-4">
+                        <div class="border border-gray-200 rounded-lg p-4" x-data="{ open: false }">
+                            <button @click="open = !open" class="w-full flex items-center justify-between text-left">
+                                <div class="flex items-center">
+                                    <div class="flex-shrink-0 h-8 w-8 rounded-full bg-indigo-100 flex items-center justify-center mr-3">
+                                        <span class="text-indigo-600 font-medium text-sm">1</span>
+                                    </div>
+                                    <div>
+                                        <h3 class="text-sm font-medium text-gray-900">Create a Google Cloud Project</h3>
+                                        <p class="text-xs text-gray-500">~5 minutes</p>
+                                    </div>
+                                </div>
+                                <i class="fas text-gray-400" :class="open ? 'fa-chevron-down' : 'fa-chevron-right'"></i>
+                            </button>
+                            <div x-show="open" x-cloak class="mt-3 ml-11 text-sm text-gray-600">
+                                You'll create a project in the Google Cloud Console, enable the Google Calendar API,
+                                configure an OAuth consent screen, and create OAuth 2.0 credentials (Client ID and Secret).
+                                Step 2 of this wizard covers this in detail.
+                            </div>
+                        </div>
+
+                        <div class="border border-gray-200 rounded-lg p-4" x-data="{ open: false }">
+                            <button @click="open = !open" class="w-full flex items-center justify-between text-left">
+                                <div class="flex items-center">
+                                    <div class="flex-shrink-0 h-8 w-8 rounded-full bg-indigo-100 flex items-center justify-center mr-3">
+                                        <span class="text-indigo-600 font-medium text-sm">2</span>
+                                    </div>
+                                    <div>
+                                        <h3 class="text-sm font-medium text-gray-900">Sign in as Admin</h3>
+                                        <p class="text-xs text-gray-500">~1 minute</p>
+                                    </div>
+                                </div>
+                                <i class="fas text-gray-400" :class="open ? 'fa-chevron-down' : 'fa-chevron-right'"></i>
+                            </button>
+                            <div x-show="open" x-cloak class="mt-3 ml-11 text-sm text-gray-600">
+                                You'll sign in with your Google Workspace account. This becomes the first admin user,
+                                and the domain from your email sets who else can use the service.
+                            </div>
+                        </div>
+
+                        <div class="border border-gray-200 rounded-lg p-4" x-data="{ open: false }">
+                            <button @click="open = !open" class="w-full flex items-center justify-between text-left">
+                                <div class="flex items-center">
+                                    <div class="flex-shrink-0 h-8 w-8 rounded-full bg-indigo-100 flex items-center justify-center mr-3">
+                                        <span class="text-indigo-600 font-medium text-sm">3</span>
+                                    </div>
+                                    <div>
+                                        <h3 class="text-sm font-medium text-gray-900">Configure Alerts &amp; Encryption</h3>
+                                        <p class="text-xs text-gray-500">~2 minutes</p>
+                                    </div>
+                                </div>
+                                <i class="fas text-gray-400" :class="open ? 'fa-chevron-down' : 'fa-chevron-right'"></i>
+                            </button>
+                            <div x-show="open" x-cloak class="mt-3 ml-11 text-sm text-gray-600">
+                                Optionally configure email alerts for sync failures, then save the encryption key
+                                that protects your OAuth tokens at rest.
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="mb-8 rounded-md bg-blue-50 p-4">
+                    <div class="flex">
+                        <i class="fas fa-info-circle text-blue-400 mt-0.5 flex-shrink-0"></i>
+                        <div class="ml-3 text-sm text-blue-700">
+                            <p class="font-medium">Requirements</p>
+                            <ul class="mt-2 space-y-1">
+                                <li>A Google account with access to <a href="https://console.cloud.google.com/" target="_blank" class="underline">Google Cloud Console</a></li>
+                                <li>This server must be reachable at a public HTTPS URL (for OAuth callbacks and webhooks)</li>
+                                <li>About 10 minutes for the full setup</li>
+                            </ul>
+                        </div>
+                    </div>
                 </div>
 
                 <a href="/setup?step=2" class="w-full flex justify-center py-3 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
@@ -74,6 +133,7 @@
             <div class="mt-8 flex justify-center">
                 <div class="flex space-x-2">
                     <div class="h-2 w-8 rounded-full bg-indigo-600"></div>
+                    <div class="h-2 w-8 rounded-full bg-gray-300"></div>
                     <div class="h-2 w-8 rounded-full bg-gray-300"></div>
                     <div class="h-2 w-8 rounded-full bg-gray-300"></div>
                     <div class="h-2 w-8 rounded-full bg-gray-300"></div>

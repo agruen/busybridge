@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Email Alerts - Setup - Calendar Sync</title>
+    <title>Email Alerts - Setup - BusyBridge</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
@@ -11,20 +11,29 @@
 </head>
 <body class="h-full">
     <div class="min-h-full flex flex-col justify-center py-12 sm:px-6 lg:px-8">
-        <div class="sm:mx-auto sm:w-full sm:max-w-lg">
+        <div class="sm:mx-auto sm:w-full sm:max-w-2xl">
             <div class="text-center mb-8">
                 <i class="fas fa-envelope text-indigo-600 text-4xl mb-4"></i>
                 <h1 class="text-2xl font-bold text-gray-900">Email Alerts</h1>
-                <p class="mt-2 text-gray-600">Configure email notifications for sync failures and issues.</p>
+                <p class="mt-2 text-gray-600">Optionally configure email notifications for sync failures and issues.</p>
             </div>
 
             <div class="bg-white py-8 px-6 shadow rounded-lg">
+                <div class="rounded-md bg-blue-50 p-4 mb-6">
+                    <div class="flex">
+                        <i class="fas fa-info-circle text-blue-400 mt-0.5 flex-shrink-0"></i>
+                        <div class="ml-3 text-sm text-blue-700">
+                            <p>Email alerts notify you about sync failures, repeated errors, and other issues that need attention. This is optional &mdash; you can also monitor sync status from the dashboard. You can configure this later in Admin Settings.</p>
+                        </div>
+                    </div>
+                </div>
+
                 <form action="/setup/step/4" method="POST" class="space-y-6" x-data="{ enabled: false }">
                     <div class="flex items-center">
                         <input type="checkbox" id="enabled" name="enabled" x-model="enabled"
                             class="h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500">
                         <label for="enabled" class="ml-3 text-sm font-medium text-gray-700">
-                            Enable email alerts for sync failures and issues
+                            Enable email alerts
                         </label>
                     </div>
 
@@ -40,6 +49,7 @@
                                 <label for="smtp_port" class="block text-sm font-medium text-gray-700">SMTP Port</label>
                                 <input type="number" id="smtp_port" name="smtp_port" value="587"
                                     class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm py-2 px-3 border">
+                                <p class="mt-1 text-xs text-gray-500">587 for STARTTLS, 465 for SSL</p>
                             </div>
                         </div>
 
@@ -55,7 +65,11 @@
                             <input type="password" id="smtp_password" name="smtp_password"
                                 placeholder="App password or SMTP password"
                                 class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm py-2 px-3 border">
-                            <p class="mt-1 text-xs text-gray-500">For Gmail, use an App Password</p>
+                            <p class="mt-1 text-xs text-gray-500">
+                                For Gmail: use an
+                                <a href="https://myaccount.google.com/apppasswords" target="_blank" class="text-indigo-600 hover:underline">App Password</a>
+                                (requires 2-factor authentication on your Google account).
+                            </p>
                         </div>
 
                         <div>
@@ -66,11 +80,11 @@
                         </div>
 
                         <div>
-                            <label for="alert_emails" class="block text-sm font-medium text-gray-700">Admin Notification Emails</label>
+                            <label for="alert_emails" class="block text-sm font-medium text-gray-700">Send Alerts To</label>
                             <input type="text" id="alert_emails" name="alert_emails"
                                 placeholder="admin@example.com, another@example.com"
                                 class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm py-2 px-3 border">
-                            <p class="mt-1 text-xs text-gray-500">Comma-separated list of emails for admin alerts</p>
+                            <p class="mt-1 text-xs text-gray-500">Comma-separated list of email addresses to receive alert notifications</p>
                         </div>
                     </div>
 
@@ -95,6 +109,7 @@
                     <div class="h-2 w-8 rounded-full bg-indigo-600"></div>
                     <div class="h-2 w-8 rounded-full bg-indigo-600"></div>
                     <div class="h-2 w-8 rounded-full bg-indigo-600"></div>
+                    <div class="h-2 w-8 rounded-full bg-gray-300"></div>
                     <div class="h-2 w-8 rounded-full bg-gray-300"></div>
                     <div class="h-2 w-8 rounded-full bg-gray-300"></div>
                 </div>

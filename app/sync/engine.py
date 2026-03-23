@@ -1910,6 +1910,12 @@ async def _cleanup_managed_events_impl(
                     continue
                 if event.get("status") == "cancelled":
                     continue  # Already deleted/in trash
+                logger.info(
+                    "Prefix sweep candidate on %s: id=%s summary=%r has_prefix=%s extProps=%s",
+                    label, event_id, (event.get("summary") or "")[:60],
+                    _event_has_managed_prefix(event, managed_prefix),
+                    event.get("extendedProperties", {}).get("private", {}),
+                )
                 if not _event_has_managed_prefix(event, managed_prefix):
                     continue
                 summary["prefix_matches_found"] += 1

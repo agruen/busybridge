@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full bg-gray-50">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Setup Complete - BusyBridge</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <style>[x-cloak] { display: none !important; }</style>
+</head>
+<body class="h-full">
+    <div class="min-h-full flex flex-col justify-center py-12 sm:px-6 lg:px-8">
+        <div class="sm:mx-auto sm:w-full sm:max-w-2xl">
+            <div class="text-center mb-8">
+                <div class="inline-flex items-center justify-center h-20 w-20 rounded-full bg-green-100 mb-6">
+                    <i class="fas fa-check text-green-600 text-4xl"></i>
+                </div>
+                <h1 class="text-3xl font-bold text-gray-900">Setup Complete!</h1>
+                <p class="mt-2 text-lg text-gray-600">BusyBridge is ready to use.</p>
+            </div>
+
+            <div class="bg-white py-8 px-6 shadow rounded-lg">
+                <h2 class="text-lg font-medium text-gray-900 mb-4">Getting Started</h2>
+
+                <div class="space-y-4 mb-8">
+                    <div class="flex items-start">
+                        <div class="flex-shrink-0 h-8 w-8 rounded-full bg-indigo-100 flex items-center justify-center">
+                            <span class="text-indigo-600 font-medium">1</span>
+                        </div>
+                        <div class="ml-4">
+                            <h3 class="text-sm font-medium text-gray-900">Select Your Main Calendar</h3>
+                            <p class="text-sm text-gray-500">Go to Settings and choose which calendar should receive all synced events. This is usually your primary work calendar.</p>
+                        </div>
+                    </div>
+
+                    {% if sa_uploaded and sa_email %}
+                    <div class="flex items-start">
+                        <div class="flex-shrink-0 h-8 w-8 rounded-full bg-indigo-100 flex items-center justify-center">
+                            <span class="text-indigo-600 font-medium">2</span>
+                        </div>
+                        <div class="ml-4">
+                            <h3 class="text-sm font-medium text-gray-900">Share Calendar with Service Account</h3>
+                            <p class="text-sm text-gray-500">
+                                In <a href="https://calendar.google.com" target="_blank" class="text-indigo-600 hover:underline">Google Calendar</a>, go to your main calendar's <strong>Settings and sharing</strong> &rarr; <strong>Share with specific people</strong> and add:
+                            </p>
+                            <div class="mt-2 flex items-center bg-gray-50 rounded-md p-2" x-data="{ copied: false }">
+                                <code class="text-xs text-indigo-600 break-all flex-1" id="sa-email">{{ sa_email }}</code>
+                                <button type="button"
+                                    @click="navigator.clipboard.writeText(document.getElementById('sa-email').textContent.trim()); copied = true; setTimeout(() => copied = false, 2000)"
+                                    class="ml-2 text-gray-400 hover:text-indigo-600 flex-shrink-0">
+                                    <span x-show="!copied"><i class="fas fa-copy"></i></span>
+                                    <span x-show="copied" x-cloak class="text-green-600"><i class="fas fa-check"></i></span>
+                                </button>
+                            </div>
+                            <p class="text-xs text-gray-500 mt-1">Grant <strong>Make changes to events</strong> permission. Then activate via <strong>Admin Settings</strong>.</p>
+                        </div>
+                    </div>
+                    {% endif %}
+
+                    <div class="flex items-start">
+                        <div class="flex-shrink-0 h-8 w-8 rounded-full bg-indigo-100 flex items-center justify-center">
+                            <span class="text-indigo-600 font-medium">{{ '3' if sa_uploaded else '2' }}</span>
+                        </div>
+                        <div class="ml-4">
+                            <h3 class="text-sm font-medium text-gray-900">Connect Client Calendars</h3>
+                            <p class="text-sm text-gray-500">From the dashboard, connect calendars from your client organizations. You'll sign into each client's Google account and select which calendar to sync.</p>
+                        </div>
+                    </div>
+
+                    <div class="flex items-start">
+                        <div class="flex-shrink-0 h-8 w-8 rounded-full bg-indigo-100 flex items-center justify-center">
+                            <span class="text-indigo-600 font-medium">{{ '4' if sa_uploaded else '3' }}</span>
+                        </div>
+                        <div class="ml-4">
+                            <h3 class="text-sm font-medium text-gray-900">Let It Sync</h3>
+                            <p class="text-sm text-gray-500">Events sync automatically every 5 minutes, with near-instant sync via webhooks for most changes. You can also trigger a manual sync from the dashboard.</p>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="mt-6">
+                    <a href="/app" class="w-full flex justify-center py-3 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700">
+                        Go to Dashboard
+                        <i class="fas fa-arrow-right ml-2"></i>
+                    </a>
+                </div>
+            </div>
+
+            <!-- Progress indicator -->
+            <div class="mt-8 flex justify-center">
+                <div class="flex space-x-2">
+                    <div class="h-2 w-8 rounded-full bg-indigo-600"></div>
+                    <div class="h-2 w-8 rounded-full bg-indigo-600"></div>
+                    <div class="h-2 w-8 rounded-full bg-indigo-600"></div>
+                    <div class="h-2 w-8 rounded-full bg-indigo-600"></div>
+                    <div class="h-2 w-8 rounded-full bg-indigo-600"></div>
+                    <div class="h-2 w-8 rounded-full bg-indigo-600"></div>
+                    <div class="h-2 w-8 rounded-full bg-indigo-600"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+</body>
+</html>

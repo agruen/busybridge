@@ -787,3 +787,30 @@ async def test_service_account_access(
         "sa_tier": 2,
         "message": f"Service account can access {user['main_calendar_id']}",
     }
+
+
+@router.post("/service-account/deactivate/{user_id}")
+async def deactivate_service_account(
+    user_id: int,
+    admin: User = Depends(require_admin),
+):
+    """Deactivate service account for a user (set sa_tier back to 0)."""
+    db = await get_database()
+
+    cursor = await db.execute("SELECT id, email FROM users WHERE id = ?", (user_id,))
+    user = await cursor.fetchone()
+
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found",
+        )
+
+    await db.execute("UPDATE users SET sa_tier = 0 WHERE id = ?", (user_id,))
+    await db.commit()
+
+    return {
+        "status": "ok",
+        "sa_tier": 0,
+        "message": f"Service account deactivated for {user['email']}",
+    }

@@ -107,6 +107,81 @@
             </div>
         </div>
 
+        <!-- Service Account -->
+        <div class="bg-white shadow rounded-lg">
+            <div class="px-6 py-4 border-b border-gray-200">
+                <h2 class="text-lg font-medium text-gray-900">Service Account</h2>
+                <p class="mt-1 text-sm text-gray-500">A service account makes synced events immovable (non-draggable) on your main calendar.</p>
+            </div>
+            <div class="px-6 py-4">
+                {% if sa_configured %}
+                <div class="mb-4">
+                    <div class="flex items-center mb-2">
+                        <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800 mr-2">
+                            <i class="fas fa-check-circle mr-1"></i> Key Loaded
+                        </span>
+                    </div>
+                    <p class="text-sm text-gray-600">
+                        <span class="font-medium">Service account email:</span>
+                        <code class="ml-1 text-xs bg-gray-100 px-2 py-1 rounded break-all">{{ sa_email }}</code>
+                    </p>
+                </div>
+
+                <!-- Per-user activation -->
+                <div class="border-t border-gray-200 pt-4">
+                    <h3 class="text-sm font-medium text-gray-900 mb-3">User Activation</h3>
+                    <p class="text-xs text-gray-500 mb-3">
+                        Each user's main calendar must be shared with the service account email above (<strong>Make changes to events</strong> permission) before activation will succeed.
+                    </p>
+                    <div class="space-y-3">
+                        {% for u in all_users %}
+                        <div class="flex items-center justify-between p-3 bg-gray-50 rounded-md" id="sa-user-{{ u.id }}">
+                            <div class="flex-1 min-w-0">
+                                <p class="text-sm font-medium text-gray-900 truncate">{{ u.display_name or u.email }}</p>
+                                <p class="text-xs text-gray-500 truncate">{{ u.email }}</p>
+                                {% if not u.main_calendar_id %}
+                                <p class="text-xs text-amber-600"><i class="fas fa-exclamation-triangle mr-1"></i>No main calendar set</p>
+                                {% endif %}
+                            </div>
+                            <div class="ml-4 flex items-center space-x-2">
+                                {% if u.sa_tier == 2 %}
+                                <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
+                                    <i class="fas fa-check mr-1"></i> Active
+                                </span>
+                                <button type="button"
+                                    onclick="saAction('deactivate', {{ u.id }})"
+                                    class="inline-flex items-center px-3 py-1.5 border border-gray-300 text-xs font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50">
+                                    Deactivate
+                                </button>
+                                {% else %}
+                                <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-600">
+                                    Inactive
+                                </span>
+                                <button type="button"
+                                    onclick="saAction('test', {{ u.id }})"
+                                    {% if not u.main_calendar_id %}disabled{% endif %}
+                                    class="inline-flex items-center px-3 py-1.5 border border-transparent text-xs font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed">
+                                    Activate
+                                </button>
+                                {% endif %}
+                            </div>
+                        </div>
+                        {% endfor %}
+                    </div>
+                </div>
+                {% else %}
+                <div class="text-center py-6">
+                    <i class="fas fa-robot text-gray-300 text-3xl mb-3"></i>
+                    <p class="text-sm text-gray-500 mb-2">No service account key is configured.</p>
+                    <p class="text-xs text-gray-400">
+                        To set up a service account, place a JSON key file in the <code class="bg-gray-100 px-1 rounded">secrets/</code> directory
+                        and set <code class="bg-gray-100 px-1 rounded">SERVICE_ACCOUNT_KEY_FILE</code> in your environment, then restart the container.
+                    </p>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+
         <!-- Danger Zone -->
         <div class="bg-white shadow rounded-lg border-2 border-red-200">
             <div class="px-6 py-4 border-b border-gray-200 bg-red-50">
@@ -140,6 +215,33 @@
 
 {% block scripts %}
 <script>
+    async function saAction(action, userId) {
+        const btn = event.target;
+        const origText = btn.textContent;
+        btn.disabled = true;
+        btn.textContent = action === 'test' ? 'Testing...' : 'Processing...';
+
+        try {
+            const url = action === 'deactivate'
+                ? `/api/admin/service-account/deactivate/${userId}`
+                : `/api/admin/service-account/test/${userId}`;
+            const resp = await fetch(url, { method: 'POST' });
+            const data = await resp.json();
+
+            if (resp.ok) {
+                window.location.reload();
+            } else {
+                alert(data.detail || 'Operation failed');
+                btn.disabled = false;
+                btn.textContent = origText;
+            }
+        } catch (e) {
+            alert('Request failed: ' + e.message);
+            btn.disabled = false;
+            btn.textContent = origText;
+        }
+    }
+
     async function saveAdminSettings() {
         const body = {
             smtp_host: document.getElementById('smtp_host').value || null,

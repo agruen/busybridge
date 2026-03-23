@@ -549,7 +549,22 @@ async def admin_settings(request: Request):
         if setting:
             settings[key] = setting.get("value_plain", "")
 
+    # Service account status
+    from app.auth.service_account import is_sa_configured, get_sa_email
+    sa_configured = is_sa_configured()
+    sa_email = get_sa_email() if sa_configured else None
+
+    # Get all users with their SA tier
+    db = await get_database()
+    cursor = await db.execute(
+        "SELECT id, email, display_name, main_calendar_id, sa_tier FROM users ORDER BY id"
+    )
+    all_users = [dict(row) for row in await cursor.fetchall()]
+
     return templates.TemplateResponse(request, "admin/settings.html", context={
         "user": user,
         "settings": settings,
+        "sa_configured": sa_configured,
+        "sa_email": sa_email,
+        "all_users": all_users,
     })

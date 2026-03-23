@@ -654,8 +654,6 @@ def create_busy_block(
 
     if use_service_account:
         event["guestsCanModify"] = False
-        if main_email:
-            event["attendees"] = [{"email": main_email, "responseStatus": "accepted"}]
 
     _set_bb_props(event, origin_props)
     return event
@@ -699,8 +697,6 @@ def create_personal_busy_block(
 
     if use_service_account:
         event["guestsCanModify"] = False
-        if main_email:
-            event["attendees"] = [{"email": main_email, "responseStatus": "accepted"}]
 
     _set_bb_props(event, origin_props)
     return event
@@ -740,16 +736,6 @@ def copy_event_for_main(
         "transparency": source_event.get("transparency", "opaque"),
     }
 
-    # Service account mode: SA is organizer, so control editability via guestsCanModify
-    if use_service_account:
-        event["guestsCanModify"] = user_can_edit
-        # Ensure the user is an attendee so they see the event on their calendar
-        if main_email:
-            event["attendees"] = [{
-                "email": main_email,
-                "responseStatus": current_rsvp_status or "accepted",
-            }]
-
     # Apply color to distinguish events from different client calendars
     if color_id:
         event["colorId"] = color_id
@@ -767,8 +753,7 @@ def copy_event_for_main(
     # Inject main_email as sole attendee so Google shows native RSVP buttons.
     # Use current_rsvp_status (from DB) on updates to avoid resetting an
     # existing response back to needsAction.
-    # Skip if SA mode already set attendees above.
-    if not use_service_account and source_event.get("attendees") and main_email:
+    if source_event.get("attendees") and main_email:
         event["attendees"] = [{
             "email": main_email,
             "responseStatus": current_rsvp_status or "needsAction",

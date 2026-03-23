@@ -3,20 +3,20 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Admin Setup - Calendar Sync</title>
+    <title>Admin Setup - BusyBridge</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
 </head>
 <body class="h-full">
     <div class="min-h-full flex flex-col justify-center py-12 sm:px-6 lg:px-8">
-        <div class="sm:mx-auto sm:w-full sm:max-w-lg">
+        <div class="sm:mx-auto sm:w-full sm:max-w-2xl">
             <div class="text-center mb-8">
                 <i class="fas fa-user-shield text-indigo-600 text-4xl mb-4"></i>
                 <h1 class="text-2xl font-bold text-gray-900">Admin Authentication</h1>
                 {% if test_mode %}
                 <p class="mt-2 text-gray-600">Sign in with an allowlisted Google account to become the admin.</p>
                 {% else %}
-                <p class="mt-2 text-gray-600">Sign in with your Google Workspace account to become the admin.</p>
+                <p class="mt-2 text-gray-600">Sign in with your Google Workspace account to become the first admin.</p>
                 {% endif %}
             </div>
 
@@ -24,16 +24,16 @@
                 {% if error %}
                 <div class="mb-4 rounded-md bg-red-50 p-4">
                     <div class="flex">
-                        <i class="fas fa-exclamation-circle text-red-400 mt-0.5"></i>
+                        <i class="fas fa-exclamation-circle text-red-400 mt-0.5 flex-shrink-0"></i>
                         <p class="ml-3 text-sm text-red-700">
                             {% if error == 'admin_not_allowed' %}
-                                This Google account is not in TEST_MODE_ALLOWED_HOME_EMAILS.
+                                This Google account is not in the TEST_MODE_ALLOWED_HOME_EMAILS list. Check your environment variables.
                             {% elif error == 'test_mode_no_home_allowlist' %}
-                                TEST_MODE is enabled but TEST_MODE_ALLOWED_HOME_EMAILS is empty.
+                                TEST_MODE is enabled but TEST_MODE_ALLOWED_HOME_EMAILS is empty. Add at least one email to the environment variable.
                             {% elif error == 'invalid_state' %}
-                                Sign-in state was invalid or expired. Try again.
+                                Sign-in state was invalid or expired. Please try again.
                             {% elif error == 'oauth_failed' %}
-                                Google sign-in failed. Try again.
+                                Google sign-in failed. Make sure the redirect URI <code class="bg-red-100 px-1 rounded">{{ public_url }}/setup/step/3/callback</code> is added to your OAuth credentials in Google Cloud Console.
                             {% else %}
                                 {{ error }}
                             {% endif %}
@@ -57,11 +57,11 @@
 
                 <div class="rounded-md bg-blue-50 p-4 mb-6">
                     <div class="flex">
-                        <i class="fas fa-info-circle text-blue-400 mt-0.5"></i>
+                        <i class="fas fa-info-circle text-blue-400 mt-0.5 flex-shrink-0"></i>
                         <div class="ml-3">
                             {% if test_mode %}
                             <p class="text-sm text-blue-700">
-                                TEST_MODE is enabled. Home login will be restricted to configured allowlisted emails.
+                                <strong>Test mode is enabled.</strong> Only the emails listed in TEST_MODE_ALLOWED_HOME_EMAILS can log in.
                             </p>
                             {% if allowed_home_emails %}
                             <p class="mt-2 text-xs text-blue-800 font-mono break-all">
@@ -75,6 +75,7 @@
                             {% else %}
                             <p class="text-sm text-blue-700">
                                 This will restrict the service to <strong>@{{ oobe_data['domain'] }}</strong> users only.
+                                Other users from your Google Workspace domain will be able to sign in and connect their own client calendars.
                             </p>
                             {% endif %}
                         </div>
@@ -100,19 +101,43 @@
                 </div>
                 {% else %}
                 <!-- Need to authenticate -->
-                <div class="text-center">
-                    {% if test_mode %}
-                    <p class="text-gray-600 mb-6">
-                        The account you sign in with will become the first admin. Only allowlisted home emails can log in while TEST_MODE is enabled.
-                    </p>
-                    {% if allowed_home_emails %}
-                    <p class="text-xs text-blue-700 mb-6 font-mono break-all">{{ allowed_home_emails|join(", ") }}</p>
-                    {% endif %}
-                    {% else %}
-                    <p class="text-gray-600 mb-6">
-                        The account you sign in with will become the first admin. Other users from the same Google Workspace domain will be able to use this service.
-                    </p>
-                    {% endif %}
+                <div>
+                    <div class="mb-6 p-4 bg-gray-50 rounded-md">
+                        <h3 class="text-sm font-medium text-gray-900 mb-2">What happens when you sign in:</h3>
+                        <ul class="text-sm text-gray-600 space-y-2">
+                            <li class="flex items-start">
+                                <i class="fas fa-check text-green-500 mt-0.5 mr-2 flex-shrink-0"></i>
+                                <span>Your account becomes the first admin user with full control of BusyBridge</span>
+                            </li>
+                            <li class="flex items-start">
+                                <i class="fas fa-check text-green-500 mt-0.5 mr-2 flex-shrink-0"></i>
+                                <span>BusyBridge gets permission to read and write events on your calendar</span>
+                            </li>
+                            {% if test_mode %}
+                            <li class="flex items-start">
+                                <i class="fas fa-check text-green-500 mt-0.5 mr-2 flex-shrink-0"></i>
+                                <span>Only allowlisted accounts will be able to log in</span>
+                            </li>
+                            {% if allowed_home_emails %}
+                            <li class="ml-7 text-xs text-gray-500 font-mono break-all">{{ allowed_home_emails|join(", ") }}</li>
+                            {% endif %}
+                            {% else %}
+                            <li class="flex items-start">
+                                <i class="fas fa-check text-green-500 mt-0.5 mr-2 flex-shrink-0"></i>
+                                <span>The domain from your email (e.g., @yourcompany.com) sets who else can use the service</span>
+                            </li>
+                            {% endif %}
+                        </ul>
+                    </div>
+
+                    <div class="rounded-md bg-amber-50 p-4 mb-6">
+                        <div class="flex">
+                            <i class="fas fa-exclamation-triangle text-amber-400 mt-0.5 flex-shrink-0"></i>
+                            <div class="ml-3 text-sm text-amber-700">
+                                <p>Google will show a consent screen asking for calendar access. You must click <strong>Allow</strong> for BusyBridge to function. If the consent screen says "Google hasn't verified this app", click <strong>Advanced</strong> &rarr; <strong>Go to BusyBridge (unsafe)</strong>. This warning is normal for self-hosted apps.</p>
+                            </div>
+                        </div>
+                    </div>
 
                     <a href="/setup/step/3/auth" class="w-full flex justify-center py-3 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700">
                         <i class="fab fa-google mr-2"></i>
@@ -134,6 +159,7 @@
                     <div class="h-2 w-8 rounded-full bg-indigo-600"></div>
                     <div class="h-2 w-8 rounded-full bg-indigo-600"></div>
                     <div class="h-2 w-8 rounded-full bg-indigo-600"></div>
+                    <div class="h-2 w-8 rounded-full bg-gray-300"></div>
                     <div class="h-2 w-8 rounded-full bg-gray-300"></div>
                     <div class="h-2 w-8 rounded-full bg-gray-300"></div>
                     <div class="h-2 w-8 rounded-full bg-gray-300"></div>

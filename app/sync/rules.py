@@ -65,9 +65,12 @@ async def sync_client_event_to_main(
     # Determine if user can edit
     user_can_edit = can_user_edit_event(event, client_email)
 
-    # Use SA client for main calendar writes when available
-    use_sa = sa_main_client is not None
-    write_client = sa_main_client if use_sa else main_client
+    # Always use the user's own token for client-event copies on main.
+    # This keeps events movable and enables native RSVP buttons for
+    # invites.  The SA is reserved for personal busy blocks on main
+    # (immovable placeholders).
+    use_sa = False
+    write_client = main_client
 
     # Determine the current RSVP status.  Prefer the live value from the
     # client event's attendees (covers "accepted from email" etc.) and fall
@@ -1192,7 +1195,11 @@ async def sync_personal_event_to_all(
                 write_client.update_event(main_calendar_id, main_event_id, busy_block)
                 logger.info(f"Updated personal busy block {main_event_id} on main calendar")
             except HttpError as e:
-                if e.resp.status in (404, 410):
+                if e.resp.status == 403 and "forbiddenForServiceAccounts" in str(e):
+                    logger.warning("SA cannot add attendees (no DWD), retrying update without attendees")
+                    busy_block.pop("attendees", None)
+                    write_client.update_event(main_calendar_id, main_event_id, busy_block)
+                elif e.resp.status in (404, 410):
                     result = write_client.create_event(main_calendar_id, busy_block)
                     main_event_id = result["id"]
                 else:
@@ -1217,6 +1224,21 @@ async def sync_personal_event_to_all(
             result = write_client.create_event(main_calendar_id, busy_block)
             main_event_id = result["id"]
             logger.info(f"Created personal busy block {main_event_id} on main calendar")
+        except HttpError as e:
+            if e.resp.status == 403 and "forbiddenForServiceAccounts" in str(e):
+                # Domain-Wide Delegation not configured — retry without attendees
+                logger.warning("SA cannot add attendees (no DWD), retrying without attendees")
+                busy_block.pop("attendees", None)
+                try:
+                    result = write_client.create_event(main_calendar_id, busy_block)
+                    main_event_id = result["id"]
+                    logger.info(f"Created personal busy block {main_event_id} on main calendar (no attendees)")
+                except Exception as e2:
+                    logger.error(f"Failed to create personal main event (retry): {e2}")
+                    return None
+            else:
+                logger.error(f"Failed to create personal main event: {e}")
+                return None
         except Exception as e:
             logger.error(f"Failed to create personal main event: {e}")
             return None

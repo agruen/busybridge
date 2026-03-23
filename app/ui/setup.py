@@ -1,11 +1,12 @@
 """OOBE (Out-of-Box Experience) setup wizard routes."""
 
+import json
 import logging
 import os
 import secrets
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, HTTPException, Request, UploadFile, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
@@ -27,6 +28,9 @@ templates = Jinja2Templates(directory="app/ui/templates")
 # Temporary storage for OOBE data (in production, use secure session storage)
 _oobe_data: dict = {}
 
+# Default path for service account key inside the container
+SA_KEY_PATH = "/secrets/sa-key.json"
+
 
 class Step2Request(BaseModel):
     """Google credentials request."""
@@ -46,7 +50,13 @@ class Step4Request(BaseModel):
 
 
 @router.get("", response_class=HTMLResponse)
-async def setup_wizard(request: Request, step: int = 1, error: Optional[str] = None):
+async def setup_wizard(
+    request: Request,
+    step: int = 1,
+    error: Optional[str] = None,
+    sa: Optional[str] = None,
+    sa_email: Optional[str] = None,
+):
     """OOBE setup wizard."""
     if await is_oobe_completed():
         return RedirectResponse(url="/app", status_code=status.HTTP_302_FOUND)
@@ -56,8 +66,9 @@ async def setup_wizard(request: Request, step: int = 1, error: Optional[str] = N
         2: "setup/step2_credentials.html",
         3: "setup/step3_admin.html",
         4: "setup/step4_email.html",
-        5: "setup/step5_encryption.html",
-        6: "setup/step6_complete.html",
+        5: "setup/step5_service_account.html",
+        6: "setup/step6_encryption.html",
+        7: "setup/step7_complete.html",
     }
 
     template = template_map.get(step, "setup/step1_welcome.html")
@@ -70,15 +81,26 @@ async def setup_wizard(request: Request, step: int = 1, error: Optional[str] = N
         "error": error,
         "test_mode": settings.test_mode,
         "allowed_home_emails": sorted(get_test_mode_home_allowlist()) if settings.test_mode else [],
+        "public_url": settings.public_url.rstrip("/"),
     }
 
-    # For step 5, generate encryption key if not already done
-    if step == 5 and "encryption_key" not in _oobe_data:
+    # For step 5, include SA upload status
+    if step == 5:
+        context["sa_uploaded"] = _oobe_data.get("sa_uploaded", False)
+        context["sa_email"] = _oobe_data.get("sa_email", "")
+
+    # For step 7, pass SA info from query params (oobe_data is cleared by then)
+    if step == 7:
+        context["sa_uploaded"] = sa == "1"
+        context["sa_email"] = sa_email or ""
+
+    # For step 6, generate encryption key if not already done
+    if step == 6 and "encryption_key" not in _oobe_data:
         key = generate_encryption_key()
         _oobe_data["encryption_key"] = key
         _oobe_data["encryption_key_b64"] = key_to_base64(key)
         context["encryption_key_b64"] = _oobe_data["encryption_key_b64"]
-    elif step == 5:
+    elif step == 6:
         context["encryption_key_b64"] = _oobe_data.get("encryption_key_b64")
 
     return templates.TemplateResponse(request, template, context=context)
@@ -95,11 +117,13 @@ async def setup_step_2(request: Request):
     client_secret = form.get("client_secret", "").strip()
 
     # Validate
+    settings = get_settings()
     if not client_id or not client_secret:
         return templates.TemplateResponse(request, "setup/step2_credentials.html", context={
             "step": 2,
             "error": "Client ID and Client Secret are required",
             "client_id": client_id,
+            "public_url": settings.public_url.rstrip("/"),
         })
 
     if not client_id.endswith(".apps.googleusercontent.com"):
@@ -107,6 +131,7 @@ async def setup_step_2(request: Request):
             "step": 2,
             "error": "Invalid Client ID format",
             "client_id": client_id,
+            "public_url": settings.public_url.rstrip("/"),
         })
 
     # Store temporarily
@@ -252,13 +277,81 @@ async def test_email(request: Request):
 
 @router.post("/step/5")
 async def setup_step_5(request: Request):
+    """Handle step 5 - Service account key upload."""
+    form = await request.form()
+    sa_file: Optional[UploadFile] = form.get("sa_key_file")
+
+    if sa_file and sa_file.filename:
+        try:
+            contents = await sa_file.read()
+            sa_data = json.loads(contents)
+
+            # Validate required fields
+            if "client_email" not in sa_data or "private_key" not in sa_data:
+                return templates.TemplateResponse(request, "setup/step5_service_account.html", context={
+                    "step": 5,
+                    "error": "Invalid service account key file. It must contain 'client_email' and 'private_key' fields.",
+                    "sa_uploaded": False,
+                    "sa_email": "",
+                    "public_url": get_settings().public_url.rstrip("/"),
+                })
+
+            # Save the key file
+            key_dir = os.path.dirname(SA_KEY_PATH)
+            if key_dir and not os.path.exists(key_dir):
+                os.makedirs(key_dir, exist_ok=True)
+
+            with open(SA_KEY_PATH, "w") as f:
+                json.dump(sa_data, f)
+
+            _oobe_data["sa_uploaded"] = True
+            _oobe_data["sa_email"] = sa_data["client_email"]
+            _oobe_data["sa_key_path"] = SA_KEY_PATH
+
+            logger.info(f"Service account key uploaded: {sa_data['client_email']}")
+
+        except json.JSONDecodeError:
+            return templates.TemplateResponse(request, "setup/step5_service_account.html", context={
+                "step": 5,
+                "error": "The uploaded file is not valid JSON. Make sure you're uploading the JSON key file from Google Cloud Console.",
+                "sa_uploaded": False,
+                "sa_email": "",
+                "public_url": get_settings().public_url.rstrip("/"),
+            })
+        except PermissionError:
+            return templates.TemplateResponse(request, "setup/step5_service_account.html", context={
+                "step": 5,
+                "error": f"Permission denied writing to {SA_KEY_PATH}. Make sure the secrets/ directory is writable (run: sudo chown -R 1000:1000 secrets/).",
+                "sa_uploaded": False,
+                "sa_email": "",
+                "public_url": get_settings().public_url.rstrip("/"),
+            })
+
+    return RedirectResponse(url="/setup?step=5", status_code=status.HTTP_302_FOUND)
+
+
+@router.post("/step/5/skip")
+async def setup_step_5_skip(request: Request):
+    """Skip service account setup."""
+    _oobe_data["sa_uploaded"] = False
+    return RedirectResponse(url="/setup?step=6", status_code=status.HTTP_302_FOUND)
+
+
+@router.post("/step/5/continue")
+async def setup_step_5_continue(request: Request):
+    """Continue after service account upload."""
+    return RedirectResponse(url="/setup?step=6", status_code=status.HTTP_302_FOUND)
+
+
+@router.post("/step/6")
+async def setup_step_6(request: Request):
     """Complete setup and save everything."""
     form = await request.form()
     confirmed = form.get("confirmed") == "on"
 
     if not confirmed:
-        return templates.TemplateResponse(request, "setup/step5_encryption.html", context={
-            "step": 5,
+        return templates.TemplateResponse(request, "setup/step6_encryption.html", context={
+            "step": 6,
             "error": "You must confirm that you have saved the encryption key",
             "encryption_key_b64": _oobe_data.get("encryption_key_b64"),
         })
@@ -343,12 +436,28 @@ async def setup_step_5(request: Request):
 
     await db.commit()
 
+    # Activate service account if uploaded during setup
+    sa_uploaded = _oobe_data.get("sa_uploaded", False)
+    sa_email = _oobe_data.get("sa_email", "")
+    if sa_uploaded and _oobe_data.get("sa_key_path"):
+        os.environ["SERVICE_ACCOUNT_KEY_FILE"] = _oobe_data["sa_key_path"]
+        # Clear cached settings and SA info so the new key is picked up
+        from app.config import get_settings as _gs
+        _gs.cache_clear()
+        from app.auth.service_account import reset_cache as _sa_reset
+        _sa_reset()
+        logger.info(f"Service account activated: {sa_email}")
+
     # Clear OOBE data
     _oobe_data.clear()
 
     logger.info("OOBE setup completed successfully")
 
-    return RedirectResponse(url="/setup?step=6", status_code=status.HTTP_302_FOUND)
+    # Pass SA info to the completion page
+    return RedirectResponse(
+        url=f"/setup?step=7&sa={'1' if sa_uploaded else '0'}&sa_email={sa_email}",
+        status_code=status.HTTP_302_FOUND,
+    )
 
 
 @router.get("/complete")
