@@ -258,7 +258,7 @@ async def test_sync_main_event_to_clients_preserves_busy_block_record_on_recreat
             raise RuntimeError("create failed")
 
     monkeypatch.setattr("app.auth.google.get_valid_access_token", fake_get_valid_access_token)
-    monkeypatch.setattr("app.sync.rules.GoogleCalendarClient", FailingCalendarClient)
+    monkeypatch.setattr("app.sync.google_calendar.GoogleCalendarClient", FailingCalendarClient)
 
     main_client = SimpleNamespace(is_our_event=lambda event: False)
     event = {
@@ -341,7 +341,7 @@ async def test_cleanup_disconnected_calendar_preserves_mapping_when_remote_delet
             raise RuntimeError("delete failed")
 
     monkeypatch.setattr("app.auth.google.get_valid_access_token", fake_get_valid_access_token)
-    monkeypatch.setattr("app.sync.engine.GoogleCalendarClient", AlwaysFailDeleteClient)
+    monkeypatch.setattr("app.sync.google_calendar.GoogleCalendarClient", AlwaysFailDeleteClient)
 
     await cleanup_disconnected_calendar(cal_1, user_id)
 
@@ -488,7 +488,7 @@ async def test_trigger_sync_for_calendar_does_not_advance_token_on_partial_event
         raise RuntimeError("event processing failed")
 
     monkeypatch.setattr("app.auth.google.get_valid_access_token", fake_get_valid_access_token)
-    monkeypatch.setattr("app.sync.engine.GoogleCalendarClient", FakeCalendarClient)
+    monkeypatch.setattr("app.sync.google_calendar.GoogleCalendarClient", FakeCalendarClient)
     monkeypatch.setattr("app.sync.engine.sync_client_event_to_main", failing_sync_client_event_to_main)
 
     await trigger_sync_for_calendar(client_calendar_id)
@@ -556,7 +556,7 @@ async def test_trigger_sync_for_main_calendar_does_not_advance_token_on_partial_
         raise RuntimeError("main event processing failed")
 
     monkeypatch.setattr("app.auth.google.get_valid_access_token", fake_get_valid_access_token)
-    monkeypatch.setattr("app.sync.engine.GoogleCalendarClient", FakeCalendarClient)
+    monkeypatch.setattr("app.sync.google_calendar.GoogleCalendarClient", FakeCalendarClient)
     monkeypatch.setattr("app.sync.engine.sync_main_event_to_clients", failing_sync_main_event_to_clients)
 
     await trigger_sync_for_main_calendar(user_id)

@@ -82,6 +82,19 @@ async def async_client():
         yield ac
 
 
+def async_fake(sync_obj):
+    """Wrap a sync fake client so its I/O methods are awaitable.
+
+    Uses AsyncGoogleCalendarClient's __getattr__ which wraps I/O methods
+    in asyncio.to_thread, while passing through non-I/O attributes directly.
+    """
+    from app.sync.google_calendar import AsyncGoogleCalendarClient
+
+    wrapper = AsyncGoogleCalendarClient.__new__(AsyncGoogleCalendarClient)
+    wrapper._sync = sync_obj
+    return wrapper
+
+
 @pytest.fixture
 def mock_google_api(mocker):
     """Mock Google API calls."""

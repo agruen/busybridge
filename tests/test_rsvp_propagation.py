@@ -15,6 +15,7 @@ import pytest
 
 from app.database import get_database
 from app.sync.google_calendar import copy_event_for_main
+from tests.conftest import async_fake
 
 
 # ---------------------------------------------------------------------------
@@ -164,8 +165,8 @@ async def test_new_invite_sets_rsvp_status_needs_action(test_db):
     }
 
     await sync_client_event_to_main(
-        client=client,
-        main_client=FakeMainClient(),
+        client=async_fake(client),
+        main_client=async_fake(FakeMainClient()),
         event=event,
         user_id=user_id,
         client_calendar_id=cal_id,
@@ -207,8 +208,8 @@ async def test_new_non_invite_sets_rsvp_status_null(test_db):
     }
 
     await sync_client_event_to_main(
-        client=client,
-        main_client=FakeMainClient(),
+        client=async_fake(client),
+        main_client=async_fake(FakeMainClient()),
         event=event,
         user_id=user_id,
         client_calendar_id=cal_id,
@@ -267,8 +268,8 @@ async def test_update_preserves_existing_rsvp_status(test_db):
     }
 
     await sync_client_event_to_main(
-        client=client,
-        main_client=FakeMainClient(),
+        client=async_fake(client),
+        main_client=async_fake(FakeMainClient()),
         event=event,
         user_id=user_id,
         client_calendar_id=cal_id,
@@ -327,8 +328,8 @@ async def test_update_promotes_null_to_needs_action_when_attendees_added(test_db
     }
 
     await sync_client_event_to_main(
-        client=client,
-        main_client=FakeMainClient(),
+        client=async_fake(client),
+        main_client=async_fake(FakeMainClient()),
         event=event,
         user_id=user_id,
         client_calendar_id=cal_id,
@@ -391,7 +392,7 @@ async def test_propagate_rsvp_patches_client_and_updates_db(test_db, monkeypatch
             return {"id": event_id}
 
     monkeypatch.setattr("app.auth.google.get_valid_access_token", fake_get_valid_access_token)
-    monkeypatch.setattr("app.sync.rules.GoogleCalendarClient", FakeClient)
+    monkeypatch.setattr("app.sync.google_calendar.GoogleCalendarClient", FakeClient)
 
     result = await propagate_rsvp_to_client(
         user_id=user_id,
@@ -479,7 +480,7 @@ async def test_propagate_rsvp_returns_false_on_patch_error(test_db, monkeypatch)
             raise RuntimeError("API error")
 
     monkeypatch.setattr("app.auth.google.get_valid_access_token", fake_get_valid_access_token)
-    monkeypatch.setattr("app.sync.rules.GoogleCalendarClient", FailingClient)
+    monkeypatch.setattr("app.sync.google_calendar.GoogleCalendarClient", FailingClient)
 
     result = await propagate_rsvp_to_client(
         user_id=user_id,
@@ -562,7 +563,7 @@ async def test_main_calendar_sync_detects_rsvp_change(test_db, monkeypatch):
         return []
 
     monkeypatch.setattr("app.auth.google.get_valid_access_token", fake_get_valid_access_token)
-    monkeypatch.setattr("app.sync.engine.GoogleCalendarClient", FakeGoogleCalendarClient)
+    monkeypatch.setattr("app.sync.google_calendar.GoogleCalendarClient", FakeGoogleCalendarClient)
     monkeypatch.setattr("app.sync.engine.propagate_rsvp_to_client", fake_propagate_rsvp_to_client)
     monkeypatch.setattr("app.sync.engine.sync_main_event_to_clients", fake_sync_main_event_to_clients)
 
@@ -634,7 +635,7 @@ async def test_main_calendar_sync_skips_unchanged_rsvp(test_db, monkeypatch):
         return []
 
     monkeypatch.setattr("app.auth.google.get_valid_access_token", fake_get_valid_access_token)
-    monkeypatch.setattr("app.sync.engine.GoogleCalendarClient", FakeGoogleCalendarClient)
+    monkeypatch.setattr("app.sync.google_calendar.GoogleCalendarClient", FakeGoogleCalendarClient)
     monkeypatch.setattr("app.sync.engine.propagate_rsvp_to_client", fake_propagate_rsvp_to_client)
     monkeypatch.setattr("app.sync.engine.sync_main_event_to_clients", fake_sync_main_event_to_clients)
 
@@ -698,7 +699,7 @@ async def test_main_calendar_sync_skips_null_rsvp(test_db, monkeypatch):
         return []
 
     monkeypatch.setattr("app.auth.google.get_valid_access_token", fake_get_valid_access_token)
-    monkeypatch.setattr("app.sync.engine.GoogleCalendarClient", FakeGoogleCalendarClient)
+    monkeypatch.setattr("app.sync.google_calendar.GoogleCalendarClient", FakeGoogleCalendarClient)
     monkeypatch.setattr("app.sync.engine.propagate_rsvp_to_client", fake_propagate_rsvp_to_client)
     monkeypatch.setattr("app.sync.engine.sync_main_event_to_clients", fake_sync_main_event_to_clients)
 

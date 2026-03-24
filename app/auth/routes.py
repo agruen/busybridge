@@ -218,10 +218,10 @@ async def oauth_callback(
         # Initialize main calendar if not set
         if not user.main_calendar_id:
             try:
-                from app.sync.google_calendar import GoogleCalendarClient
+                from app.sync.google_calendar import AsyncGoogleCalendarClient
                 client_settings = get_settings()
-                cal_client = GoogleCalendarClient(access_token, client_settings)
-                calendars = cal_client.list_calendars()
+                cal_client = AsyncGoogleCalendarClient(access_token, client_settings)
+                calendars = await cal_client.list_calendars()
                 # Find the primary calendar
                 primary_cal = next((c for c in calendars if c.get("primary")), None)
                 if primary_cal:

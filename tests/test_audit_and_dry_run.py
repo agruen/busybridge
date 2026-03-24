@@ -100,7 +100,7 @@ async def test_consistency_check_logs_to_sync_log(test_db, monkeypatch):
         def get_event(self, *_a): return {"id": "x"}
 
     monkeypatch.setattr("app.auth.google.get_valid_access_token", fake_token)
-    monkeypatch.setattr("app.sync.consistency.GoogleCalendarClient", FakeClient)
+    monkeypatch.setattr("app.sync.google_calendar.GoogleCalendarClient", FakeClient)
 
     summary = {
         "users_checked": 0, "mappings_checked": 0,
@@ -153,7 +153,7 @@ async def test_consistency_check_warns_on_errors(test_db, monkeypatch):
         def get_event(self, *_a): return {"id": "x"}
 
     monkeypatch.setattr("app.auth.google.get_valid_access_token", fake_token)
-    monkeypatch.setattr("app.sync.consistency.GoogleCalendarClient", FakeClient)
+    monkeypatch.setattr("app.sync.google_calendar.GoogleCalendarClient", FakeClient)
 
     summary = {
         "users_checked": 0, "mappings_checked": 0,
@@ -212,7 +212,7 @@ async def test_consistency_check_dry_run_no_writes(test_db, monkeypatch):
             writes["create"] += 1
 
     monkeypatch.setattr("app.auth.google.get_valid_access_token", fake_token)
-    monkeypatch.setattr("app.sync.consistency.GoogleCalendarClient", FakeClient)
+    monkeypatch.setattr("app.sync.google_calendar.GoogleCalendarClient", FakeClient)
 
     summary = {
         "users_checked": 0, "mappings_checked": 0,
@@ -280,7 +280,7 @@ async def test_consistency_check_dry_run_recreate(test_db, monkeypatch):
             raise AssertionError("create_event must not be called in dry_run")
 
     monkeypatch.setattr("app.auth.google.get_valid_access_token", fake_token)
-    monkeypatch.setattr("app.sync.consistency.GoogleCalendarClient", FakeClient)
+    monkeypatch.setattr("app.sync.google_calendar.GoogleCalendarClient", FakeClient)
 
     summary = {
         "users_checked": 0, "mappings_checked": 0,
@@ -333,7 +333,7 @@ async def test_consistency_check_dry_run_orphaned_busy_block(test_db, monkeypatc
             raise AssertionError("delete_event must not be called in dry_run")
 
     monkeypatch.setattr("app.auth.google.get_valid_access_token", fake_token)
-    monkeypatch.setattr("app.sync.consistency.GoogleCalendarClient", FakeClient)
+    monkeypatch.setattr("app.sync.google_calendar.GoogleCalendarClient", FakeClient)
 
     summary = {
         "users_checked": 0, "mappings_checked": 0,
@@ -382,7 +382,7 @@ async def test_sync_failure_includes_event_details(test_db, monkeypatch):
         raise RuntimeError("processing failed for bad-event")
 
     monkeypatch.setattr("app.auth.google.get_valid_access_token", fake_token)
-    monkeypatch.setattr("app.sync.engine.GoogleCalendarClient", FakeClient)
+    monkeypatch.setattr("app.sync.google_calendar.GoogleCalendarClient", FakeClient)
     monkeypatch.setattr("app.sync.engine.sync_client_event_to_main", exploding_sync)
 
     await trigger_sync_for_calendar(cal_id)
@@ -418,7 +418,7 @@ async def test_main_calendar_sync_logs_success(test_db, monkeypatch):
             return {"events": [], "next_sync_token": "new-tok"}
 
     monkeypatch.setattr("app.auth.google.get_valid_access_token", fake_token)
-    monkeypatch.setattr("app.sync.engine.GoogleCalendarClient", FakeClient)
+    monkeypatch.setattr("app.sync.google_calendar.GoogleCalendarClient", FakeClient)
 
     await trigger_sync_for_main_calendar(user_id)
 
@@ -455,7 +455,7 @@ async def test_main_calendar_sync_logs_failure(test_db, monkeypatch):
         raise RuntimeError("main sync exploded")
 
     monkeypatch.setattr("app.auth.google.get_valid_access_token", fake_token)
-    monkeypatch.setattr("app.sync.engine.GoogleCalendarClient", FakeClient)
+    monkeypatch.setattr("app.sync.google_calendar.GoogleCalendarClient", FakeClient)
     monkeypatch.setattr("app.sync.engine.sync_main_event_to_clients", exploding_main_sync)
 
     await trigger_sync_for_main_calendar(user_id)
@@ -492,7 +492,7 @@ async def test_disconnect_cleanup_logs_to_sync_log(test_db, monkeypatch):
         def delete_event(self, *_a): return True
 
     monkeypatch.setattr("app.auth.google.get_valid_access_token", fake_token)
-    monkeypatch.setattr("app.sync.engine.GoogleCalendarClient", FakeClient)
+    monkeypatch.setattr("app.sync.google_calendar.GoogleCalendarClient", FakeClient)
 
     await cleanup_disconnected_calendar(cal_id, user_id)
 
@@ -537,7 +537,7 @@ async def test_disconnect_cleanup_warns_on_partial_failure(test_db, monkeypatch)
             return True
 
     monkeypatch.setattr("app.auth.google.get_valid_access_token", fake_token)
-    monkeypatch.setattr("app.sync.engine.GoogleCalendarClient", FakeClient)
+    monkeypatch.setattr("app.sync.google_calendar.GoogleCalendarClient", FakeClient)
 
     await cleanup_disconnected_calendar(cal_id, user_id)
 
@@ -571,7 +571,7 @@ async def test_managed_cleanup_logs_to_sync_log(test_db, monkeypatch):
         def search_events(self, _cal, _prefix): return []
 
     monkeypatch.setattr("app.auth.google.get_valid_access_token", fake_token)
-    monkeypatch.setattr("app.sync.engine.GoogleCalendarClient", FakeClient)
+    monkeypatch.setattr("app.sync.google_calendar.GoogleCalendarClient", FakeClient)
     monkeypatch.setattr(
         "app.sync.engine.get_settings",
         lambda: type("S", (), {"managed_event_prefix": "[BB]"})(),
@@ -615,7 +615,7 @@ async def test_admin_consistency_check_endpoint_full_run(test_db, monkeypatch):
         def get_event(self, *_a): return {"id": "x"}
 
     monkeypatch.setattr("app.auth.google.get_valid_access_token", fake_token)
-    monkeypatch.setattr("app.sync.consistency.GoogleCalendarClient", FakeClient)
+    monkeypatch.setattr("app.sync.google_calendar.GoogleCalendarClient", FakeClient)
 
     # Run against the live (in-memory) DB — no calendars, so nothing to do.
     result = await trigger_consistency_check(dry_run=False, user_id=None, admin=admin)
@@ -645,7 +645,7 @@ async def test_admin_consistency_check_endpoint_per_user_dry_run(test_db, monkey
         def get_event(self, *_a): return {"id": "x"}
 
     monkeypatch.setattr("app.auth.google.get_valid_access_token", fake_token)
-    monkeypatch.setattr("app.sync.consistency.GoogleCalendarClient", FakeClient)
+    monkeypatch.setattr("app.sync.google_calendar.GoogleCalendarClient", FakeClient)
 
     result = await trigger_consistency_check(dry_run=True, user_id=user_id, admin=admin)
     assert result["dry_run"] is True
@@ -682,7 +682,7 @@ async def test_reconcile_calendar_logs_to_sync_log(test_db, monkeypatch):
         def delete_event(self, *_a): return True
 
     monkeypatch.setattr("app.auth.google.get_valid_access_token", fake_token)
-    monkeypatch.setattr("app.sync.consistency.GoogleCalendarClient", FakeClient)
+    monkeypatch.setattr("app.sync.google_calendar.GoogleCalendarClient", FakeClient)
 
     await reconcile_calendar(cal_id)
 
@@ -742,7 +742,7 @@ async def test_reconcile_calendar_dry_run_no_writes(test_db, monkeypatch):
             return True
 
     monkeypatch.setattr("app.auth.google.get_valid_access_token", fake_token)
-    monkeypatch.setattr("app.sync.consistency.GoogleCalendarClient", FakeClient)
+    monkeypatch.setattr("app.sync.google_calendar.GoogleCalendarClient", FakeClient)
 
     result = await reconcile_calendar(cal_id, dry_run=True)
 

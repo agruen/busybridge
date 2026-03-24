@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests.conftest import async_fake
 from app.database import get_database
 
 
@@ -60,8 +61,8 @@ async def test_sync_client_event_to_main_skip_paths(test_db):
     """Client-origin sync should skip self-created and cancelled events."""
     from app.sync.rules import sync_client_event_to_main
 
-    client = SimpleNamespace(is_our_event=lambda _event: True)
-    main_client = SimpleNamespace()
+    client = async_fake(SimpleNamespace(is_our_event=lambda _event: True))
+    main_client = async_fake(SimpleNamespace())
     event = {"id": "evt-1", "start": {"dateTime": "2026-01-01T10:00:00Z"}, "end": {"dateTime": "2026-01-01T11:00:00Z"}}
     result = await sync_client_event_to_main(
         client=client,
@@ -74,7 +75,7 @@ async def test_sync_client_event_to_main_skip_paths(test_db):
     )
     assert result == (None, False)
 
-    client = SimpleNamespace(is_our_event=lambda _event: False)
+    client = async_fake(SimpleNamespace(is_our_event=lambda _event: False))
     cancelled = {"id": "evt-2", "status": "cancelled"}
     result = await sync_client_event_to_main(
         client=client,
@@ -124,8 +125,9 @@ async def test_sync_client_event_to_main_create_update_and_failure_paths(test_db
                 raise RuntimeError("transient network error")
             return {"id": _event_id}
 
-    client = SimpleNamespace(is_our_event=lambda _event: False)
-    main_client = FakeMainClient()
+    client = async_fake(SimpleNamespace(is_our_event=lambda _event: False))
+    raw_main_client = FakeMainClient()
+    main_client = async_fake(raw_main_client)
 
     event = {
         "id": "origin-1",
@@ -156,7 +158,7 @@ async def test_sync_client_event_to_main_create_update_and_failure_paths(test_db
     assert row["user_can_edit"] == 1
 
     # Existing mapping update path: 404 triggers replacement creation.
-    main_client.fail_update_404 = True
+    raw_main_client.fail_update_404 = True
     updated_id, updated_times_changed = await sync_client_event_to_main(
         client=client,
         main_client=main_client,
@@ -173,10 +175,10 @@ async def test_sync_client_event_to_main_create_update_and_failure_paths(test_db
         (user_id, "origin-1"),
     )
     assert (await cursor.fetchone())["main_event_id"] == "main-2"
-    main_client.fail_update_404 = False
+    raw_main_client.fail_update_404 = False
 
     # Existing mapping update path: transient error re-raises (no orphaned duplicate).
-    main_client.fail_update_transient = True
+    raw_main_client.fail_update_transient = True
     with pytest.raises(RuntimeError, match="transient network error"):
         await sync_client_event_to_main(
             client=client,
@@ -187,10 +189,10 @@ async def test_sync_client_event_to_main_create_update_and_failure_paths(test_db
             main_calendar_id="main-cal",
             client_email="user@example.com",
         )
-    main_client.fail_update_transient = False
+    raw_main_client.fail_update_transient = False
 
     # New event with create failure should return None and not create mapping.
-    main_client.fail_create = True
+    raw_main_client.fail_create = True
     failed_id, failed_changed = await sync_client_event_to_main(
         client=client,
         main_client=main_client,
@@ -239,9 +241,9 @@ async def test_sync_main_event_to_clients_create_and_origin_skip_paths(test_db, 
             return True
 
     monkeypatch.setattr("app.auth.google.get_valid_access_token", fake_get_valid_access_token)
-    monkeypatch.setattr("app.sync.rules.GoogleCalendarClient", FakeGoogleClient)
+    monkeypatch.setattr("app.sync.google_calendar.GoogleCalendarClient", FakeGoogleClient)
 
-    main_client = SimpleNamespace(is_our_event=lambda _event: False)
+    main_client = async_fake(SimpleNamespace(is_our_event=lambda _event: False))
     event = {
         "id": "main-evt-1",
         "status": "confirmed",
@@ -320,10 +322,10 @@ async def test_sync_main_event_to_clients_skip_and_existing_update_paths(test_db
             return True
 
     monkeypatch.setattr("app.auth.google.get_valid_access_token", fake_get_valid_access_token)
-    monkeypatch.setattr("app.sync.rules.GoogleCalendarClient", FakeGoogleClient)
+    monkeypatch.setattr("app.sync.google_calendar.GoogleCalendarClient", FakeGoogleClient)
 
     # Skip non-blocking event.
-    main_client = SimpleNamespace(is_our_event=lambda _event: False)
+    main_client = async_fake(SimpleNamespace(is_our_event=lambda _event: False))
     assert (
         await sync_main_event_to_clients(
             main_client=main_client,
@@ -394,7 +396,7 @@ async def test_handle_deleted_client_event_paths(test_db, monkeypatch):
         client_calendar_id=cal_id,
         event_id="missing",
         main_calendar_id="main",
-        main_client=SimpleNamespace(delete_event=lambda *_args, **_kwargs: True),
+        main_client=async_fake(SimpleNamespace(delete_event=lambda *_args, **_kwargs: True)),
     )
 
     # Non-recurring -> hard delete mapping
@@ -423,14 +425,14 @@ async def test_handle_deleted_client_event_paths(test_db, monkeypatch):
             return True
 
     monkeypatch.setattr("app.auth.google.get_valid_access_token", fake_get_valid_access_token)
-    monkeypatch.setattr("app.sync.rules.GoogleCalendarClient", FakeGC)
+    monkeypatch.setattr("app.sync.google_calendar.GoogleCalendarClient", FakeGC)
 
     await handle_deleted_client_event(
         user_id=user_id,
         client_calendar_id=cal_id,
         event_id="origin-1",
         main_calendar_id="main",
-        main_client=SimpleNamespace(delete_event=lambda *_args, **_kwargs: True),
+        main_client=async_fake(SimpleNamespace(delete_event=lambda *_args, **_kwargs: True)),
     )
 
     cursor = await db.execute("SELECT COUNT(*) FROM event_mappings WHERE id = ?", (mapping_id,))
@@ -452,7 +454,7 @@ async def test_handle_deleted_client_event_paths(test_db, monkeypatch):
         client_calendar_id=cal_id,
         event_id="origin-2",
         main_calendar_id="main",
-        main_client=SimpleNamespace(delete_event=lambda *_args, **_kwargs: True),
+        main_client=async_fake(SimpleNamespace(delete_event=lambda *_args, **_kwargs: True)),
     )
     cursor = await db.execute("SELECT deleted_at FROM event_mappings WHERE id = ?", (recurring_id,))
     assert (await cursor.fetchone())["deleted_at"] is not None
@@ -496,7 +498,7 @@ async def test_handle_deleted_main_event_paths(test_db, monkeypatch):
             return True
 
     monkeypatch.setattr("app.auth.google.get_valid_access_token", fake_get_valid_access_token)
-    monkeypatch.setattr("app.sync.rules.GoogleCalendarClient", FakeGC)
+    monkeypatch.setattr("app.sync.google_calendar.GoogleCalendarClient", FakeGC)
 
     await handle_deleted_main_event(user_id=user_id, event_id="main-event-1")
 

@@ -1,5 +1,6 @@
 """UI page routes."""
 
+import asyncio
 import logging
 from typing import Optional
 
@@ -186,7 +187,8 @@ async def settings_page(request: Request):
         credentials = Credentials(token=access_token)
         service = build("calendar", "v3", credentials=credentials)
 
-        result = service.calendarList().list().execute()
+        cal_request = service.calendarList().list()
+        result = await asyncio.to_thread(cal_request.execute)
         calendars = result.get("items", [])
     except Exception as e:
         logger.error(f"Failed to get calendars: {e}")
@@ -331,7 +333,8 @@ async def select_calendar_page(
         credentials = Credentials(token=access_token)
         service = build("calendar", "v3", credentials=credentials)
 
-        result = service.calendarList().list().execute()
+        cal_request = service.calendarList().list()
+        result = await asyncio.to_thread(cal_request.execute)
         for cal in result.get("items", []):
             if calendar_type == "personal":
                 # Personal calendars: show all readable calendars

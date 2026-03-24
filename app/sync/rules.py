@@ -8,6 +8,7 @@ from googleapiclient.errors import HttpError
 
 from app.database import get_database
 from app.sync.google_calendar import (
+    AsyncGoogleCalendarClient,
     GoogleCalendarClient,
     create_busy_block,
     create_personal_busy_block,
@@ -158,13 +159,13 @@ async def sync_client_event_to_main(
 
         if main_event_id:
             try:
-                write_client.update_event(main_calendar_id, main_event_id, main_event_data)
+                await write_client.update_event(main_calendar_id, main_event_id, main_event_data)
                 logger.info(f"Updated main event {main_event_id} from client event {event_id}")
             except HttpError as e:
                 if e.resp.status in (404, 410):
                     # Old event is gone — create replacement
                     logger.warning(f"Main event {main_event_id} gone ({e.resp.status}), creating replacement")
-                    result = write_client.create_event(main_calendar_id, main_event_data)
+                    result = await write_client.create_event(main_calendar_id, main_event_data)
                     main_event_id = result["id"]
                 else:
                     # Transient/server error -- re-raise so we don't create a duplicate
@@ -216,7 +217,7 @@ async def sync_client_event_to_main(
                             parent_mapping["main_event_id"], original_start_time
                         )
                         try:
-                            main_client.delete_event(main_calendar_id, main_instance_id)
+                            await main_client.delete_event(main_calendar_id, main_instance_id)
                             logger.info(
                                 f"Cancelled series main instance {main_instance_id} "
                                 "to fork modified occurrence"
@@ -244,8 +245,8 @@ async def sync_client_event_to_main(
                             token = await get_valid_access_token(
                                 user_id, block["google_account_email"]
                             )
-                            cal_client = GoogleCalendarClient(token)
-                            cal_client.delete_event(block["google_calendar_id"], bb_instance_id)
+                            cal_client = AsyncGoogleCalendarClient(token)
+                            await cal_client.delete_event(block["google_calendar_id"], bb_instance_id)
                             logger.info(f"Cancelled series busy block instance {bb_instance_id}")
                         except Exception as e:
                             logger.warning(
@@ -255,7 +256,7 @@ async def sync_client_event_to_main(
         # Create new main calendar copy.  Orphaned copies from prior crashes
         # are cleaned up by the periodic orphan scanner (every 6 hours).
         try:
-            result = write_client.create_event(main_calendar_id, main_event_data)
+            result = await write_client.create_event(main_calendar_id, main_event_data)
             main_event_id = result["id"]
             logger.info(f"Created main event {main_event_id} from client event {event_id}")
         except Exception as e:
@@ -287,7 +288,7 @@ async def sync_client_event_to_main(
         # Stamp the mapping ID onto the main event for full traceability
         if new_row and main_event_id:
             try:
-                write_client.patch_event(main_calendar_id, main_event_id, {
+                await write_client.patch_event(main_calendar_id, main_event_id, {
                     "extendedProperties": {"private": {"bb_mapping_id": str(new_row["id"])}},
                 })
             except Exception:
@@ -296,7 +297,7 @@ async def sync_client_event_to_main(
         return main_event_id, True  # New event — times always "changed"
 
 
-def _propagate_cancelled_instances(
+async def _propagate_cancelled_instances(
     source_client: GoogleCalendarClient,
     source_calendar_id: str,
     source_recurring_id: str,
@@ -313,7 +314,7 @@ def _propagate_cancelled_instances(
 
     Returns the number of instances cancelled.
     """
-    cancelled = source_client.list_cancelled_instances(
+    cancelled = await source_client.list_cancelled_instances(
         source_calendar_id, source_recurring_id
     )
     if not cancelled:
@@ -326,7 +327,7 @@ def _propagate_cancelled_instances(
             continue
         try:
             instance_id = derive_instance_event_id(target_recurring_id, original_start)
-            target_client.delete_event(target_calendar_id, instance_id)
+            await target_client.delete_event(target_calendar_id, instance_id)
             count += 1
         except Exception:
             pass  # Instance may not exist yet or already cancelled
@@ -498,13 +499,13 @@ async def sync_main_event_to_clients(
         try:
             from app.auth.google import get_valid_access_token
             client_token = await get_valid_access_token(user_id, cal["google_account_email"])
-            client_calendar_client = GoogleCalendarClient(client_token)
+            client_calendar_client = AsyncGoogleCalendarClient(client_token)
 
             if existing_block:
                 if not times_changed:
                     continue  # Busy block is already correct — skip the API call
                 try:
-                    client_calendar_client.update_event(
+                    await client_calendar_client.update_event(
                         cal["google_calendar_id"],
                         existing_block["busy_block_event_id"],
                         busy_block
@@ -513,7 +514,7 @@ async def sync_main_event_to_clients(
                 except Exception as e:
                     logger.warning(f"Failed to update busy block, creating new: {e}")
                     try:
-                        replacement = client_calendar_client.create_event(
+                        replacement = await client_calendar_client.create_event(
                             cal["google_calendar_id"], busy_block,
                         )
                         await db.execute(
@@ -524,14 +525,14 @@ async def sync_main_event_to_clients(
                         created_blocks.append(replacement["id"])
                         logger.info(f"Created replacement busy block {replacement['id']} on calendar {cal['id']}")
                         try:
-                            client_calendar_client.delete_event(
+                            await client_calendar_client.delete_event(
                                 cal["google_calendar_id"],
                                 existing_block["busy_block_event_id"],
                             )
                         except Exception:
                             pass
                         if "recurrence" in event:
-                            _propagate_cancelled_instances(
+                            await _propagate_cancelled_instances(
                                 source_client=main_client,
                                 source_calendar_id=main_calendar_id,
                                 source_recurring_id=event_id,
@@ -544,7 +545,7 @@ async def sync_main_event_to_clients(
                     continue
 
             if not existing_block:
-                result = client_calendar_client.create_event(cal["google_calendar_id"], busy_block)
+                result = await client_calendar_client.create_event(cal["google_calendar_id"], busy_block)
                 block_id = result["id"]
 
                 await db.execute(
@@ -561,7 +562,7 @@ async def sync_main_event_to_clients(
                 # on the main calendar so the busy block doesn't show phantom
                 # occurrences.
                 if "recurrence" in event:
-                    _propagate_cancelled_instances(
+                    await _propagate_cancelled_instances(
                         source_client=main_client,
                         source_calendar_id=main_calendar_id,
                         source_recurring_id=event_id,
@@ -599,7 +600,7 @@ async def _handle_cancelled_recurring_instance(
             mapping["main_event_id"], original_start_time
         )
         try:
-            main_client.delete_event(main_calendar_id, main_instance_id)
+            await main_client.delete_event(main_calendar_id, main_instance_id)
             logger.info(f"Cancelled main calendar instance {main_instance_id}")
         except Exception as e:
             logger.warning(f"Failed to cancel main calendar instance {main_instance_id}: {e}")
@@ -622,8 +623,8 @@ async def _handle_cancelled_recurring_instance(
         try:
             from app.auth.google import get_valid_access_token
             token = await get_valid_access_token(user_id, block["google_account_email"])
-            cal_client = GoogleCalendarClient(token)
-            cal_client.delete_event(block["google_calendar_id"], bb_instance_id)
+            cal_client = AsyncGoogleCalendarClient(token)
+            await cal_client.delete_event(block["google_calendar_id"], bb_instance_id)
             logger.info(f"Cancelled busy block instance {bb_instance_id}")
         except Exception as e:
             logger.warning(f"Failed to cancel busy block instance {bb_instance_id}: {e}")
@@ -697,7 +698,7 @@ async def handle_deleted_client_event(
         if instance_mapping:
             if instance_mapping["main_event_id"]:
                 try:
-                    write_client.delete_event(main_calendar_id, instance_mapping["main_event_id"])
+                    await write_client.delete_event(main_calendar_id, instance_mapping["main_event_id"])
                     logger.info(
                         f"Deleted forked instance main event {instance_mapping['main_event_id']}"
                     )
@@ -718,8 +719,8 @@ async def handle_deleted_client_event(
                 try:
                     from app.auth.google import get_valid_access_token
                     token = await get_valid_access_token(user_id, block["google_account_email"])
-                    cal_client = GoogleCalendarClient(token)
-                    cal_client.delete_event(block["google_calendar_id"], block["busy_block_event_id"])
+                    cal_client = AsyncGoogleCalendarClient(token)
+                    await cal_client.delete_event(block["google_calendar_id"], block["busy_block_event_id"])
                     deleted_ids.add(block["id"])
                 except Exception as e:
                     logger.error(f"Failed to delete forked instance busy block: {e}")
@@ -759,7 +760,7 @@ async def handle_deleted_client_event(
     # Delete the main calendar copy
     if mapping["main_event_id"]:
         try:
-            write_client.delete_event(main_calendar_id, mapping["main_event_id"])
+            await write_client.delete_event(main_calendar_id, mapping["main_event_id"])
             logger.info(f"Deleted main event {mapping['main_event_id']}")
         except Exception as e:
             logger.error(f"Failed to delete main event: {e}")
@@ -781,8 +782,8 @@ async def handle_deleted_client_event(
         try:
             from app.auth.google import get_valid_access_token
             token = await get_valid_access_token(user_id, block["google_account_email"])
-            client = GoogleCalendarClient(token)
-            client.delete_event(block["google_calendar_id"], block["busy_block_event_id"])
+            client = AsyncGoogleCalendarClient(token)
+            await client.delete_event(block["google_calendar_id"], block["busy_block_event_id"])
             deleted_block_ids.add(block["id"])
             logger.info(f"Deleted busy block {block['busy_block_event_id']}")
         except Exception as e:
@@ -844,10 +845,10 @@ async def propagate_rsvp_to_client(
     try:
         from app.auth.google import get_valid_access_token
         token = await get_valid_access_token(user_id, client_email)
-        client = GoogleCalendarClient(token)
+        client = AsyncGoogleCalendarClient(token)
 
         # Patch only the attendee response on the client event.
-        client.patch_event(
+        await client.patch_event(
             cal["google_calendar_id"],
             mapping["origin_event_id"],
             {"attendees": [{"email": client_email, "responseStatus": new_rsvp_status}]},
@@ -935,7 +936,7 @@ async def propagate_time_to_client(
     try:
         from app.auth.google import get_valid_access_token
         token = await get_valid_access_token(user_id, client_email)
-        client = GoogleCalendarClient(token)
+        client = AsyncGoogleCalendarClient(token)
 
         # Build the patch body with the new times.
         if is_all_day:
@@ -952,7 +953,7 @@ async def propagate_time_to_client(
                 patch_end["timeZone"] = tz
             patch = {"start": patch_start, "end": patch_end}
 
-        client.patch_event(
+        await client.patch_event(
             cal["google_calendar_id"],
             mapping["origin_event_id"],
             patch,
@@ -1094,8 +1095,8 @@ async def handle_deleted_main_event(
                     try:
                         from app.auth.google import get_valid_access_token
                         token = await get_valid_access_token(user_id, cal["google_account_email"])
-                        client = GoogleCalendarClient(token)
-                        client.delete_event(cal["google_calendar_id"], mapping["origin_event_id"])
+                        client = AsyncGoogleCalendarClient(token)
+                        await client.delete_event(cal["google_calendar_id"], mapping["origin_event_id"])
                         logger.info(f"Deleted client event {mapping['origin_event_id']}")
                     except Exception as e:
                         logger.warning(f"Failed to delete client event: {e}")
@@ -1117,8 +1118,8 @@ async def handle_deleted_main_event(
         try:
             from app.auth.google import get_valid_access_token
             token = await get_valid_access_token(user_id, block["google_account_email"])
-            client = GoogleCalendarClient(token)
-            client.delete_event(block["google_calendar_id"], block["busy_block_event_id"])
+            client = AsyncGoogleCalendarClient(token)
+            await client.delete_event(block["google_calendar_id"], block["busy_block_event_id"])
             deleted_block_ids.add(block["id"])
         except Exception as e:
             logger.error(f"Failed to delete busy block: {e}")
@@ -1236,15 +1237,15 @@ async def sync_personal_event_to_all(
         # Update main calendar busy block
         if main_event_id and personal_times_changed:
             try:
-                write_client.update_event(main_calendar_id, main_event_id, busy_block)
+                await write_client.update_event(main_calendar_id, main_event_id, busy_block)
                 logger.info(f"Updated personal busy block {main_event_id} on main calendar")
             except HttpError as e:
                 if e.resp.status == 403 and "forbiddenForServiceAccounts" in str(e):
                     logger.warning("SA cannot add attendees (no DWD), retrying update without attendees")
                     busy_block.pop("attendees", None)
-                    write_client.update_event(main_calendar_id, main_event_id, busy_block)
+                    await write_client.update_event(main_calendar_id, main_event_id, busy_block)
                 elif e.resp.status in (404, 410):
-                    result = write_client.create_event(main_calendar_id, busy_block)
+                    result = await write_client.create_event(main_calendar_id, busy_block)
                     main_event_id = result["id"]
                 else:
                     logger.error(f"Failed to update personal main event: {e}")
@@ -1265,7 +1266,7 @@ async def sync_personal_event_to_all(
 
     else:
         try:
-            result = write_client.create_event(main_calendar_id, busy_block)
+            result = await write_client.create_event(main_calendar_id, busy_block)
             main_event_id = result["id"]
             logger.info(f"Created personal busy block {main_event_id} on main calendar")
         except HttpError as e:
@@ -1274,7 +1275,7 @@ async def sync_personal_event_to_all(
                 logger.warning("SA cannot add attendees (no DWD), retrying without attendees")
                 busy_block.pop("attendees", None)
                 try:
-                    result = write_client.create_event(main_calendar_id, busy_block)
+                    result = await write_client.create_event(main_calendar_id, busy_block)
                     main_event_id = result["id"]
                     logger.info(f"Created personal busy block {main_event_id} on main calendar (no attendees)")
                 except Exception as e2:
@@ -1305,7 +1306,7 @@ async def sync_personal_event_to_all(
         # Stamp the mapping ID onto the main event for full traceability
         if main_event_id:
             try:
-                write_client.patch_event(main_calendar_id, main_event_id, {
+                await write_client.patch_event(main_calendar_id, main_event_id, {
                     "extendedProperties": {"private": {"bb_mapping_id": str(mapping_id)}},
                 })
             except Exception:
@@ -1320,7 +1321,7 @@ async def sync_personal_event_to_all(
             )
             pcal_row = await cursor.fetchone()
             if pcal_row:
-                _propagate_cancelled_instances(
+                await _propagate_cancelled_instances(
                     source_client=personal_client,
                     source_calendar_id=pcal_row["google_calendar_id"],
                     source_recurring_id=event_id,
@@ -1367,20 +1368,20 @@ async def sync_personal_event_to_all(
         try:
             from app.auth.google import get_valid_access_token
             client_token = await get_valid_access_token(user_id, cal["google_account_email"])
-            client_calendar_client = GoogleCalendarClient(client_token)
+            client_calendar_client = AsyncGoogleCalendarClient(client_token)
 
             if existing_block:
                 if not personal_times_changed:
                     continue  # Times unchanged — busy block already correct
                 try:
-                    client_calendar_client.update_event(
+                    await client_calendar_client.update_event(
                         cal["google_calendar_id"],
                         existing_block["busy_block_event_id"],
                         client_busy_block
                     )
                 except Exception:
                     try:
-                        replacement = client_calendar_client.create_event(
+                        replacement = await client_calendar_client.create_event(
                             cal["google_calendar_id"], client_busy_block
                         )
                         await db.execute(
@@ -1388,7 +1389,7 @@ async def sync_personal_event_to_all(
                             (replacement["id"], existing_block["id"])
                         )
                         if "recurrence" in event and main_event_id:
-                            _propagate_cancelled_instances(
+                            await _propagate_cancelled_instances(
                                 source_client=write_client,
                                 source_calendar_id=main_calendar_id,
                                 source_recurring_id=main_event_id,
@@ -1399,7 +1400,7 @@ async def sync_personal_event_to_all(
                     except Exception as ce:
                         logger.error(f"Failed to replace personal busy block on calendar {cal['id']}: {ce}")
             else:
-                result = client_calendar_client.create_event(
+                result = await client_calendar_client.create_event(
                     cal["google_calendar_id"], client_busy_block,
                 )
                 block_id = result["id"]
@@ -1410,7 +1411,7 @@ async def sync_personal_event_to_all(
                 )
 
                 if "recurrence" in event and main_event_id:
-                    _propagate_cancelled_instances(
+                    await _propagate_cancelled_instances(
                         source_client=write_client,
                         source_calendar_id=main_calendar_id,
                         source_recurring_id=main_event_id,
@@ -1502,7 +1503,7 @@ async def _cleanup_personal_mapping(
     """Delete main event + all busy blocks for a personal event mapping, then remove the mapping."""
     if mapping["main_event_id"]:
         try:
-            write_client.delete_event(main_calendar_id, mapping["main_event_id"])
+            await write_client.delete_event(main_calendar_id, mapping["main_event_id"])
             logger.info(f"Deleted personal main event {mapping['main_event_id']}")
         except Exception as e:
             logger.error(f"Failed to delete personal main event: {e}")
@@ -1522,8 +1523,8 @@ async def _cleanup_personal_mapping(
         try:
             from app.auth.google import get_valid_access_token
             token = await get_valid_access_token(user_id, block["google_account_email"])
-            client = GoogleCalendarClient(token)
-            client.delete_event(block["google_calendar_id"], block["busy_block_event_id"])
+            client = AsyncGoogleCalendarClient(token)
+            await client.delete_event(block["google_calendar_id"], block["busy_block_event_id"])
             deleted_block_ids.add(block["id"])
         except Exception as e:
             logger.error(f"Failed to delete personal busy block: {e}")

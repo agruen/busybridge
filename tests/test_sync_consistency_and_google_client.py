@@ -342,7 +342,7 @@ async def test_check_user_consistency_handles_origin_delete_recreate_and_stale_b
             return {"id": "main-recreated"}
 
     monkeypatch.setattr("app.auth.google.get_valid_access_token", fake_get_valid_access_token)
-    monkeypatch.setattr("app.sync.consistency.GoogleCalendarClient", FakeGoogleClient)
+    monkeypatch.setattr("app.sync.google_calendar.GoogleCalendarClient", FakeGoogleClient)
 
     summary = {
         "users_checked": 0,
@@ -454,7 +454,7 @@ async def test_reconcile_calendar_paths(test_db, monkeypatch):
             return True
 
     monkeypatch.setattr("app.auth.google.get_valid_access_token", fake_get_valid_access_token)
-    monkeypatch.setattr("app.sync.consistency.GoogleCalendarClient", FakeGoogleClient)
+    monkeypatch.setattr("app.sync.google_calendar.GoogleCalendarClient", FakeGoogleClient)
 
     summary = await reconcile_calendar(calendar_id)
     assert summary["events_found"] == 3

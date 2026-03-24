@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from app.database import get_database
-from app.sync.google_calendar import GoogleCalendarClient
+from app.sync.google_calendar import AsyncGoogleCalendarClient
 from app.sync.ics_parser import fetch_ics_feed, parse_ics_events, build_webcal_google_event
 
 logger = logging.getLogger(__name__)
@@ -74,7 +74,7 @@ async def sync_webcal_subscription(subscription_id: int) -> None:
         # Get main calendar client
         from app.auth.google import get_valid_access_token
         main_token = await get_valid_access_token(user_id, sub["user_email"])
-        main_client = GoogleCalendarClient(main_token)
+        main_client = AsyncGoogleCalendarClient(main_token)
 
         # Get existing mappings for this subscription
         cursor = await db.execute(
@@ -124,7 +124,7 @@ async def sync_webcal_subscription(subscription_id: int) -> None:
                 main_event_id = existing["main_event_id"]
                 if main_event_id:
                     try:
-                        main_client.update_event(
+                        await main_client.update_event(
                             main_calendar_id, main_event_id, google_event
                         )
                         logger.info(
@@ -132,7 +132,7 @@ async def sync_webcal_subscription(subscription_id: int) -> None:
                         )
                     except Exception as e:
                         if hasattr(e, 'resp') and e.resp.status in (404, 410):
-                            result = main_client.create_event(
+                            result = await main_client.create_event(
                                 main_calendar_id, google_event
                             )
                             main_event_id = result["id"]
@@ -153,7 +153,7 @@ async def sync_webcal_subscription(subscription_id: int) -> None:
             else:
                 # Create new event
                 try:
-                    result = main_client.create_event(
+                    result = await main_client.create_event(
                         main_calendar_id, google_event
                     )
                     main_event_id = result["id"]
@@ -187,7 +187,7 @@ async def sync_webcal_subscription(subscription_id: int) -> None:
             # Delete from main calendar
             if mapping["main_event_id"]:
                 try:
-                    main_client.delete_event(
+                    await main_client.delete_event(
                         main_calendar_id, mapping["main_event_id"]
                     )
                 except Exception as e:
@@ -285,7 +285,7 @@ async def cleanup_webcal_subscription(subscription_id: int, user_id: int) -> Non
     try:
         from app.auth.google import get_valid_access_token
         main_token = await get_valid_access_token(user_id, user["email"])
-        main_client = GoogleCalendarClient(main_token)
+        main_client = AsyncGoogleCalendarClient(main_token)
     except Exception:
         main_client = None
 
@@ -295,7 +295,7 @@ async def cleanup_webcal_subscription(subscription_id: int, user_id: int) -> Non
         # Delete from main calendar
         if main_client and mapping["main_event_id"]:
             try:
-                main_client.delete_event(
+                await main_client.delete_event(
                     user["main_calendar_id"], mapping["main_event_id"]
                 )
             except Exception:
@@ -316,8 +316,8 @@ async def cleanup_webcal_subscription(subscription_id: int, user_id: int) -> Non
             for block in blocks:
                 try:
                     token = await get_valid_access_token(user_id, block["google_account_email"])
-                    client = GoogleCalendarClient(token)
-                    client.delete_event(block["google_calendar_id"], block["busy_block_event_id"])
+                    client = AsyncGoogleCalendarClient(token)
+                    await client.delete_event(block["google_calendar_id"], block["busy_block_event_id"])
                 except Exception:
                     pass
             await db.execute(

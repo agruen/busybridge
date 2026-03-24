@@ -474,7 +474,7 @@ async def _fetch_all_user_calendars(user_id: int) -> list[dict]:
     Events include cancelled instances (needed for EXDATE generation).
     """
     from app.auth.google import get_valid_access_token
-    from app.sync.google_calendar import GoogleCalendarClient
+    from app.sync.google_calendar import AsyncGoogleCalendarClient
 
     db = await get_database()
     settings = get_settings()
@@ -493,9 +493,9 @@ async def _fetch_all_user_calendars(user_id: int) -> list[dict]:
     # Main calendar
     try:
         token = await get_valid_access_token(user_id, user["email"])
-        client = GoogleCalendarClient(token, settings=settings)
+        client = AsyncGoogleCalendarClient(token, settings=settings)
         logger.info(f"ICS export: fetching main calendar {user['main_calendar_id']}")
-        resp = client.list_events(
+        resp = await client.list_events(
             user["main_calendar_id"],
             single_events=False,
             time_min=time_min,
@@ -525,9 +525,9 @@ async def _fetch_all_user_calendars(user_id: int) -> list[dict]:
     for cal in client_cals:
         try:
             token = await get_valid_access_token(user_id, cal["google_account_email"])
-            client = GoogleCalendarClient(token, settings=settings)
+            client = AsyncGoogleCalendarClient(token, settings=settings)
             logger.info(f"ICS export: fetching client calendar {cal['google_calendar_id']}")
-            resp = client.list_events(
+            resp = await client.list_events(
                 cal["google_calendar_id"],
                 single_events=False,
                 time_min=datetime(2000, 1, 1),

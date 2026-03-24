@@ -10,7 +10,7 @@ from typing import Optional
 
 from app.config import get_settings
 from app.database import get_database, get_setting, set_setting
-from app.sync.google_calendar import GoogleCalendarClient
+from app.sync.google_calendar import AsyncGoogleCalendarClient, GoogleCalendarClient
 from app.sync.rules import (
     sync_client_event_to_main,
     sync_main_event_to_clients,
@@ -201,6 +201,7 @@ async def trigger_sync_for_calendar(
     client_calendar_id: int,
     debounce: float = 0,
     track_progress: bool = False,
+    schedule_verification: bool = True,
 ) -> None:
     """Trigger sync for a specific client calendar.
 
@@ -211,6 +212,10 @@ async def trigger_sync_for_calendar(
         track_progress: if True, update ``_sync_progress`` so the UI
                         can poll for live status (settling countdown,
                         sync activity, completion).
+        schedule_verification: if True (default), schedule a delayed
+                  re-fetch of processed events to guard against stale
+                  reads.  Set to False for periodic syncs to avoid
+                  feedback loops (verification → webhook → sync → verification).
     """
     if await is_sync_paused():
         logger.info("Sync is paused, skipping calendar sync")
@@ -249,7 +254,7 @@ async def trigger_sync_for_calendar(
                 "status": "complete", "events_processed": synced,
             }
 
-        if processed:
+        if processed and schedule_verification:
             _schedule_event_verification(
                 f"client:{client_calendar_id}",
                 _sync_client_calendar,
@@ -318,8 +323,8 @@ async def _sync_client_calendar(
         client_token = await get_valid_access_token(user_id, client_email)
         main_token = await get_valid_access_token(user_id, user_email)
 
-        client = GoogleCalendarClient(client_token)
-        main_client = GoogleCalendarClient(main_token)
+        client = AsyncGoogleCalendarClient(client_token)
+        main_client = AsyncGoogleCalendarClient(main_token)
 
         # Check if SA mode is active for this user
         sa_main_client = None
@@ -340,7 +345,7 @@ async def _sync_client_calendar(
             events = []
             for eid in verify_ids:
                 try:
-                    ev = client.get_event(calendar["google_calendar_id"], eid)
+                    ev = await client.get_event(calendar["google_calendar_id"], eid)
                     if ev:
                         events.append(ev)
                 except Exception:
@@ -353,12 +358,12 @@ async def _sync_client_calendar(
             )
         else:
             sync_token = calendar["sync_token"]
-            result = client.list_events(calendar["google_calendar_id"], sync_token=sync_token)
+            result = await client.list_events(calendar["google_calendar_id"], sync_token=sync_token)
 
             if result.get("sync_token_expired"):
                 # Need full sync
                 logger.info(f"Sync token expired for calendar {client_calendar_id}, doing full sync")
-                result = client.list_events(calendar["google_calendar_id"])
+                result = await client.list_events(calendar["google_calendar_id"])
 
             events = result["events"]
             new_sync_token = result.get("next_sync_token")
@@ -429,7 +434,7 @@ async def _sync_client_calendar(
 
                     if main_event_id:
                         # Create busy blocks on other client calendars
-                        main_event = main_client.get_event(main_calendar_id, main_event_id)
+                        main_event = await main_client.get_event(main_calendar_id, main_event_id)
                         if main_event:
                             await sync_main_event_to_clients(
                                 main_client=main_client,
@@ -624,7 +629,7 @@ async def _revert_if_moved(
         patch = {"start": patch_start, "end": patch_end}
 
     try:
-        cal_client.patch_event(calendar_id, event["id"], patch)
+        await cal_client.patch_event(calendar_id, event["id"], patch)
         return True
     except Exception as e:
         logger.error(f"Failed to revert move on event {event['id']}: {e}")
@@ -780,8 +785,8 @@ async def _retry_missing_busy_blocks(
                     cal_row = await cursor.fetchone()
                     if cal_row:
                         token = await _get_token(user_id, cal_row["google_account_email"])
-                        personal_client = GoogleCalendarClient(token)
-                        origin_event = personal_client.get_event(
+                        personal_client = AsyncGoogleCalendarClient(token)
+                        origin_event = await personal_client.get_event(
                             cal_row["google_calendar_id"], m["origin_event_id"],
                         )
                 except Exception:
@@ -824,7 +829,7 @@ async def _retry_missing_busy_blocks(
                     if result:
                         created += 1
             else:
-                event = main_client.get_event(main_calendar_id, m["main_event_id"])
+                event = await main_client.get_event(main_calendar_id, m["main_event_id"])
                 if not event or event.get("status") == "cancelled":
                     # Main event gone — mark mapping as deleted
                     await db.execute(
@@ -896,7 +901,7 @@ async def _sync_main_calendar(
     try:
         from app.auth.google import get_valid_access_token
         main_token = await get_valid_access_token(user_id, user_email)
-        main_client = GoogleCalendarClient(main_token)
+        main_client = AsyncGoogleCalendarClient(main_token)
 
         # Check if SA mode is active for this user
         sa_main_client = None
@@ -915,7 +920,7 @@ async def _sync_main_calendar(
             events = []
             for eid in verify_ids:
                 try:
-                    ev = main_client.get_event(main_calendar_id, eid)
+                    ev = await main_client.get_event(main_calendar_id, eid)
                     if ev:
                         events.append(ev)
                 except Exception:
@@ -930,11 +935,11 @@ async def _sync_main_calendar(
         else:
             sync_token = sync_state["sync_token"] if sync_state else None
             is_full_sync = sync_token is None
-            result = main_client.list_events(main_calendar_id, sync_token=sync_token)
+            result = await main_client.list_events(main_calendar_id, sync_token=sync_token)
 
             if result.get("sync_token_expired"):
                 logger.info(f"Main calendar sync token expired for user {user_id}, doing full sync")
-                result = main_client.list_events(main_calendar_id)
+                result = await main_client.list_events(main_calendar_id)
                 is_full_sync = True
 
             events = result["events"]
@@ -1193,8 +1198,8 @@ async def _sync_personal_calendar(
         personal_token = await get_valid_access_token(user_id, personal_email)
         main_token = await get_valid_access_token(user_id, user_email)
 
-        personal_client = GoogleCalendarClient(personal_token)
-        main_client = GoogleCalendarClient(main_token)
+        personal_client = AsyncGoogleCalendarClient(personal_token)
+        main_client = AsyncGoogleCalendarClient(main_token)
 
         # Check if SA mode is active
         sa_main_client = None
@@ -1213,7 +1218,7 @@ async def _sync_personal_calendar(
             events = []
             for eid in verify_ids:
                 try:
-                    ev = personal_client.get_event(calendar["google_calendar_id"], eid)
+                    ev = await personal_client.get_event(calendar["google_calendar_id"], eid)
                     if ev:
                         events.append(ev)
                 except Exception:
@@ -1226,11 +1231,11 @@ async def _sync_personal_calendar(
             )
         else:
             sync_token = calendar["sync_token"]
-            result = personal_client.list_events(calendar["google_calendar_id"], sync_token=sync_token)
+            result = await personal_client.list_events(calendar["google_calendar_id"], sync_token=sync_token)
 
             if result.get("sync_token_expired"):
                 logger.info(f"Sync token expired for personal calendar {personal_calendar_id}, doing full sync")
-                result = personal_client.list_events(calendar["google_calendar_id"])
+                result = await personal_client.list_events(calendar["google_calendar_id"])
 
             events = result["events"]
             new_sync_token = result.get("next_sync_token")
@@ -1427,11 +1432,11 @@ async def cleanup_disconnected_calendar(client_calendar_id: int, user_id: int) -
         if busy_blocks:
             try:
                 token = await get_valid_access_token(user_id, calendar["google_account_email"])
-                client = GoogleCalendarClient(token)
+                client = AsyncGoogleCalendarClient(token)
 
                 for block in busy_blocks:
                     try:
-                        client.delete_event(calendar["google_calendar_id"], block["busy_block_event_id"])
+                        await client.delete_event(calendar["google_calendar_id"], block["busy_block_event_id"])
                         deleted_busy_block_ids.add(block["id"])
                     except Exception as e:
                         logger.warning(f"Failed to delete busy block: {e}")
@@ -1450,7 +1455,7 @@ async def cleanup_disconnected_calendar(client_calendar_id: int, user_id: int) -
         if mappings and calendar["main_calendar_id"]:
             try:
                 main_token = await get_valid_access_token(user_id, calendar["user_email"])
-                main_client = GoogleCalendarClient(main_token)
+                main_client = AsyncGoogleCalendarClient(main_token)
 
                 # Use SA client for main calendar deletions when available
                 sa_main_client = None
@@ -1466,7 +1471,7 @@ async def cleanup_disconnected_calendar(client_calendar_id: int, user_id: int) -
 
                     if mapping["main_event_id"]:
                         try:
-                            delete_client.delete_event(calendar["main_calendar_id"], mapping["main_event_id"])
+                            await delete_client.delete_event(calendar["main_calendar_id"], mapping["main_event_id"])
                         except Exception as e:
                             logger.warning(f"Failed to delete main event: {e}")
                             mapping_cleanup_ok = False
@@ -1490,8 +1495,8 @@ async def cleanup_disconnected_calendar(client_calendar_id: int, user_id: int) -
 
                         try:
                             other_token = await get_valid_access_token(user_id, block["google_account_email"])
-                            other_client = GoogleCalendarClient(other_token)
-                            other_client.delete_event(block["google_calendar_id"], block["busy_block_event_id"])
+                            other_client = AsyncGoogleCalendarClient(other_token)
+                            await other_client.delete_event(block["google_calendar_id"], block["busy_block_event_id"])
                             deleted_busy_block_ids.add(block["id"])
                         except Exception as e:
                             logger.warning(f"Failed to delete busy block on other calendar: {e}")
@@ -1601,7 +1606,7 @@ async def cleanup_and_resync_calendar(calendar_id: int, user_id: int) -> dict:
         if calendar["main_calendar_id"]:
             try:
                 main_token = await get_valid_access_token(user_id, calendar["user_email"])
-                main_client = GoogleCalendarClient(main_token)
+                main_client = AsyncGoogleCalendarClient(main_token)
             except Exception as e:
                 summary["errors"].append(f"main_token:{e}")
 
@@ -1617,7 +1622,7 @@ async def cleanup_and_resync_calendar(calendar_id: int, user_id: int) -> dict:
         for mapping in mappings:
             if main_client and mapping["main_event_id"]:
                 try:
-                    main_client.delete_event(
+                    await main_client.delete_event(
                         calendar["main_calendar_id"], mapping["main_event_id"]
                     )
                     summary["main_events_deleted"] += 1
@@ -1638,8 +1643,8 @@ async def cleanup_and_resync_calendar(calendar_id: int, user_id: int) -> dict:
             for block in blocks:
                 try:
                     token = await get_valid_access_token(user_id, block["google_account_email"])
-                    client = GoogleCalendarClient(token)
-                    client.delete_event(block["google_calendar_id"], block["busy_block_event_id"])
+                    client = AsyncGoogleCalendarClient(token)
+                    await client.delete_event(block["google_calendar_id"], block["busy_block_event_id"])
                     summary["busy_blocks_deleted"] += 1
                 except Exception:
                     pass  # Best effort
@@ -1806,17 +1811,17 @@ async def _cleanup_managed_events_impl(
     from app.auth.google import get_valid_access_token
     from googleapiclient.errors import HttpError
 
-    client_cache: dict[str, GoogleCalendarClient] = {}
+    client_cache: dict[str, AsyncGoogleCalendarClient] = {}
     token_failures: set[str] = set()
 
     async def _throttled_delete(
-        client: GoogleCalendarClient, calendar_id: str, event_id: str,
+        client: AsyncGoogleCalendarClient, calendar_id: str, event_id: str,
     ) -> None:
         """Delete with retry on rate limits and a small delay between calls."""
         for attempt in range(4):
             try:
                 await asyncio.wait_for(
-                    asyncio.to_thread(client.delete_event, calendar_id, event_id),
+                    client.delete_event(calendar_id, event_id),
                     timeout=15,
                 )
                 await asyncio.sleep(0.15)  # ~6 req/s, well under Google's limits
@@ -1834,11 +1839,11 @@ async def _cleanup_managed_events_impl(
                     raise
         # Final attempt — let it raise
         await asyncio.wait_for(
-            asyncio.to_thread(client.delete_event, calendar_id, event_id),
+            client.delete_event(calendar_id, event_id),
             timeout=15,
         )
 
-    async def _get_client_for_email(email: str) -> Optional[GoogleCalendarClient]:
+    async def _get_client_for_email(email: str) -> Optional[AsyncGoogleCalendarClient]:
         normalized_email = (email or "").strip().lower()
         if not normalized_email:
             return None
@@ -1850,7 +1855,7 @@ async def _cleanup_managed_events_impl(
 
         try:
             access_token = await get_valid_access_token(user_id, email)
-            client_cache[normalized_email] = GoogleCalendarClient(access_token)
+            client_cache[normalized_email] = AsyncGoogleCalendarClient(access_token)
             return client_cache[normalized_email]
         except Exception as e:
             token_failures.add(normalized_email)
@@ -1910,8 +1915,7 @@ async def _cleanup_managed_events_impl(
             main_id_to_mapping = {m["main_event_id"]: m for m in main_cal_mappings if m["main_event_id"]}
             main_event_ids = list(main_id_to_mapping.keys())
 
-            deleted_count, failed_ids = await asyncio.to_thread(
-                delete_client.batch_delete_events,
+            deleted_count, failed_ids = await delete_client.batch_delete_events(
                 user["main_calendar_id"],
                 main_event_ids,
             )
@@ -1971,8 +1975,8 @@ async def _cleanup_managed_events_impl(
             continue
 
         event_ids = [b["busy_block_event_id"] for b in blocks_in_group]
-        deleted_count, failed_ids = await asyncio.to_thread(
-            client.batch_delete_events, cal_id, event_ids,
+        deleted_count, failed_ids = await client.batch_delete_events(
+            cal_id, event_ids,
         )
         bb_deleted_total += deleted_count
 
@@ -2009,8 +2013,8 @@ async def _cleanup_managed_events_impl(
 
             try:
                 events = await asyncio.wait_for(
-                    asyncio.to_thread(
-                        client.search_events, calendar_id, managed_prefix,
+                    client.search_events(
+                        calendar_id, managed_prefix,
                         single_events=False,
                     ),
                     timeout=30,
@@ -2069,8 +2073,8 @@ async def _cleanup_managed_events_impl(
             ids_to_delete = list(parent_ids) + standalone_ids
 
             if ids_to_delete:
-                deleted_count, failed_ids = await asyncio.to_thread(
-                    client.batch_delete_events, calendar_id, ids_to_delete,
+                deleted_count, failed_ids = await client.batch_delete_events(
+                    calendar_id, ids_to_delete,
                 )
                 summary["prefix_events_deleted"] += deleted_count
                 for eid in failed_ids:
@@ -2223,7 +2227,7 @@ async def recolor_calendar_events(client_calendar_id: int, new_color_id: str) ->
     from app.auth.google import get_valid_access_token
 
     main_token = await get_valid_access_token(cal["user_id"], cal["user_email"])
-    main_client = GoogleCalendarClient(main_token)
+    main_client = AsyncGoogleCalendarClient(main_token)
 
     # Use SA client if available
     sa_main_client = None
@@ -2238,7 +2242,7 @@ async def recolor_calendar_events(client_calendar_id: int, new_color_id: str) ->
     errors = 0
     for event_id in main_event_ids:
         try:
-            writer.patch_event(
+            await writer.patch_event(
                 main_calendar_id,
                 event_id,
                 {"colorId": new_color_id},

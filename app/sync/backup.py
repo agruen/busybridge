@@ -114,7 +114,7 @@ def _event_snapshot_fields(event: dict) -> dict:
 async def _snapshot_user(user: dict) -> dict:
     """Fetch all BusyBridge-managed events for one user across all calendars."""
     from app.auth.google import get_valid_access_token
-    from app.sync.google_calendar import GoogleCalendarClient
+    from app.sync.google_calendar import AsyncGoogleCalendarClient
 
     user_id = user["id"]
     settings = get_settings()
@@ -131,8 +131,8 @@ async def _snapshot_user(user: dict) -> dict:
     # Main calendar
     try:
         token = await get_valid_access_token(user_id, user["email"])
-        main_client = GoogleCalendarClient(token, settings=settings)
-        resp = main_client.list_events(user["main_calendar_id"], single_events=False)
+        main_client = AsyncGoogleCalendarClient(token, settings=settings)
+        resp = await main_client.list_events(user["main_calendar_id"], single_events=False)
         result["main_calendar_events"] = [
             _event_snapshot_fields(e)
             for e in resp.get("events", [])
@@ -165,8 +165,8 @@ async def _snapshot_user(user: dict) -> dict:
         }
         try:
             token = await get_valid_access_token(user_id, cal["google_account_email"])
-            client = GoogleCalendarClient(token, settings=settings)
-            resp = client.list_events(cal["google_calendar_id"], single_events=False)
+            client = AsyncGoogleCalendarClient(token, settings=settings)
+            resp = await client.list_events(cal["google_calendar_id"], single_events=False)
             cal_entry["events"] = [
                 _event_snapshot_fields(e)
                 for e in resp.get("events", [])
@@ -391,12 +391,12 @@ async def _fetch_current_busybridge_events(
 ) -> list[dict]:
     """Fetch all current BusyBridge-owned events from one Google calendar."""
     from app.auth.google import get_valid_access_token
-    from app.sync.google_calendar import GoogleCalendarClient
+    from app.sync.google_calendar import AsyncGoogleCalendarClient
 
     settings = get_settings()
     token = await get_valid_access_token(user_id, email)
-    client = GoogleCalendarClient(token, settings=settings)
-    resp = client.list_events(calendar_id, single_events=False)
+    client = AsyncGoogleCalendarClient(token, settings=settings)
+    resp = await client.list_events(calendar_id, single_events=False)
     return [
         _event_snapshot_fields(e)
         for e in resp.get("events", [])
@@ -418,7 +418,7 @@ async def _apply_calendar_diff(
     events that were recreated and received a new Google-assigned ID.
     """
     from app.auth.google import get_valid_access_token
-    from app.sync.google_calendar import GoogleCalendarClient
+    from app.sync.google_calendar import AsyncGoogleCalendarClient
 
     diff = _diff_events(backup_events, current_events)
 
@@ -436,14 +436,14 @@ async def _apply_calendar_diff(
 
     settings = get_settings()
     token = await get_valid_access_token(user_id, email)
-    client = GoogleCalendarClient(token, settings=settings)
+    client = AsyncGoogleCalendarClient(token, settings=settings)
     deleted = created = updated = 0
     errors: list[str] = []
     id_remaps: dict[str, str] = {}
 
     for event in diff["delete"]:
         try:
-            client.delete_event(calendar_id, event["id"], send_notifications=False)
+            await client.delete_event(calendar_id, event["id"], send_notifications=False)
             deleted += 1
         except Exception as e:
             errors.append(f"delete {event['id']}: {e}")
@@ -452,7 +452,7 @@ async def _apply_calendar_diff(
         try:
             # Strip the old ID so Google assigns a fresh one
             payload = {k: v for k, v in event.items() if k != "id"}
-            new_event = client.create_event(calendar_id, payload, send_notifications=False)
+            new_event = await client.create_event(calendar_id, payload, send_notifications=False)
             id_remaps[event["id"]] = new_event["id"]
             created += 1
         except Exception as e:
@@ -460,7 +460,7 @@ async def _apply_calendar_diff(
 
     for event in diff["update"]:
         try:
-            client.update_event(calendar_id, event["id"], event, send_notifications=False)
+            await client.update_event(calendar_id, event["id"], event, send_notifications=False)
             updated += 1
         except Exception as e:
             errors.append(f"update {event['id']}: {e}")

@@ -139,7 +139,7 @@ async def test_check_user_consistency_error_branches(test_db, monkeypatch):
             raise RuntimeError("create failed")
 
     monkeypatch.setattr("app.auth.google.get_valid_access_token", fake_get_valid_access_token)
-    monkeypatch.setattr("app.sync.consistency.GoogleCalendarClient", FakeGoogleCalendarClient)
+    monkeypatch.setattr("app.sync.google_calendar.GoogleCalendarClient", FakeGoogleCalendarClient)
 
     summary = {
         "users_checked": 0,

@@ -157,7 +157,7 @@ async def test_trigger_sync_for_calendar_token_expired_success_paths(test_db, mo
         return []
 
     monkeypatch.setattr("app.auth.google.get_valid_access_token", fake_get_valid_access_token)
-    monkeypatch.setattr("app.sync.engine.GoogleCalendarClient", FakeGoogleCalendarClient)
+    monkeypatch.setattr("app.sync.google_calendar.GoogleCalendarClient", FakeGoogleCalendarClient)
     monkeypatch.setattr("app.sync.engine.handle_deleted_client_event", fake_handle_deleted_client_event)
     monkeypatch.setattr("app.sync.engine.sync_client_event_to_main", fake_sync_client_event_to_main)
     monkeypatch.setattr("app.sync.engine.sync_main_event_to_clients", fake_sync_main_event_to_clients)
@@ -226,7 +226,7 @@ async def test_trigger_sync_for_calendar_failure_queues_alert_at_threshold(test_
         queued.append(kwargs)
 
     monkeypatch.setattr("app.auth.google.get_valid_access_token", fake_get_valid_access_token)
-    monkeypatch.setattr("app.sync.engine.GoogleCalendarClient", ExplodingGoogleCalendarClient)
+    monkeypatch.setattr("app.sync.google_calendar.GoogleCalendarClient", ExplodingGoogleCalendarClient)
     monkeypatch.setattr("app.alerts.email.queue_alert", fake_queue_alert)
 
     await trigger_sync_for_calendar(client_calendar_id)
@@ -277,7 +277,7 @@ async def test_trigger_sync_for_calendar_full_sync_state_update_path(test_db, mo
             return {"events": [], "next_sync_token": "full-sync-token"}
 
     monkeypatch.setattr("app.auth.google.get_valid_access_token", fake_get_valid_access_token)
-    monkeypatch.setattr("app.sync.engine.GoogleCalendarClient", FakeGoogleCalendarClient)
+    monkeypatch.setattr("app.sync.google_calendar.GoogleCalendarClient", FakeGoogleCalendarClient)
 
     await trigger_sync_for_calendar(client_calendar_id)
 
@@ -359,7 +359,7 @@ async def test_trigger_sync_for_main_calendar_state_creation_token_expiry_and_su
         return []
 
     monkeypatch.setattr("app.auth.google.get_valid_access_token", fake_get_valid_access_token)
-    monkeypatch.setattr("app.sync.engine.GoogleCalendarClient", FakeGoogleCalendarClient)
+    monkeypatch.setattr("app.sync.google_calendar.GoogleCalendarClient", FakeGoogleCalendarClient)
     monkeypatch.setattr("app.sync.engine.handle_deleted_main_event", fake_handle_deleted_main_event)
     monkeypatch.setattr("app.sync.engine.sync_main_event_to_clients", fake_sync_main_event_to_clients)
 
@@ -410,7 +410,7 @@ async def test_trigger_sync_for_main_calendar_incremental_path(test_db, monkeypa
             return {"events": [], "next_sync_token": "new-main-sync"}
 
     monkeypatch.setattr("app.auth.google.get_valid_access_token", fake_get_valid_access_token)
-    monkeypatch.setattr("app.sync.engine.GoogleCalendarClient", FakeGoogleCalendarClient)
+    monkeypatch.setattr("app.sync.google_calendar.GoogleCalendarClient", FakeGoogleCalendarClient)
 
     await trigger_sync_for_main_calendar(user_id)
 
@@ -520,7 +520,7 @@ async def test_cleanup_disconnected_calendar_successfully_deletes_remote_and_loc
             return True
 
     monkeypatch.setattr("app.auth.google.get_valid_access_token", fake_get_valid_access_token)
-    monkeypatch.setattr("app.sync.engine.GoogleCalendarClient", SuccessfulDeleteClient)
+    monkeypatch.setattr("app.sync.google_calendar.GoogleCalendarClient", SuccessfulDeleteClient)
 
     await cleanup_disconnected_calendar(cal_1, user_id)
 
@@ -709,7 +709,7 @@ async def test_cleanup_managed_events_for_user_uses_db_and_prefix_sweep(test_db,
             return []
 
     monkeypatch.setattr("app.auth.google.get_valid_access_token", fake_get_valid_access_token)
-    monkeypatch.setattr("app.sync.engine.GoogleCalendarClient", FakeGoogleCalendarClient)
+    monkeypatch.setattr("app.sync.google_calendar.GoogleCalendarClient", FakeGoogleCalendarClient)
 
     summary = await cleanup_managed_events_for_user(user_id)
 
@@ -785,7 +785,7 @@ async def test_cleanup_managed_events_for_user_without_prefix_runs_db_cleanup(te
 
     monkeypatch.setattr("app.sync.engine.get_settings", lambda: type("S", (), {"managed_event_prefix": ""})())
     monkeypatch.setattr("app.auth.google.get_valid_access_token", fake_get_valid_access_token)
-    monkeypatch.setattr("app.sync.engine.GoogleCalendarClient", FakeGoogleCalendarClient)
+    monkeypatch.setattr("app.sync.google_calendar.GoogleCalendarClient", FakeGoogleCalendarClient)
 
     summary = await cleanup_managed_events_for_user(user_id)
 

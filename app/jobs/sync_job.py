@@ -42,7 +42,7 @@ async def run_periodic_sync() -> None:
 
         for cal in client_cals:
             try:
-                await trigger_sync_for_calendar(cal["id"])
+                await trigger_sync_for_calendar(cal["id"], schedule_verification=False)
             except Exception as e:
                 logger.error(f"Error syncing client calendar {cal['id']}: {e}")
 

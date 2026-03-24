@@ -1,5 +1,7 @@
 """Google Calendar API wrapper."""
 
+import asyncio
+import functools
 import logging
 import time
 from datetime import datetime, timedelta, timezone
@@ -13,8 +15,10 @@ from app.config import get_settings
 
 logger = logging.getLogger(__name__)
 
-# HTTP status codes that are transient and worth retrying
-_RETRYABLE_STATUSES = {429, 500, 502, 503}
+# HTTP status codes that are transient and worth retrying.
+# 403 is included because Google Calendar returns 403 with reason
+# "rateLimitExceeded" for per-user rate limits (distinct from 429).
+_RETRYABLE_STATUSES = {403, 429, 500, 502, 503}
 
 
 class GoogleCalendarClient:
@@ -847,3 +851,35 @@ def can_user_edit_event(event: dict, user_email: str) -> bool:
         return True
 
     return False
+
+
+class AsyncGoogleCalendarClient:
+    """Async wrapper around GoogleCalendarClient.
+
+    Offloads all blocking Google API calls to a thread pool via
+    ``asyncio.to_thread`` so they never block the event loop.  Non-I/O
+    methods (like ``is_our_event``) are passed through directly.
+    """
+
+    # Methods that perform network I/O and must run in a thread.
+    _IO_METHODS = frozenset({
+        "list_events", "list_cancelled_instances", "get_event",
+        "find_by_origin", "list_our_events", "search_events",
+        "create_event", "update_event", "patch_event",
+        "delete_event", "batch_delete_events",
+        "list_calendars", "get_calendar",
+    })
+
+    def __init__(self, *args, **kwargs):
+        self._sync = GoogleCalendarClient(*args, **kwargs)
+
+    def __getattr__(self, name):
+        attr = getattr(self._sync, name)
+        if name in self._IO_METHODS and callable(attr):
+            @functools.wraps(attr)
+            async def _async(*args, **kwargs):
+                return await asyncio.to_thread(attr, *args, **kwargs)
+            # Cache so subsequent accesses skip __getattr__
+            object.__setattr__(self, name, _async)
+            return _async
+        return attr

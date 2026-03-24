@@ -6,6 +6,7 @@ from itertools import count
 
 import pytest
 
+from tests.conftest import async_fake
 from app.database import get_database
 
 
@@ -74,8 +75,8 @@ async def test_sync_client_event_to_main_all_day_and_update_success(test_db):
             self.updated.append(event_id)
             return {"id": event_id}
 
-    main_client = FakeMainClient()
-    client = type("Client", (), {"is_our_event": lambda self, _event: False})()
+    main_client = async_fake(FakeMainClient())
+    client = async_fake(type("Client", (), {"is_our_event": lambda self, _event: False})())
 
     all_day_event = {
         "id": "all-day-1",
@@ -167,9 +168,9 @@ async def test_sync_main_event_to_clients_replacement_and_recurrence_paths(test_
             raise RuntimeError("delete old failed")
 
     monkeypatch.setattr("app.auth.google.get_valid_access_token", fake_get_valid_access_token)
-    monkeypatch.setattr("app.sync.rules.GoogleCalendarClient", ReplacementClient)
+    monkeypatch.setattr("app.sync.google_calendar.GoogleCalendarClient", ReplacementClient)
 
-    main_client = type("MainClient", (), {"is_our_event": lambda self, _event: False})()
+    main_client = async_fake(type("MainClient", (), {"is_our_event": lambda self, _event: False})())
     event = {
         "id": "main-rec-1",
         "status": "confirmed",
@@ -225,9 +226,9 @@ async def test_sync_main_event_to_clients_per_calendar_failure_path(test_db, mon
             return {"id": f"busy-{next(ids)}"}
 
     monkeypatch.setattr("app.auth.google.get_valid_access_token", fake_get_valid_access_token)
-    monkeypatch.setattr("app.sync.rules.GoogleCalendarClient", CreateOnlyClient)
+    monkeypatch.setattr("app.sync.google_calendar.GoogleCalendarClient", CreateOnlyClient)
 
-    main_client = type("MainClient", (), {"is_our_event": lambda self, _event: False})()
+    main_client = async_fake(type("MainClient", (), {"is_our_event": lambda self, _event: False})())
     event = {
         "id": "main-err-path",
         "status": "confirmed",
@@ -293,14 +294,14 @@ async def test_handle_deleted_client_event_error_logging_paths(test_db, monkeypa
             raise RuntimeError("main delete failed")
 
     monkeypatch.setattr("app.auth.google.get_valid_access_token", fake_get_valid_access_token)
-    monkeypatch.setattr("app.sync.rules.GoogleCalendarClient", FailingDeleteClient)
+    monkeypatch.setattr("app.sync.google_calendar.GoogleCalendarClient", FailingDeleteClient)
 
     await handle_deleted_client_event(
         user_id=user_id,
         client_calendar_id=cal_id,
         event_id="origin-delete-err",
         main_calendar_id="main-cal",
-        main_client=FailingMainClient(),
+        main_client=async_fake(FailingMainClient()),
     )
 
     cursor = await db.execute("SELECT COUNT(*) FROM event_mappings WHERE id = ?", (mapping_id,))
@@ -343,7 +344,7 @@ async def test_handle_deleted_main_event_error_logging_paths(test_db, monkeypatc
             raise RuntimeError("delete failed")
 
     monkeypatch.setattr("app.auth.google.get_valid_access_token", fake_get_valid_access_token)
-    monkeypatch.setattr("app.sync.rules.GoogleCalendarClient", FailingDeleteClient)
+    monkeypatch.setattr("app.sync.google_calendar.GoogleCalendarClient", FailingDeleteClient)
 
     await handle_deleted_main_event(user_id=user_id, event_id="main-delete")
 

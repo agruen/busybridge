@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.database import get_database
+from tests.conftest import async_fake
 
 
 # ---------------------------------------------------------------------------
@@ -128,14 +129,18 @@ async def test_handle_deleted_client_event_instance_cancels_busy_block_instance(
 
     main_client = SimpleNamespace(delete_event=fake_delete)
 
+    async def async_fake_delete(cal_id: str, event_id: str, **_kw) -> bool:
+        deleted.append(event_id)
+        return True
+
     with patch(
         "app.auth.google.get_valid_access_token",
         AsyncMock(return_value="token"),
     ), patch(
-        "app.sync.rules.GoogleCalendarClient",
+        "app.sync.rules.AsyncGoogleCalendarClient",
     ) as MockClient:
         fake_other = MagicMock()
-        fake_other.delete_event = fake_delete
+        fake_other.delete_event = async_fake_delete
         MockClient.return_value = fake_other
 
         await handle_deleted_client_event(
@@ -143,7 +148,7 @@ async def test_handle_deleted_client_event_instance_cancels_busy_block_instance(
             client_calendar_id=client_cal_db_id,
             event_id="series-abc_20260227T150000Z",
             main_calendar_id="main-cal",
-            main_client=main_client,
+            main_client=async_fake(main_client),
             recurring_event_id="series-abc",
             original_start_time={"dateTime": "2026-02-27T10:00:00-05:00"},
         )
@@ -183,11 +188,12 @@ async def test_handle_deleted_client_event_no_parent_mapping_is_noop(test_db):
         client_calendar_id=client_cal_db_id,
         event_id="unknown_20260101T100000Z",
         main_calendar_id="main-cal",
-        main_client=main_client,
+        main_client=async_fake(main_client),
         recurring_event_id="unknown-series",
         original_start_time={"dateTime": "2026-01-01T10:00:00Z"},
     )
 
+    # Note: assert_not_called on original sync object still works
     main_client.delete_event.assert_not_called()
 
 
@@ -214,14 +220,17 @@ async def test_handle_deleted_main_event_instance_cancels_busy_block_instance(te
 
     deleted: list[str] = []
 
+    async def async_fake_delete(cal_id, event_id, **_):
+        deleted.append(event_id)
+
     with patch(
         "app.auth.google.get_valid_access_token",
         AsyncMock(return_value="token"),
     ), patch(
-        "app.sync.rules.GoogleCalendarClient",
+        "app.sync.rules.AsyncGoogleCalendarClient",
     ) as MockClient:
         fake_client = MagicMock()
-        fake_client.delete_event = lambda cal_id, event_id, **_: deleted.append(event_id)
+        fake_client.delete_event = async_fake_delete
         MockClient.return_value = fake_client
 
         await handle_deleted_main_event(
@@ -295,19 +304,23 @@ async def test_sync_client_event_modified_instance_forks_and_cancels_old_slots(t
         "end": {"dateTime": "2026-02-27T12:00:00-05:00", "timeZone": "America/New_York"},
     }
 
+    async def async_fake_delete(cal_id: str, event_id: str, **_kw) -> bool:
+        deleted.append(event_id)
+        return True
+
     with patch(
         "app.auth.google.get_valid_access_token",
         AsyncMock(return_value="token"),
     ), patch(
-        "app.sync.rules.GoogleCalendarClient",
+        "app.sync.rules.AsyncGoogleCalendarClient",
     ) as MockClient:
         fake_other = MagicMock()
-        fake_other.delete_event = fake_delete
+        fake_other.delete_event = async_fake_delete
         MockClient.return_value = fake_other
 
         result_id, result_changed = await sync_client_event_to_main(
-            client=client_obj,
-            main_client=main_client,
+            client=async_fake(client_obj),
+            main_client=async_fake(main_client),
             event=modified_instance,
             user_id=user_id,
             client_calendar_id=client_cal_db_id,
@@ -371,8 +384,8 @@ async def test_sync_client_event_modified_instance_no_parent_creates_standalone(
     }
 
     result_id, result_changed = await sync_client_event_to_main(
-        client=client_obj,
-        main_client=main_client,
+        client=async_fake(client_obj),
+        main_client=async_fake(main_client),
         event=modified_instance,
         user_id=user_id,
         client_calendar_id=client_cal_db_id,

@@ -70,22 +70,25 @@ def get_sa_email() -> Optional[str]:
     return info.get("client_email")
 
 
-def get_sa_main_client(main_calendar_id: str) -> Optional["GoogleCalendarClient"]:
-    """Create a GoogleCalendarClient backed by SA credentials.
+def get_sa_main_client(main_calendar_id: str):
+    """Create an AsyncGoogleCalendarClient backed by SA credentials.
 
     Returns None if SA is not configured or access validation fails.
+    The validation call is synchronous (blocking) but this is only called
+    once per sync cycle, not in the hot path.
     """
-    from app.sync.google_calendar import GoogleCalendarClient
+    from app.sync.google_calendar import GoogleCalendarClient, AsyncGoogleCalendarClient
 
     creds = get_sa_credentials()
     if not creds:
         return None
 
     try:
-        client = GoogleCalendarClient(credentials=creds)
-        # Validate access by fetching calendar metadata
-        client.get_calendar(main_calendar_id)
-        return client
+        # Validate access with a sync client (one-time blocking call)
+        sync_client = GoogleCalendarClient(credentials=creds)
+        sync_client.get_calendar(main_calendar_id)
+        # Return async wrapper for use in async contexts
+        return AsyncGoogleCalendarClient(credentials=creds)
     except Exception as e:
         logger.warning(
             "Service account cannot access calendar %s: %s", main_calendar_id, e

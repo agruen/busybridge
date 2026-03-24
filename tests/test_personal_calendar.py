@@ -4,6 +4,7 @@ import pytest
 import pytest_asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from tests.conftest import async_fake
 from app.config import get_settings
 from app.sync.google_calendar import (
     create_personal_busy_block,
@@ -212,12 +213,12 @@ async def test_personal_event_mapping_created(personal_test_db):
     }
 
     with patch("app.auth.google.get_valid_access_token", new_callable=AsyncMock, return_value="fake-token"):
-        with patch("app.sync.rules.GoogleCalendarClient", return_value=mock_client_client):
+        with patch("app.sync.rules.AsyncGoogleCalendarClient", return_value=async_fake(mock_client_client)):
             from app.sync.rules import sync_personal_event_to_all
 
             result = await sync_personal_event_to_all(
-                personal_client=mock_personal_client,
-                main_client=mock_main_client,
+                personal_client=async_fake(mock_personal_client),
+                main_client=async_fake(mock_main_client),
                 event=event,
                 user_id=1,
                 personal_calendar_id=10,
@@ -265,8 +266,8 @@ async def test_personal_event_skips_our_events(personal_test_db):
     from app.sync.rules import sync_personal_event_to_all
 
     result = await sync_personal_event_to_all(
-        personal_client=mock_personal_client,
-        main_client=mock_main_client,
+        personal_client=async_fake(mock_personal_client),
+        main_client=async_fake(mock_main_client),
         event=event,
         user_id=1,
         personal_calendar_id=10,
@@ -305,7 +306,7 @@ async def test_handle_deleted_personal_event(personal_test_db):
     mock_client_client.delete_event.return_value = True
 
     with patch("app.auth.google.get_valid_access_token", new_callable=AsyncMock, return_value="fake-token"):
-        with patch("app.sync.rules.GoogleCalendarClient", return_value=mock_client_client):
+        with patch("app.sync.rules.AsyncGoogleCalendarClient", return_value=async_fake(mock_client_client)):
             from app.sync.rules import handle_deleted_personal_event
 
             await handle_deleted_personal_event(
@@ -313,7 +314,7 @@ async def test_handle_deleted_personal_event(personal_test_db):
                 personal_calendar_id=10,
                 event_id="personal-del-1",
                 main_calendar_id="main@home.com",
-                main_client=mock_main_client,
+                main_client=async_fake(mock_main_client),
             )
 
     # Verify main event was deleted

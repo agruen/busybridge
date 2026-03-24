@@ -5,7 +5,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 
 from app.database import get_database
-from app.sync.google_calendar import GoogleCalendarClient
+from app.sync.google_calendar import AsyncGoogleCalendarClient, GoogleCalendarClient
 
 logger = logging.getLogger(__name__)
 
@@ -87,7 +87,7 @@ async def check_user_consistency(user_id: int, summary: dict, dry_run: bool = Fa
 
     try:
         main_token = await get_valid_access_token(user_id, user["email"])
-        main_client = GoogleCalendarClient(main_token)
+        main_client = AsyncGoogleCalendarClient(main_token)
     except Exception as e:
         logger.warning(f"Cannot get main calendar access for user {user_id}: {e}")
         return
@@ -123,10 +123,10 @@ async def check_user_consistency(user_id: int, summary: dict, dry_run: bool = Fa
 
         try:
             client_token = await get_valid_access_token(user_id, mapping["google_account_email"])
-            client = GoogleCalendarClient(client_token)
+            client = AsyncGoogleCalendarClient(client_token)
 
             # Check if origin event still exists
-            origin_event = client.get_event(mapping["google_calendar_id"], mapping["origin_event_id"])
+            origin_event = await client.get_event(mapping["google_calendar_id"], mapping["origin_event_id"])
 
             if not origin_event or origin_event.get("status") == "cancelled":
                 # Origin deleted — clean up main copy
@@ -141,7 +141,7 @@ async def check_user_consistency(user_id: int, summary: dict, dry_run: bool = Fa
                         summary["orphaned_main_events_deleted"] += 1
                     else:
                         try:
-                            write_client.delete_event(user["main_calendar_id"], mapping["main_event_id"])
+                            await write_client.delete_event(user["main_calendar_id"], mapping["main_event_id"])
                             summary["orphaned_main_events_deleted"] += 1
                             logger.info(f"Deleted orphaned main event {mapping['main_event_id']}")
                         except Exception:
@@ -170,8 +170,8 @@ async def check_user_consistency(user_id: int, summary: dict, dry_run: bool = Fa
                             block_token = await get_valid_access_token(
                                 user_id, block["google_account_email"]
                             )
-                            block_client = GoogleCalendarClient(block_token)
-                            block_client.delete_event(
+                            block_client = AsyncGoogleCalendarClient(block_token)
+                            await block_client.delete_event(
                                 block["google_calendar_id"], block["busy_block_event_id"]
                             )
                             await db.execute("DELETE FROM busy_blocks WHERE id = ?", (block["id"],))
@@ -190,7 +190,7 @@ async def check_user_consistency(user_id: int, summary: dict, dry_run: bool = Fa
 
             # Check if main copy exists
             if mapping["main_event_id"]:
-                main_event = main_client.get_event(user["main_calendar_id"], mapping["main_event_id"])
+                main_event = await main_client.get_event(user["main_calendar_id"], mapping["main_event_id"])
                 if not main_event or main_event.get("status") == "cancelled":
                     # Main copy missing — recreate (or plan to)
                     from app.sync.google_calendar import copy_event_for_main
@@ -221,7 +221,7 @@ async def check_user_consistency(user_id: int, summary: dict, dry_run: bool = Fa
                             use_service_account=use_sa,
                         )
                         try:
-                            result = write_client.create_event(user["main_calendar_id"], new_event_data)
+                            result = await write_client.create_event(user["main_calendar_id"], new_event_data)
                             await db.execute(
                                 "UPDATE event_mappings SET main_event_id = ?, updated_at = ? WHERE id = ?",
                                 (result["id"], datetime.utcnow().isoformat(), mapping["id"])
@@ -265,8 +265,8 @@ async def check_user_consistency(user_id: int, summary: dict, dry_run: bool = Fa
                 deleted_remotely = False
                 try:
                     client_token = await get_valid_access_token(user_id, block["google_account_email"])
-                    block_client = GoogleCalendarClient(client_token)
-                    block_client.delete_event(block["google_calendar_id"], block["busy_block_event_id"])
+                    block_client = AsyncGoogleCalendarClient(client_token)
+                    await block_client.delete_event(block["google_calendar_id"], block["busy_block_event_id"])
                     deleted_remotely = True
                     summary["orphaned_busy_blocks_deleted"] += 1
                 except Exception as e:
@@ -284,8 +284,8 @@ async def check_user_consistency(user_id: int, summary: dict, dry_run: bool = Fa
             # doesn't accumulate indefinitely.
             try:
                 client_token = await get_valid_access_token(user_id, block["google_account_email"])
-                block_client = GoogleCalendarClient(client_token)
-                remote = block_client.get_event(
+                block_client = AsyncGoogleCalendarClient(client_token)
+                remote = await block_client.get_event(
                     block["google_calendar_id"], block["busy_block_event_id"]
                 )
                 if not remote or remote.get("status") == "cancelled":
@@ -367,10 +367,10 @@ async def reconcile_calendar(client_calendar_id: int, dry_run: bool = False) -> 
         from app.auth.google import get_valid_access_token
 
         client_token = await get_valid_access_token(user_id, calendar["google_account_email"])
-        client = GoogleCalendarClient(client_token)
+        client = AsyncGoogleCalendarClient(client_token)
 
         # Get all events (no sync token)
-        result = client.list_events(calendar["google_calendar_id"])
+        result = await client.list_events(calendar["google_calendar_id"])
         events = result["events"]
         summary["events_found"] = len(events)
 
@@ -398,7 +398,7 @@ async def reconcile_calendar(client_calendar_id: int, dry_run: bool = False) -> 
         stale_ids = set()
         for event_id in potentially_stale_ids:
             try:
-                ev = client.get_event(calendar["google_calendar_id"], event_id)
+                ev = await client.get_event(calendar["google_calendar_id"], event_id)
                 if not ev or ev.get("status") == "cancelled":
                     stale_ids.add(event_id)
                 # else: event still exists (e.g. a forked instance) — not stale
@@ -437,7 +437,7 @@ async def reconcile_calendar(client_calendar_id: int, dry_run: bool = False) -> 
             if mapping["main_event_id"] and calendar["main_calendar_id"]:
                 try:
                     main_token = await get_valid_access_token(user_id, calendar["user_email"])
-                    main_client = GoogleCalendarClient(main_token)
+                    main_client = AsyncGoogleCalendarClient(main_token)
                     # Use SA client when available
                     sa_del_client = None
                     cursor = await db.execute("SELECT sa_tier FROM users WHERE id = ?", (user_id,))
@@ -446,7 +446,7 @@ async def reconcile_calendar(client_calendar_id: int, dry_run: bool = False) -> 
                         from app.auth.service_account import get_sa_main_client
                         sa_del_client = get_sa_main_client(calendar["main_calendar_id"])
                     del_client = sa_del_client if sa_del_client is not None else main_client
-                    del_client.delete_event(calendar["main_calendar_id"], mapping["main_event_id"])
+                    await del_client.delete_event(calendar["main_calendar_id"], mapping["main_event_id"])
                 except Exception as e:
                     logger.warning(f"Failed to delete stale main event {mapping['main_event_id']}: {e}")
                     cleanup_ok = False
@@ -464,8 +464,8 @@ async def reconcile_calendar(client_calendar_id: int, dry_run: bool = False) -> 
             for block in blocks:
                 try:
                     block_token = await get_valid_access_token(user_id, block["google_account_email"])
-                    block_client = GoogleCalendarClient(block_token)
-                    block_client.delete_event(block["google_calendar_id"], block["busy_block_event_id"])
+                    block_client = AsyncGoogleCalendarClient(block_token)
+                    await block_client.delete_event(block["google_calendar_id"], block["busy_block_event_id"])
                 except Exception as e:
                     logger.warning(f"Failed to delete stale busy block {block['busy_block_event_id']}: {e}")
                     cleanup_ok = False
@@ -713,7 +713,7 @@ async def _scan_user_orphans(
     # Scan main calendar
     try:
         token = await get_valid_access_token(user_id, user_row["email"])
-        main_client = GoogleCalendarClient(token)
+        main_client = AsyncGoogleCalendarClient(token)
         await _dedup_calendar(
             main_client, main_cal_id, known_main_ids,
             time_min, time_max, summary, dry_run, "main",
@@ -728,7 +728,7 @@ async def _scan_user_orphans(
         email = cal["google_account_email"]
         try:
             token = await get_valid_access_token(user_id, email)
-            client = GoogleCalendarClient(token)
+            client = AsyncGoogleCalendarClient(token)
             await _dedup_calendar(
                 client, cal_id, known_block_ids | known_origin_ids,
                 time_min, time_max, summary, dry_run, "client",
@@ -758,7 +758,7 @@ async def _dedup_calendar(
     from app.config import get_settings
     settings = get_settings()
 
-    our_events = client.list_our_events(
+    our_events = await client.list_our_events(
         calendar_id, time_min=time_min, time_max=time_max,
     )
     summary["calendars_scanned"] += 1
@@ -809,7 +809,7 @@ async def _dedup_calendar(
             else:
                 # Single orphaned busy block — delete it.  Busy blocks are
                 # created by us, not the user.  No adoption path exists.
-                _mark_orphan(
+                await _mark_orphan(
                     summary, events[0], calendar_id, cal_label, dry_run, client,
                 )
         elif len(events) > 1:
@@ -834,7 +834,7 @@ async def _dedup_calendar(
                 )
                 if not dry_run:
                     try:
-                        client.delete_event(calendar_id, event["id"])
+                        await client.delete_event(calendar_id, event["id"])
                         summary["orphans_deleted"] += 1
                         logger.info("Orphan scan: deleted duplicate: %s", detail)
                     except Exception as e:
@@ -856,16 +856,16 @@ async def _dedup_calendar(
 
     # Handle events with no bb_origin_id (legacy or untagged)
     for event in no_origin:
-        _mark_orphan(summary, event, calendar_id, cal_label, dry_run, client)
+        await _mark_orphan(summary, event, calendar_id, cal_label, dry_run, client)
 
 
-def _mark_orphan(
+async def _mark_orphan(
     summary: dict,
     event: dict,
     calendar_id: str,
     cal_label: str,
     dry_run: bool,
-    client: GoogleCalendarClient,
+    client: AsyncGoogleCalendarClient,
 ) -> None:
     """Mark a single event as orphan and optionally delete it."""
     eid = event["id"]
@@ -877,7 +877,7 @@ def _mark_orphan(
 
     if not dry_run:
         try:
-            client.delete_event(calendar_id, eid)
+            await client.delete_event(calendar_id, eid)
             summary["orphans_deleted"] += 1
             logger.info("Orphan scan: deleted orphan: %s", detail)
         except Exception as e:
