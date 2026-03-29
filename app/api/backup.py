@@ -2,6 +2,7 @@
 
 import logging
 import os
+import re
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -12,6 +13,15 @@ from app.auth.session import require_admin, User
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin/backup", tags=["backup"])
+
+_SAFE_ID_RE = re.compile(r'^[a-zA-Z0-9._-]+$')
+
+
+def _validate_backup_id(backup_id: str) -> None:
+    """Reject backup IDs with path traversal characters."""
+    if not _SAFE_ID_RE.match(backup_id):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="Invalid backup ID")
 
 
 # ---------------------------------------------------------------------------
@@ -85,6 +95,7 @@ async def download_ics_backup(
     admin: User = Depends(require_admin),
 ):
     """Download an ICS backup ZIP (full or clean)."""
+    _validate_backup_id(backup_id)
     from app.sync.ics_export import get_ics_backup_dir
     path = os.path.join(get_ics_backup_dir(), f"{backup_id}.zip")
     if not os.path.exists(path):
@@ -103,6 +114,7 @@ async def delete_ics_backup_endpoint(
     admin: User = Depends(require_admin),
 ):
     """Delete an ICS backup pair by timestamp."""
+    _validate_backup_id(timestamp)
     from app.sync.ics_export import delete_ics_backup
     deleted = delete_ics_backup(timestamp)
     if not deleted:
@@ -151,6 +163,7 @@ async def restore_backup_endpoint(
     Pass user_ids to restore only specific users; omit to restore all users
     in the backup.
     """
+    _validate_backup_id(request.backup_id)
     from app.sync.backup import restore_from_backup
     try:
         result = await restore_from_backup(
@@ -177,6 +190,7 @@ async def download_backup(
     admin: User = Depends(require_admin),
 ):
     """Download a backup ZIP file."""
+    _validate_backup_id(backup_id)
     from app.sync.backup import get_backup_dir
     path = os.path.join(get_backup_dir(), f"{backup_id}.zip")
     if not os.path.exists(path):
@@ -195,6 +209,7 @@ async def delete_backup_endpoint(
     admin: User = Depends(require_admin),
 ):
     """Delete a backup by ID."""
+    _validate_backup_id(backup_id)
     from app.sync.backup import delete_backup
     deleted = delete_backup(backup_id)
     if not deleted:
