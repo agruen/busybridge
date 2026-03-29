@@ -7,7 +7,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
-from app.auth.session import get_current_user, User
+from app.auth.session import get_current_user, require_admin, User
 from app.database import get_database, get_setting, set_setting
 
 logger = logging.getLogger(__name__)
@@ -241,14 +241,14 @@ async def trigger_full_resync(user: User = Depends(get_current_user)):
 
 
 @router.post("/pause")
-async def pause_sync(user: User = Depends(get_current_user)):
-    """Pause all sync operations."""
+async def pause_sync(user: User = Depends(require_admin)):
+    """Pause all sync operations (admin only)."""
     await set_setting("sync_paused", "true")
 
     db = await get_database()
     await db.execute(
         """INSERT INTO sync_log (user_id, action, status, details)
-           VALUES (?, 'sync_pause', 'success', 'User paused sync')""",
+           VALUES (?, 'sync_pause', 'success', 'Admin paused sync')""",
         (user.id,),
     )
     await db.commit()
@@ -257,14 +257,14 @@ async def pause_sync(user: User = Depends(get_current_user)):
 
 
 @router.post("/resume")
-async def resume_sync(user: User = Depends(get_current_user)):
-    """Resume sync operations."""
+async def resume_sync(user: User = Depends(require_admin)):
+    """Resume sync operations (admin only)."""
     await set_setting("sync_paused", "false")
 
     db = await get_database()
     await db.execute(
         """INSERT INTO sync_log (user_id, action, status, details)
-           VALUES (?, 'sync_resume', 'success', 'User resumed sync')""",
+           VALUES (?, 'sync_resume', 'success', 'Admin resumed sync')""",
         (user.id,),
     )
     await db.commit()
