@@ -110,8 +110,15 @@ async def create_webcal_subscription(
             detail="This URL is already subscribed",
         )
 
-    # Validate by trying to fetch
-    from app.sync.ics_parser import fetch_ics_feed
+    # SSRF check + validate by trying to fetch
+    from app.sync.ics_parser import fetch_ics_feed, validate_url_for_ssrf
+    try:
+        validate_url_for_ssrf(url)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="URL must point to a public internet address",
+        )
     try:
         content, etag = await fetch_ics_feed(url)
         if content is None:
@@ -119,6 +126,12 @@ async def create_webcal_subscription(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Could not fetch ICS feed from this URL",
             )
+    except ValueError:
+        # SSRF blocked (e.g. redirect to internal IP)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="URL must point to a public internet address",
+        )
     except httpx.HTTPError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

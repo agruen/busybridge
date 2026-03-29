@@ -1,10 +1,13 @@
 """ICS/webcal feed fetcher and parser."""
 
 import hashlib
+import ipaddress
 import logging
 import re
+import socket
 from datetime import datetime, timedelta, date, timezone
 from typing import Optional
+from urllib.parse import urlparse
 
 import httpx
 import icalendar
@@ -23,6 +26,95 @@ _UNSTABLE_UUID_RE = re.compile(
 )
 
 
+# ---------------------------------------------------------------------------
+# SSRF protection
+# ---------------------------------------------------------------------------
+
+# Explicit blocklist for defence-in-depth (covers cloud metadata, RFC 1918,
+# carrier-grade NAT, benchmarking, documentation, and broadcast ranges that
+# some older Python ipaddress builds may not flag via is_private/is_reserved).
+_BLOCKED_NETWORKS = [
+    ipaddress.ip_network("0.0.0.0/8"),
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("100.64.0.0/10"),     # Carrier-grade NAT
+    ipaddress.ip_network("127.0.0.0/8"),
+    ipaddress.ip_network("169.254.0.0/16"),    # Link-local / cloud metadata
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.0.0.0/24"),
+    ipaddress.ip_network("192.0.2.0/24"),      # TEST-NET-1
+    ipaddress.ip_network("192.168.0.0/16"),
+    ipaddress.ip_network("198.18.0.0/15"),     # Benchmarking
+    ipaddress.ip_network("198.51.100.0/24"),   # TEST-NET-2
+    ipaddress.ip_network("203.0.113.0/24"),    # TEST-NET-3
+    ipaddress.ip_network("224.0.0.0/4"),       # Multicast
+    ipaddress.ip_network("240.0.0.0/4"),
+    ipaddress.ip_network("255.255.255.255/32"),
+    # IPv6
+    ipaddress.ip_network("::1/128"),
+    ipaddress.ip_network("fc00::/7"),          # Unique local
+    ipaddress.ip_network("fe80::/10"),         # Link-local
+]
+
+
+def _is_ip_blocked(ip_str: str) -> bool:
+    """Return True if *ip_str* resolves to a private/reserved address."""
+    try:
+        addr = ipaddress.ip_address(ip_str)
+    except ValueError:
+        return True  # Unparseable → block
+
+    # Built-in checks (Python 3.12 covers RFC 6890 correctly).
+    if (
+        addr.is_private
+        or addr.is_reserved
+        or addr.is_loopback
+        or addr.is_link_local
+        or addr.is_multicast
+    ):
+        return True
+
+    # Explicit network list for defence-in-depth.
+    for network in _BLOCKED_NETWORKS:
+        if addr in network:
+            return True
+
+    return False
+
+
+def validate_url_for_ssrf(url: str) -> None:
+    """Raise ``ValueError`` if *url* targets a private/reserved network.
+
+    Resolves the hostname via DNS and checks every returned address.
+    """
+    parsed = urlparse(url)
+    hostname = parsed.hostname
+
+    if not hostname:
+        raise ValueError("URL has no hostname")
+
+    # Reject raw-IP URLs that point at internal ranges.
+    try:
+        if _is_ip_blocked(hostname):
+            raise ValueError("URL points to a blocked address")
+    except ValueError:
+        pass  # Not a literal IP — continue to DNS resolution.
+
+    try:
+        addrinfos = socket.getaddrinfo(
+            hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM,
+        )
+    except socket.gaierror:
+        raise ValueError(f"Cannot resolve hostname: {hostname}")
+
+    if not addrinfos:
+        raise ValueError(f"Cannot resolve hostname: {hostname}")
+
+    for _family, _type, _proto, _canonname, sockaddr in addrinfos:
+        ip = sockaddr[0]
+        if _is_ip_blocked(ip):
+            raise ValueError("URL resolves to a blocked address")
+
+
 async def fetch_ics_feed(
     url: str,
     etag: Optional[str] = None,
@@ -31,10 +123,14 @@ async def fetch_ics_feed(
     """Fetch an ICS feed from a URL.
 
     Returns (ics_content, new_etag) or (None, None) if 304 Not Modified.
+    Raises ``ValueError`` if the URL targets a private/internal network.
     """
     # Normalize webcal:// to https://
     if url.startswith("webcal://"):
         url = "https://" + url[len("webcal://"):]
+
+    # SSRF protection: block requests to internal/private networks.
+    validate_url_for_ssrf(url)
 
     headers = {}
     if etag:
@@ -42,6 +138,12 @@ async def fetch_ics_feed(
 
     async with httpx.AsyncClient(follow_redirects=True, timeout=timeout) as client:
         response = await client.get(url, headers=headers)
+
+    # Re-validate after redirects — the final URL may differ from the
+    # original (e.g. an external host 302-ing to an internal IP).
+    final_url = str(response.url)
+    if final_url != url:
+        validate_url_for_ssrf(final_url)
 
     if response.status_code == 304:
         return None, None
