@@ -72,6 +72,37 @@ async def sync_client_event_to_main(
         )
         return None, False
 
+    # If this is a rescheduled recurring PARENT (_R in event ID, has
+    # recurrence rules) and we don't have a mapping, look for the original
+    # parent event's mapping using the base ID (everything before _R).
+    # Google creates a new event ID like "baseId_R<timestamp>" when a
+    # recurring event is rescheduled; without this check we'd create a
+    # duplicate recurring event on main.
+    if not existing and not recurring_event_id and "_R" in event_id and "recurrence" in event:
+        base_id = event_id.split("_R")[0]
+        # Search for the bare base ID OR any previous _R variant of it.
+        # After the first rescheduling re-keys the mapping, the origin_event_id
+        # is "baseId_R<old_ts>", so searching only for the bare base would miss.
+        cursor = await db.execute(
+            """SELECT * FROM event_mappings
+               WHERE user_id = ? AND origin_calendar_id = ?
+               AND (origin_event_id = ? OR origin_event_id LIKE ?)
+               AND deleted_at IS NULL
+               ORDER BY updated_at DESC LIMIT 1""",
+            (user_id, client_calendar_id, base_id, f"{base_id}_R%")
+        )
+        existing = await cursor.fetchone()
+        if existing:
+            await db.execute(
+                "UPDATE event_mappings SET origin_event_id = ?, updated_at = ? WHERE id = ?",
+                (event_id, datetime.utcnow().isoformat(), existing["id"])
+            )
+            await db.commit()
+            logger.info(
+                f"Re-keyed mapping {existing['id']} from "
+                f"{existing['origin_event_id']} to {event_id} (rescheduled parent)"
+            )
+
     # If this is a rescheduled recurring instance (_R prefix) and we don't
     # have a mapping for it, look for the original instance it replaced.
     # This prevents duplicate events when Google sends both the cancelled
@@ -80,26 +111,36 @@ async def sync_client_event_to_main(
         original_start = event.get("originalStartTime", {})
         orig_dt = original_start.get("dateTime") or original_start.get("date", "")
         if orig_dt:
-            cursor = await db.execute(
-                """SELECT * FROM event_mappings
-                   WHERE user_id = ? AND origin_calendar_id = ?
-                     AND origin_event_id LIKE ? AND deleted_at IS NULL""",
-                (user_id, client_calendar_id, f"{recurring_event_id}_%")
-            )
-            candidates = await cursor.fetchall()
-            for candidate in candidates:
-                cand_start = candidate["event_start"] or ""
-                if orig_dt in cand_start or cand_start in orig_dt:
-                    existing = candidate
-                    await db.execute(
-                        "UPDATE event_mappings SET origin_event_id = ?, updated_at = ? WHERE id = ?",
-                        (event_id, datetime.utcnow().isoformat(), candidate["id"])
-                    )
-                    await db.commit()
-                    logger.info(
-                        f"Re-keyed mapping {candidate['id']} from "
-                        f"{candidate['origin_event_id']} to {event_id}"
-                    )
+            # Search using the recurring parent ID, and also the base ID
+            # if this is an instance of a rescheduled series (_R in parent).
+            search_patterns = [f"{recurring_event_id}_%"]
+            if "_R" in recurring_event_id:
+                base_recurring_id = recurring_event_id.split("_R")[0]
+                search_patterns.append(f"{base_recurring_id}_%")
+
+            for pattern in search_patterns:
+                cursor = await db.execute(
+                    """SELECT * FROM event_mappings
+                       WHERE user_id = ? AND origin_calendar_id = ?
+                         AND origin_event_id LIKE ? AND deleted_at IS NULL""",
+                    (user_id, client_calendar_id, pattern)
+                )
+                candidates = await cursor.fetchall()
+                for candidate in candidates:
+                    cand_start = candidate["event_start"] or ""
+                    if orig_dt in cand_start or cand_start in orig_dt:
+                        existing = candidate
+                        await db.execute(
+                            "UPDATE event_mappings SET origin_event_id = ?, updated_at = ? WHERE id = ?",
+                            (event_id, datetime.utcnow().isoformat(), candidate["id"])
+                        )
+                        await db.commit()
+                        logger.info(
+                            f"Re-keyed mapping {candidate['id']} from "
+                            f"{candidate['origin_event_id']} to {event_id}"
+                        )
+                        break
+                if existing:
                     break
 
     # Determine if user can edit
