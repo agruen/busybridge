@@ -40,7 +40,8 @@ class Settings(BaseSettings):
 
     # Rate limiting
     rate_limit_per_minute: int = 60
-    webhook_rate_limit_per_minute: int = 120
+    webhook_rate_limit_per_minute: int = 30
+    auth_rate_limit_per_minute: int = 10
 
     # Sync settings
     sync_interval_minutes: int = 5

@@ -11,9 +11,9 @@ from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
-from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
-from slowapi.util import get_remote_address
+from slowapi.middleware import SlowAPIMiddleware
 
 from app.config import get_settings
 from app.database import close_database, get_database
@@ -40,8 +40,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-# Rate limiter
-limiter = Limiter(key_func=get_remote_address)
+# Rate limiter (shared instance lives in app.rate_limit to avoid circular imports)
+from app.rate_limit import limiter
 
 
 @asynccontextmanager
@@ -162,9 +162,11 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Add rate limiter
+# Add rate limiter — middleware applies default_limits to all endpoints;
+# exception handler formats the 429 response.
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_middleware(SlowAPIMiddleware)
 
 # Add CORS middleware
 settings = get_settings()
@@ -187,6 +189,7 @@ app.add_middleware(
 
 # Health check endpoint
 @app.get("/health")
+@limiter.exempt
 async def health_check():
     """Health check endpoint for monitoring."""
     try:

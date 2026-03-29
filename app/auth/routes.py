@@ -34,6 +34,9 @@ from app.config import (
     get_test_mode_home_allowlist,
 )
 from app.database import get_database, get_organization, is_oobe_completed
+from app.rate_limit import limiter
+
+_auth_limit = f"{get_settings().auth_rate_limit_per_minute}/minute"
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -95,6 +98,7 @@ def get_redirect_uri(request: Request, path: str) -> str:
 
 
 @router.get("/login")
+@limiter.limit(_auth_limit)
 async def login(request: Request, next: Optional[str] = None):
     """Initiate Google OAuth login for home org."""
     if not await is_oobe_completed():
@@ -130,6 +134,7 @@ async def login(request: Request, next: Optional[str] = None):
 
 
 @router.get("/callback")
+@limiter.limit(_auth_limit)
 async def oauth_callback(
     request: Request,
     code: Optional[str] = None,
@@ -304,6 +309,7 @@ async def connect_client(request: Request):
 
 
 @router.get("/connect-client/callback")
+@limiter.limit(_auth_limit)
 async def connect_client_callback(
     request: Request,
     code: Optional[str] = None,
@@ -422,6 +428,7 @@ async def connect_personal(request: Request):
 
 
 @router.get("/connect-personal/callback")
+@limiter.limit(_auth_limit)
 async def connect_personal_callback(
     request: Request,
     code: Optional[str] = None,
