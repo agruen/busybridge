@@ -31,19 +31,43 @@
 
     <div class="space-y-6" id="sync-controls">
         <!-- Sync Status Banner -->
-        {% if sync_paused %}
+        {% if global_paused %}
         <div class="bg-red-50 border-2 border-red-200 rounded-lg p-4 sm:p-6">
             <div class="sm:flex sm:items-center sm:justify-between">
                 <div>
                     <h2 class="text-lg font-medium text-red-800">
-                        <i class="fas fa-pause-circle mr-2"></i>Syncing is Paused
+                        <i class="fas fa-pause-circle mr-2"></i>Syncing is Paused (System-wide)
                     </h2>
                     <p class="mt-1 text-sm text-red-700">
-                        No sync operations are running. New changes on your calendars will not be synced until you resume.
+                        An admin has paused sync for all users. No sync operations are running.
+                    </p>
+                </div>
+                {% if user.is_admin %}
+                <button
+                    hx-post="/api/sync/resume"
+                    hx-swap="none"
+                    class="mt-3 sm:mt-0 sm:ml-4 flex-shrink-0 inline-flex items-center px-5 py-2.5 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-green-600 hover:bg-green-700"
+                    onclick="setTimeout(function(){ window.location.reload(); }, 500)"
+                >
+                    <i class="fas fa-play mr-2"></i>
+                    Resume (All Users)
+                </button>
+                {% endif %}
+            </div>
+        </div>
+        {% elif user_paused %}
+        <div class="bg-yellow-50 border-2 border-yellow-200 rounded-lg p-4 sm:p-6">
+            <div class="sm:flex sm:items-center sm:justify-between">
+                <div>
+                    <h2 class="text-lg font-medium text-yellow-800">
+                        <i class="fas fa-pause-circle mr-2"></i>Your Sync is Paused
+                    </h2>
+                    <p class="mt-1 text-sm text-yellow-700">
+                        You have paused your sync. New changes on your calendars will not be synced until you resume.
                     </p>
                 </div>
                 <button
-                    hx-post="/api/sync/resume"
+                    hx-post="/api/sync/my/resume"
                     hx-swap="none"
                     class="mt-3 sm:mt-0 sm:ml-4 flex-shrink-0 inline-flex items-center px-5 py-2.5 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-green-600 hover:bg-green-700"
                     onclick="setTimeout(function(){ window.location.reload(); }, 500)"
@@ -149,13 +173,13 @@
             </div>
             <div class="px-4 sm:px-6 py-4">
                 <p class="text-sm text-gray-500">
-                    Temporarily stop all sync operations. Existing events stay in place.
+                    Temporarily stop sync operations for your calendars. Existing events stay in place.
                     Resume at any time.
                 </p>
                 <button
-                    hx-post="/api/sync/pause"
+                    hx-post="/api/sync/my/pause"
                     hx-swap="none"
-                    hx-confirm="Pause all sync operations?"
+                    hx-confirm="Pause your sync operations?"
                     class="mt-3 inline-flex items-center px-4 py-2 border border-yellow-300 text-sm font-medium rounded-md text-yellow-700 bg-white hover:bg-yellow-50"
                     onclick="setTimeout(function(){ window.location.reload(); }, 500)"
                 >

@@ -27,9 +27,11 @@ async def run_periodic_sync() -> None:
     try:
         db = await get_database()
 
-        # Get all active calendars
+        # Get all active calendars, excluding users who have paused their sync.
         cursor = await db.execute(
-            """SELECT id, calendar_type FROM client_calendars WHERE is_active = TRUE"""
+            """SELECT cc.id, cc.calendar_type FROM client_calendars cc
+               JOIN users u ON cc.user_id = u.id
+               WHERE cc.is_active = TRUE AND NOT COALESCE(u.sync_paused, FALSE)"""
         )
         calendars = await cursor.fetchall()
 
@@ -52,9 +54,11 @@ async def run_periodic_sync() -> None:
             except Exception as e:
                 logger.error(f"Error syncing personal calendar {cal['id']}: {e}")
 
-        # Sync webcal subscriptions
+        # Sync webcal subscriptions (skip paused users)
         cursor = await db.execute(
-            "SELECT id FROM webcal_subscriptions WHERE is_active = TRUE"
+            """SELECT ws.id FROM webcal_subscriptions ws
+               JOIN users u ON ws.user_id = u.id
+               WHERE ws.is_active = TRUE AND NOT COALESCE(u.sync_paused, FALSE)"""
         )
         webcal_subs = await cursor.fetchall()
         if webcal_subs:
@@ -66,9 +70,10 @@ async def run_periodic_sync() -> None:
                 except Exception as e:
                     logger.error(f"Error syncing webcal subscription {sub['id']}: {e}")
 
-        # Also sync main calendars
+        # Also sync main calendars (skip paused users)
         cursor = await db.execute(
-            "SELECT id FROM users WHERE main_calendar_id IS NOT NULL"
+            """SELECT id FROM users
+               WHERE main_calendar_id IS NOT NULL AND NOT COALESCE(sync_paused, FALSE)"""
         )
         users = await cursor.fetchall()
 

@@ -92,7 +92,13 @@ async def dashboard(request: Request, error: Optional[str] = None):
     managed_event_prefix = (get_settings().managed_event_prefix or "").strip()
 
     paused_setting = await get_setting("sync_paused")
-    sync_paused = bool(paused_setting and paused_setting.get("value_plain") == "true")
+    global_paused = bool(paused_setting and paused_setting.get("value_plain") == "true")
+    cursor = await db.execute(
+        "SELECT sync_paused FROM users WHERE id = ?", (user.id,)
+    )
+    user_pause_row = await cursor.fetchone()
+    user_paused = bool(user_pause_row and user_pause_row["sync_paused"])
+    sync_paused = global_paused or user_paused
 
     # Integrity check status
     cursor = await db.execute(
@@ -129,6 +135,8 @@ async def dashboard(request: Request, error: Optional[str] = None):
         "event_count": event_count,
         "managed_event_prefix": managed_event_prefix,
         "sync_paused": sync_paused,
+        "global_paused": global_paused,
+        "user_paused": user_paused,
         "integrity": integrity,
         "error": error,
     })
@@ -206,13 +214,22 @@ async def sync_control_page(request: Request):
     if not user:
         return RedirectResponse(url="/app/login", status_code=status.HTTP_302_FOUND)
 
+    db = await get_database()
     paused_setting = await get_setting("sync_paused")
-    sync_paused = bool(paused_setting and paused_setting.get("value_plain") == "true")
+    global_paused = bool(paused_setting and paused_setting.get("value_plain") == "true")
+    cursor = await db.execute(
+        "SELECT sync_paused FROM users WHERE id = ?", (user.id,)
+    )
+    user_pause_row = await cursor.fetchone()
+    user_paused = bool(user_pause_row and user_pause_row["sync_paused"])
+    sync_paused = global_paused or user_paused
     managed_event_prefix = (get_settings().managed_event_prefix or "").strip()
 
     return templates.TemplateResponse(request, "sync_control.html", context={
         "user": user,
         "sync_paused": sync_paused,
+        "global_paused": global_paused,
+        "user_paused": user_paused,
         "managed_event_prefix": managed_event_prefix,
     })
 

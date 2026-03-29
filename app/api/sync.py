@@ -99,9 +99,15 @@ async def get_sync_status(user: User = Depends(get_current_user)):
     )
     busy_blocks = (await cursor.fetchone())[0]
 
-    # Check if sync is paused
+    # Check if sync is paused (global or per-user)
     paused_setting = await get_setting("sync_paused")
-    sync_paused = bool(paused_setting and paused_setting.get("value_plain") == "true")
+    global_paused = bool(paused_setting and paused_setting.get("value_plain") == "true")
+    cursor = await db.execute(
+        "SELECT sync_paused FROM users WHERE id = ?", (user.id,)
+    )
+    user_row = await cursor.fetchone()
+    user_paused = bool(user_row and user_row["sync_paused"])
+    sync_paused = global_paused or user_paused
 
     # Integrity status
     integrity_status_val = None
@@ -269,6 +275,38 @@ async def resume_sync(user: User = Depends(require_admin)):
     )
     await db.commit()
 
+    return {"status": "ok", "sync_paused": False}
+
+
+@router.post("/my/pause")
+async def pause_my_sync(user: User = Depends(get_current_user)):
+    """Pause sync for the current user only."""
+    db = await get_database()
+    await db.execute(
+        "UPDATE users SET sync_paused = TRUE WHERE id = ?", (user.id,)
+    )
+    await db.execute(
+        """INSERT INTO sync_log (user_id, action, status, details)
+           VALUES (?, 'sync_pause_user', 'success', 'User paused their own sync')""",
+        (user.id,),
+    )
+    await db.commit()
+    return {"status": "ok", "sync_paused": True}
+
+
+@router.post("/my/resume")
+async def resume_my_sync(user: User = Depends(get_current_user)):
+    """Resume sync for the current user only."""
+    db = await get_database()
+    await db.execute(
+        "UPDATE users SET sync_paused = FALSE WHERE id = ?", (user.id,)
+    )
+    await db.execute(
+        """INSERT INTO sync_log (user_id, action, status, details)
+           VALUES (?, 'sync_resume_user', 'success', 'User resumed their own sync')""",
+        (user.id,),
+    )
+    await db.commit()
     return {"status": "ok", "sync_paused": False}
 
 

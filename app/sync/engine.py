@@ -128,10 +128,20 @@ def _event_has_managed_prefix(event: dict, prefix: str) -> bool:
     return False
 
 
-async def is_sync_paused() -> bool:
-    """Check if sync is globally paused."""
+async def is_sync_paused(user_id: int | None = None) -> bool:
+    """Check if sync is paused (globally or for a specific user)."""
     setting = await get_setting("sync_paused")
-    return setting and setting.get("value_plain") == "true"
+    if setting and setting.get("value_plain") == "true":
+        return True
+    if user_id is not None:
+        db = await get_database()
+        cursor = await db.execute(
+            "SELECT sync_paused FROM users WHERE id = ?", (user_id,)
+        )
+        row = await cursor.fetchone()
+        if row and row["sync_paused"]:
+            return True
+    return False
 
 
 _VERIFICATION_DELAY = 40  # seconds — must exceed Google's 30s cross-session consistency window
@@ -142,6 +152,7 @@ def _schedule_event_verification(
     sync_fn,
     calendar_id: int,
     event_ids: list[str],
+    user_id: int | None = None,
 ) -> None:
     """Schedule targeted re-fetch of specific events after a webhook sync.
 
@@ -174,7 +185,7 @@ def _schedule_event_verification(
     async def _do_verification():
         try:
             await asyncio.sleep(_VERIFICATION_DELAY)
-            if await is_sync_paused():
+            if await is_sync_paused(user_id):
                 _pending_verification_ids.pop(key, None)
                 return
             all_ids = list(_pending_verification_ids.pop(key, set()))
@@ -217,7 +228,16 @@ async def trigger_sync_for_calendar(
                   reads.  Set to False for periodic syncs to avoid
                   feedback loops (verification → webhook → sync → verification).
     """
-    if await is_sync_paused():
+    # Check global + per-user pause.
+    db = await get_database()
+    cursor = await db.execute(
+        "SELECT user_id FROM client_calendars WHERE id = ?",
+        (client_calendar_id,),
+    )
+    _cal_row = await cursor.fetchone()
+    _owner_id = _cal_row["user_id"] if _cal_row else None
+
+    if await is_sync_paused(_owner_id):
         logger.info("Sync is paused, skipping calendar sync")
         if track_progress:
             _sync_progress[client_calendar_id] = {
@@ -260,6 +280,7 @@ async def trigger_sync_for_calendar(
                 _sync_client_calendar,
                 client_calendar_id,
                 processed,
+                user_id=_owner_id,
             )
     except Exception as e:
         logger.exception(f"Manual sync failed for calendar {client_calendar_id}: {e}")
@@ -551,7 +572,7 @@ async def trigger_sync_for_main_calendar(
     schedule_verification: bool = True,
 ) -> None:
     """Trigger sync for a user's main calendar."""
-    if await is_sync_paused():
+    if await is_sync_paused(user_id):
         logger.info("Sync is paused, skipping main calendar sync")
         return
 
@@ -568,6 +589,7 @@ async def trigger_sync_for_main_calendar(
             _sync_main_calendar,
             user_id,
             processed,
+            user_id=user_id,
         )
 
 
@@ -1155,7 +1177,15 @@ async def _sync_main_calendar(
 
 async def trigger_sync_for_personal_calendar(personal_calendar_id: int, debounce: float = 0) -> None:
     """Trigger sync for a specific personal calendar."""
-    if await is_sync_paused():
+    db = await get_database()
+    cursor = await db.execute(
+        "SELECT user_id FROM client_calendars WHERE id = ?",
+        (personal_calendar_id,),
+    )
+    _cal_row = await cursor.fetchone()
+    _owner_id = _cal_row["user_id"] if _cal_row else None
+
+    if await is_sync_paused(_owner_id):
         logger.info("Sync is paused, skipping personal calendar sync")
         return
 
@@ -1172,6 +1202,7 @@ async def trigger_sync_for_personal_calendar(personal_calendar_id: int, debounce
             _sync_personal_calendar,
             personal_calendar_id,
             processed,
+            user_id=_owner_id,
         )
 
 
@@ -1373,7 +1404,7 @@ async def _sync_personal_calendar(
 
 async def trigger_sync_for_user(user_id: int) -> None:
     """Trigger sync for all of a user's calendars."""
-    if await is_sync_paused():
+    if await is_sync_paused(user_id):
         logger.info("Sync is paused, skipping user sync")
         return
 
@@ -1775,8 +1806,11 @@ async def cleanup_managed_events_for_user(
         "summary": None,
     }
 
-    # Pause sync globally so no webhook/periodic syncs can run during cleanup.
-    await set_setting("sync_paused", "true")
+    # Pause sync for this user so no webhook/periodic syncs can run during cleanup.
+    await db.execute(
+        "UPDATE users SET sync_paused = TRUE WHERE id = ?", (user_id,)
+    )
+    await db.commit()
     logger.info("Cleanup: paused sync for user %s before cleanup", user_id)
 
     _cleanup_in_progress.add(user_id)
@@ -1811,7 +1845,10 @@ async def cleanup_managed_events_for_user(
     finally:
         _cleanup_in_progress.discard(user_id)
         if resume_after:
-            await set_setting("sync_paused", "false")
+            await db.execute(
+                "UPDATE users SET sync_paused = FALSE WHERE id = ?", (user_id,)
+            )
+            await db.commit()
             logger.info("Cleanup: resumed sync for user %s after cleanup", user_id)
 
 
