@@ -143,11 +143,13 @@ _Claude will tell you when the app is running. Then open a browser and do these 
    - You should see "You signed in as (your email)"
    - Click **Confirm & Continue**
 5. [ ] **Step 4 (Email Alerts):** Click **Skip** (or configure if you want)
-6. [ ] **Step 5 (Encryption Key):**
+6. [ ] **Step 5 (Service Account):** Click **Skip for Now** (or upload a SA key if you have one)
+7. [ ] **Step 6 (Encryption Key):**
    - The key is auto-generated
    - Copy and save it somewhere (or let Claude handle it)
    - Check "I have saved this encryption key"
    - Click **Complete Setup**
+8. [ ] **Step 7 (Complete):** Click **Go to Dashboard**
 
 ### 4b. Connect Client Calendars
 

@@ -91,21 +91,32 @@ When the application is first accessed and no organization exists in the databas
 - “Send Test Email” button
 - “Skip” or “Next” button
 
-**Step 5: Encryption Key**
+**Step 5: Service Account (Optional)**
+
+- Explains why SA mode is useful (makes synced events physically immovable)
+- Collapsible instructions for creating a service account in Google Cloud
+- Drag-and-drop upload for SA JSON key file
+- On success: shows SA email, instructions to share calendar with it
+- “Skip for Now” button (can be configured later from admin settings)
+
+**Step 6: Encryption Key**
 
 - Auto-generate a 32-byte encryption key
 - Display it (base64 encoded) in a copyable box
-- Warning message: “⚠️ Save this key securely. You will need it to restore from backup. It will not be shown again.”
+- Warning message: “Save this key securely. It will not be shown again after this step.”
+- What the key protects: OAuth tokens, client ID/secret, SMTP credentials, session signing
 - Checkbox: “I have saved this encryption key”
 - “Complete Setup” button (disabled until checkbox checked)
+- On submit: initializes database with all collected data (org, admin user, tokens, SMTP, SA)
 
-**Step 6: Setup Complete**
+**Step 7: Setup Complete**
 
-- Success message
+- Success confirmation with next steps:
+  1. Select your main calendar in Settings
+  2. Share calendar with service account (if SA was uploaded)
+  3. Connect your first client calendar
+  4. Let it sync (automatic every 5 min, instant via webhooks)
 - “Go to Dashboard” button
-- Quick start tips:
-  - “Select your main calendar in Settings”
-  - “Connect your first client calendar”
 
 ### OOBE Data Storage
 
@@ -478,7 +489,59 @@ CREATE TABLE job_locks (
     locked_at TIMESTAMP,
     locked_by TEXT  -- instance identifier
 );
+
+-- Main calendar sync state (per user)
+CREATE TABLE main_calendar_sync_state (
+    id INTEGER PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    sync_token TEXT,
+    last_full_sync TIMESTAMP,
+    last_incremental_sync TIMESTAMP,
+    UNIQUE(user_id)
+);
+
+-- OAuth state storage (replaces in-memory dict)
+CREATE TABLE oauth_states (
+    state TEXT PRIMARY KEY,
+    state_type TEXT NOT NULL,
+    user_id INTEGER,
+    next_url TEXT,
+    expires_at TIMESTAMP NOT NULL
+);
+CREATE INDEX idx_oauth_states_expiry ON oauth_states(expires_at);
+
+-- Per-user consistency check results
+CREATE TABLE integrity_status (
+    user_id INTEGER PRIMARY KEY REFERENCES users(id),
+    last_check_at TIMESTAMP,
+    issues_found INTEGER DEFAULT 0,
+    issues_auto_fixed INTEGER DEFAULT 0,
+    unresolved_issues INTEGER DEFAULT 0,
+    details_json TEXT
+);
+
+-- Webcal/ICS feed subscriptions
+CREATE TABLE webcal_subscriptions (
+    id INTEGER PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    url TEXT NOT NULL,
+    display_prefix TEXT,         -- e.g. "[ISO]", "[Travel]"
+    is_active BOOLEAN DEFAULT TRUE,
+    poll_interval_minutes INTEGER DEFAULT 5,
+    last_poll_at TIMESTAMP,
+    last_etag TEXT,              -- HTTP ETag for conditional fetching
+    last_success_at TIMESTAMP,
+    consecutive_failures INTEGER DEFAULT 0,
+    last_error TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP
+);
+
+-- Index for webcal event lookups
+CREATE INDEX idx_event_mappings_webcal ON event_mappings(webcal_subscription_id, origin_event_id);
 ```
+
+Note: `event_mappings` also has `webcal_subscription_id INTEGER REFERENCES webcal_subscriptions(id)` and `rsvp_status TEXT` columns added since the original schema.
 
 ### SQLite Size Considerations
 
@@ -533,6 +596,26 @@ This simplifies deployment, logging, and debugging on resource-constrained hardw
 - Tag all events created by the system with an extended property: `calendarSyncEngine: true`
 - When processing events, skip any with this tag
 - This prevents: Main→Client busy block triggering a sync back to Main
+- Webhook-triggered syncs disable verification resyncs (`schedule_verification=False`) to prevent feedback loops
+- Periodic syncs also disable verification (verification is only for manual syncs from the UI)
+
+### Rate Limiting
+
+All Google Calendar API calls go through a per-client token-bucket rate limiter:
+
+- Sustained rate: 5 requests/second with burst capacity of 5
+- On rate limit errors (403 rateLimitExceeded, 429): global backoff pauses all requests through that client
+- Backoff schedule: 4s, 8s, 16s, 32s, 60s (exponential, capped)
+- Server errors (500/502/503): standard retry with 1s, 2s, 4s, 8s, 16s backoff
+- Permission-denied 403s (not rate limit): fail immediately, no retry
+
+### Webcal/ICS Subscription Sync
+
+- External ICS feeds are fetched and parsed during each periodic sync
+- Events are created on the main calendar with `[prefix] title` format and "Managed by [BusyBridge]" in description
+- Busy blocks on client calendars are created by the regular main→client sync flow
+- Feeds with unstable UIDs (bare UUID v4 format that changes every request) are detected and replaced with a content-based hash (`SHA256(summary + start + end)`) for stable matching across polls
+- ETag caching: feeds that support `If-None-Match` skip processing on 304 Not Modified
 
 ### Consistency & Recovery
 
@@ -550,6 +633,78 @@ This simplifies deployment, logging, and debugging on resource-constrained hardw
 1. Reconcile with database
 1. Recreate missing busy blocks
 1. Remove orphaned entries
+
+-----
+
+## ICS Calendar Export
+
+BusyBridge can export all calendar data to standard ICS files for migration or external backup.
+
+### Export Types
+
+Two ZIP files are created per export:
+
+- **ics-full**: Every event from every calendar (main + all client + personal). Complete data preservation.
+- **ics-clean**: Same content but with all BusyBridge-managed events (busy blocks, synced copies) filtered out. This produces a "native" view of each calendar -- useful for importing into another calendar system without duplicates.
+
+### What's Preserved
+
+- RFC 5545 compliant format with proper line folding
+- Google Calendar colors (X-APPLE-CALENDAR-COLOR)
+- Attendee details with RSVP status (PARTSTAT)
+- Organizer information
+- Google Meet/conference data (phone numbers, PINs, URIs)
+- Attachment URLs with MIME types
+- Recurrence rules and cancelled instances (EXDATE)
+- Event types (out-of-office, focus time, working location)
+- Guest permission flags
+- Visibility and transparency settings
+
+### Retention
+
+Same policy as database backups: 7 daily, 2 weekly, 6 monthly.
+
+### Trigger
+
+- Automatic: runs alongside the daily backup job (11 PM)
+- Manual: via the exports page (`/app/settings/exports`) or API
+
+-----
+
+## Calendar Color Coding
+
+Each client calendar can be assigned one of Google Calendar's 11 built-in colors. When a client calendar event is synced to the main calendar, the copy inherits that color, making it easy to distinguish events from different clients at a glance.
+
+- Colors are selectable via the dashboard's color dot picker
+- When a color is changed, all existing events from that calendar are recolored in the background
+- New calendars are auto-assigned the first unused color
+
+-----
+
+## Sync Control
+
+Beyond the automatic 5-minute sync cycle, users have several manual sync control options:
+
+### Per-Calendar Operations
+
+| Operation | Effect |
+|-----------|--------|
+| **Manual Sync** | Trigger immediate incremental sync for one calendar (25s settling delay for Google consistency) |
+| **Cleanup & Re-sync** | Delete all managed events for ONE calendar, clear sync token, full re-sync. Other calendars unaffected. |
+| **Disconnect** | Remove calendar, delete all related events and busy blocks from all calendars |
+
+### Global Operations
+
+| Operation | Effect |
+|-----------|--------|
+| **Full Re-sync** | Clear all sync tokens across all calendars, re-process everything from scratch |
+| **Cleanup & Re-sync** | Delete ALL BusyBridge-managed events everywhere, then recreate from scratch (two-pass: DB-driven + prefix sweep) |
+| **Cleanup & Pause** | Same as above but leaves sync paused afterward (for troubleshooting) |
+| **Pause / Resume** | Temporarily stop or restart all sync operations |
+| **Connection Check** | Test all OAuth tokens and report which accounts need re-authorization |
+| **Orphan Scan** | Find events on Google that the database doesn't track, and clean them up |
+
+All long-running operations provide live progress tracking (step labels, event counts, progress bar).
 
 -----
 
@@ -656,11 +811,14 @@ POST /setup/step/:step              - OOBE wizard step submission
 ### Authentication Endpoints
 
 ```
-GET  /auth/login                    - Initiate Google OAuth for home org
-GET  /auth/callback                 - OAuth callback
-POST /auth/logout                   - Log out
-GET  /auth/connect-client           - Initiate OAuth for a client account
-GET  /auth/connect-client/callback  - Client OAuth callback
+GET  /auth/login                       - Initiate Google OAuth for home org
+GET  /auth/callback                    - OAuth callback
+POST /auth/logout                      - Log out
+GET  /auth/connect-client              - Initiate OAuth for a client account
+GET  /auth/connect-client/callback     - Client OAuth callback
+GET  /auth/connect-personal            - Initiate OAuth for a personal calendar
+GET  /auth/connect-personal/callback   - Personal OAuth callback
+POST /auth/disconnect-calendar/:id     - Disconnect a calendar
 ```
 
 ### User Endpoints (authenticated)
@@ -713,6 +871,35 @@ POST /api/admin/factory-reset       - Factory reset (requires confirmation token
 GET  /api/admin/export              - Download database backup
 GET  /api/admin/service-account     - Service account config status + email
 POST /api/admin/service-account/test/:userId - Test SA access to user's main calendar, set sa_tier
+```
+
+### Personal Calendar Management (authenticated)
+
+```
+GET    /api/personal-calendars              - List connected personal calendars
+POST   /api/personal-calendars              - Connect a personal calendar
+DELETE /api/personal-calendars/:id          - Disconnect a personal calendar
+POST   /api/personal-calendars/:id/sync     - Trigger manual sync
+```
+
+### Webcal/ICS Subscriptions (authenticated)
+
+```
+GET    /api/webcal                          - List webcal subscriptions
+POST   /api/webcal                          - Create webcal subscription
+DELETE /api/webcal/:id                      - Delete subscription
+POST   /api/webcal/:id/sync                 - Manual sync
+PATCH  /api/webcal/:id                      - Update subscription
+```
+
+### Backup (authenticated)
+
+```
+GET    /api/backups                         - List backups
+POST   /api/backups                         - Create backup
+POST   /api/backups/restore                 - Restore from backup
+GET    /api/backups/:id/download            - Download backup ZIP
+DELETE /api/backups/:id                     - Delete backup
 ```
 
 ### Webhook Endpoint
@@ -799,99 +986,33 @@ POST /api/webhooks/google-calendar  - Receive Google Calendar push notifications
 
 ### Docker Setup
 
-**Dockerfile**
+See the actual `Dockerfile` and `docker-compose.yml` in the repository for the current deployment configuration. Key points:
 
-```dockerfile
-FROM python:3.12-slim
+- Base image: `python:3.12-slim`
+- Creates `/data`, `/data/backups`, `/data/logs`, and `/secrets` with correct ownership
+- Runs as non-root `appuser` (UID 1000)
+- Port 3000 internally (mapped to 8033 on host in production)
+- Volumes: `./data:/data`, `./secrets:/secrets`, `./backups:/data/backups`
+- Timezone set via `TZ` environment variable
+- Optional test sidecar available via `docker compose --profile test`
 
-WORKDIR /app
-
-# Install system dependencies
-RUN apt-get update && apt-get install -y \
-    curl \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install Python dependencies
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Copy application code
-COPY . .
-
-# Create data directory
-RUN mkdir -p /data /secrets
-
-# Run as non-root user
-RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app /data
-USER appuser
-
-EXPOSE 3000
-
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:3000/health || exit 1
-
-CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "3000"]
-```
-
-**docker-compose.yml**
-
-```yaml
-version: '3.8'
-
-services:
-  calendar-sync:
-    build: .
-    container_name: calendar-sync
-    restart: unless-stopped
-    ports:
-      - "3000:3000"
-    environment:
-      - DATABASE_PATH=/data/calendar-sync.db
-      - ENCRYPTION_KEY_FILE=/secrets/encryption.key
-      - PUBLIC_URL=https://${FQDN}
-      - LOG_LEVEL=info
-      - TZ=America/Chicago  # Set to your timezone
-    volumes:
-      - ./data:/data
-      - ./secrets:/secrets
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-```
-
-**requirements.txt**
-
-```
-fastapi>=0.109.0
-uvicorn[standard]>=0.27.0
-python-multipart>=0.0.6
-jinja2>=3.1.3
-httpx>=0.26.0
-google-api-python-client>=2.114.0
-google-auth>=2.27.0
-google-auth-oauthlib>=1.2.0
-apscheduler>=3.10.4
-cryptography>=42.0.0
-pydantic>=2.5.3
-pydantic-settings>=2.1.0
-python-jose[cryptography]>=3.3.0
-aiosmtplib>=3.0.1
-aiosqlite>=0.19.0
-```
+See `requirements.txt` for current Python dependencies.
 
 ### Environment Variables
 
 |Variable             |Description                                                |Required          |
 |---------------------|-----------------------------------------------------------|------------------|
-|`DATABASE_PATH`      |Path to SQLite database file                               |Yes               |
-|`ENCRYPTION_KEY_FILE`|Path to file containing encryption key                     |Yes               |
-|`PUBLIC_URL`         |Full public URL (e.g., `https://calendar-sync.example.com`)|Yes               |
+|`DATABASE_PATH`      |Path to SQLite database file                               |No (default: `/data/calendar-sync.db`)|
+|`ENCRYPTION_KEY_FILE`|Path to file containing encryption key                     |No (default: `/secrets/encryption.key`)|
+|`PUBLIC_URL`         |Full public URL (or use `FQDN` in docker-compose)          |Yes               |
 |`LOG_LEVEL`          |Logging level: debug, info, warning, error                 |No (default: info)|
 |`TZ`                 |Timezone for scheduled jobs                                |No (default: UTC) |
+|`ENABLE_WEBHOOKS`    |Enable Google Calendar push notifications                  |No (default: true)|
+|`MANAGED_EVENT_PREFIX`|Visible prefix on BusyBridge-created events               |No (default: `[BusyBridge]`)|
 |`SERVICE_ACCOUNT_KEY_FILE`|Path to SA JSON key file for immovable events         |No               |
+|`TEST_MODE`          |Enable Gmail-safe testing with email allowlists            |No (default: false)|
+|`TEST_MODE_ALLOWED_HOME_EMAILS`|Comma-separated home login allowlist (test mode)|No               |
+|`TEST_MODE_ALLOWED_CLIENT_EMAILS`|Comma-separated client connection allowlist (test mode)|No          |
 
 Note: Google OAuth credentials and SMTP settings are stored in the database after OOBE, not in environment variables.
 
@@ -933,13 +1054,15 @@ All jobs run within the main application process using APScheduler.
 
 |Job                   |Frequency       |Description                                       |
 |----------------------|----------------|--------------------------------------------------|
-|Periodic Sync         |Every 5 minutes |Poll all calendars for changes using sync tokens  |
+|Periodic Sync         |Every 5 minutes |Poll all calendars + webcal subscriptions         |
 |Webhook Renewal       |Every 6 hours   |Renew webhook channels expiring within 24 hours   |
 |Consistency Check     |Every hour      |Verify database matches reality, fix discrepancies|
-|Retention Cleanup     |Daily at 3 AM   |Delete old event mappings per retention policy    |
+|Orphan Scan           |Every 6 hours   |Find orphaned events on Google, fix DB duplicates |
 |Token Refresh         |Every 30 minutes|Proactively refresh tokens expiring within 1 hour |
 |Alert Queue Processing|Every minute    |Send queued email alerts                          |
+|Retention Cleanup     |Daily at 3 AM   |Delete old event mappings per retention policy    |
 |Stale Alert Cleanup   |Daily at 4 AM   |Remove sent/failed alerts older than 7 days       |
+|Daily Backup          |Daily at 11 PM  |Create backup, apply retention policy             |
 
 -----
 
@@ -1102,68 +1225,55 @@ pytest tests/test_sync_rules.py
 ## Project Structure
 
 ```
-calendar-sync/
+busybridge/
 ├── app/
-│   ├── __init__.py
-│   ├── main.py                 # FastAPI app, startup/shutdown
+│   ├── main.py                 # FastAPI app, lifespan, startup/shutdown
 │   ├── config.py               # Settings, environment loading
-│   ├── database.py             # Database connection, models
-│   ├── encryption.py           # Token encryption/decryption
+│   ├── database.py             # Database connection, schema, migrations
+│   ├── encryption.py           # Token encryption/decryption (AES-256-GCM)
 │   ├── auth/
-│   │   ├── __init__.py
-│   │   ├── routes.py           # OAuth endpoints
-│   │   ├── google.py           # Google OAuth helpers
-│   │   ├── session.py          # Session management
+│   │   ├── routes.py           # OAuth endpoints (home, client, personal)
+│   │   ├── google.py           # Google OAuth helpers, token refresh
+│   │   ├── session.py          # Session management (JWT cookies)
 │   │   └── service_account.py  # SA credential loading & client factory
 │   ├── api/
-│   │   ├── __init__.py
-│   │   ├── users.py            # User endpoints
-│   │   ├── calendars.py        # Calendar management endpoints
-│   │   ├── sync.py             # Sync status/trigger endpoints
-│   │   ├── admin.py            # Admin endpoints
-│   │   └── webhooks.py         # Webhook receiver
+│   │   ├── users.py            # User profile & preferences
+│   │   ├── calendars.py        # Client calendar CRUD, manual sync
+│   │   ├── personal_calendars.py # Personal calendar management
+│   │   ├── sync.py             # Sync status, control, cleanup
+│   │   ├── admin.py            # Admin endpoints, settings, SA config
+│   │   ├── webhooks.py         # Google Calendar push notification receiver
+│   │   └── backup.py           # Backup create/restore/download
 │   ├── sync/
-│   │   ├── __init__.py
-│   │   ├── engine.py           # Core sync logic
-│   │   ├── google_calendar.py  # Google Calendar API wrapper
-│   │   ├── rules.py            # Sync rule implementations
-│   │   └── consistency.py      # Consistency check logic
+│   │   ├── engine.py           # Core sync orchestration, verification
+│   │   ├── rules.py            # Sync decision logic, RSVP/time propagation
+│   │   ├── google_calendar.py  # Google API wrapper with rate limiter
+│   │   ├── consistency.py      # Integrity checks, orphan scan, dedup
+│   │   ├── webcal_sync.py      # Webcal/ICS subscription sync
+│   │   ├── ics_parser.py       # ICS parsing with stable UUID handling
+│   │   ├── ics_export.py       # ICS calendar export (full + clean ZIPs)
+│   │   └── backup.py           # Backup/restore logic
 │   ├── jobs/
-│   │   ├── __init__.py
-│   │   ├── scheduler.py        # APScheduler setup
-│   │   ├── sync_job.py         # Periodic sync job
-│   │   ├── webhook_renewal.py  # Webhook renewal job
-│   │   ├── cleanup.py          # Retention cleanup job
-│   │   └── alerts.py           # Alert processing job
+│   │   ├── scheduler.py        # APScheduler setup (9 jobs)
+│   │   ├── sync_job.py         # Periodic sync, circuit breaker, orphan scan
+│   │   ├── webhook_renewal.py  # Webhook registration & renewal
+│   │   ├── cleanup.py          # Retention cleanup
+│   │   ├── alerts.py           # Alert queue processing
+│   │   └── backup_job.py       # Scheduled backup job
 │   ├── alerts/
-│   │   ├── __init__.py
-│   │   ├── email.py            # Email sending
-│   │   └── templates/          # Email templates
+│   │   └── email.py            # SMTP email sending, alert queuing
 │   ├── ui/
-│   │   ├── __init__.py
-│   │   ├── routes.py           # Page routes
+│   │   ├── routes.py           # Dashboard, settings, admin pages
+│   │   ├── setup.py            # OOBE wizard
 │   │   └── templates/          # Jinja2 templates
-│   │       ├── base.html
-│   │       ├── login.html
-│   │       ├── dashboard.html
-│   │       ├── settings.html
-│   │       ├── setup/          # OOBE wizard templates
-│   │       └── admin/          # Admin page templates
-│   └── static/                 # Static assets (minimal)
-├── tests/
-│   ├── __init__.py
-│   ├── conftest.py             # Pytest fixtures
-│   ├── test_sync_rules.py
-│   ├── test_database.py
-│   ├── test_encryption.py
-│   └── test_api.py
+│   └── static/                 # CSS, JS, images
+├── sidecar/                    # Test sidecar (automated sync scenarios)
+├── e2e/                        # Playwright end-to-end tests
+├── tests/                      # Unit tests (~170+ tests)
 ├── Dockerfile
 ├── docker-compose.yml
 ├── requirements.txt
-├── requirements-dev.txt
-├── pytest.ini
-├── README.md
-└── .gitignore
+└── README.md
 ```
 
 -----

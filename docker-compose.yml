@@ -5,6 +5,9 @@ services:
       network: host
     container_name: calendar-sync
     restart: unless-stopped
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
     ports:
       - "8033:3000"
     environment:
