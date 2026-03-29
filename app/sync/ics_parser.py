@@ -1,6 +1,8 @@
 """ICS/webcal feed fetcher and parser."""
 
+import hashlib
 import logging
+import re
 from datetime import datetime, timedelta, date, timezone
 from typing import Optional
 
@@ -11,6 +13,14 @@ import recurring_ical_events
 from app.sync.google_calendar import _set_bb_props
 
 logger = logging.getLogger(__name__)
+
+# Matches bare UUID-style UIDs (v4-ish) that some feeds regenerate on every
+# request.  Standard ICS UIDs typically include a domain suffix or other
+# stable identifier, so this only catches the pathological case.
+_UNSTABLE_UUID_RE = re.compile(
+    r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$',
+    re.IGNORECASE,
+)
 
 
 async def fetch_ics_feed(
@@ -61,8 +71,8 @@ def parse_ics_events(
         if component.name != "VEVENT":
             continue
 
-        uid = str(component.get("UID", ""))
-        if not uid:
+        raw_uid = str(component.get("UID", ""))
+        if not raw_uid:
             continue
 
         summary = str(component.get("SUMMARY", "Untitled"))
@@ -108,6 +118,18 @@ def parse_ics_events(
             start_dict = {"dateTime": dt_start_val.isoformat()}
             end_dict = {"dateTime": dt_end_val.isoformat()}
 
+        # Some feeds (e.g. ISO) generate random UUIDs on every request,
+        # making the UID useless for matching across polls.  Detect v4-style
+        # UUIDs and replace them with a content-based hash so we get a
+        # stable identity for the event.
+        if _UNSTABLE_UUID_RE.match(raw_uid):
+            start_str = dt_start_val.isoformat()
+            end_str = dt_end_val.isoformat() if dt_end_val else ""
+            content_key = f"{summary}\0{start_str}\0{end_str}"
+            uid = hashlib.sha256(content_key.encode()).hexdigest()[:16]
+        else:
+            uid = raw_uid
+
         # Build stable UID for recurring instances
         if is_all_day:
             ics_uid = f"{uid}@{dt_start_val.isoformat()}"
@@ -135,16 +157,26 @@ def build_webcal_google_event(
 ) -> dict:
     """Convert a parsed ICS event to a Google Calendar event body.
 
-    Prepends prefix + lock icon to summary. Marks as non-editable.
+    Prepends subscription prefix + lock icon to summary, and appends a
+    "Managed by" footer to the description.
     """
+    from app.config import get_settings
+    settings = get_settings()
+
     summary = parsed_event["summary"]
     if prefix:
         summary = f"{prefix} {summary}".strip()
     summary = f"\U0001f510 {summary}"
 
+    description = parsed_event.get("description", "")
+    managed_prefix = (settings.managed_event_prefix or "").strip()
+    if managed_prefix:
+        footer = f"Managed by {managed_prefix}"
+        description = f"{description}\n\n---\n{footer}".strip() if description else footer
+
     event = {
         "summary": summary,
-        "description": parsed_event.get("description", ""),
+        "description": description,
         "location": parsed_event.get("location", ""),
         "start": parsed_event["start"],
         "end": parsed_event["end"],

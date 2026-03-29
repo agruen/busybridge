@@ -107,7 +107,7 @@ async def receive_google_calendar_webhook(
 
         if channel["calendar_type"] == "main":
             create_background_task(
-                trigger_sync_for_main_calendar(channel["user_id"], debounce=_WEBHOOK_DEBOUNCE),
+                trigger_sync_for_main_calendar(channel["user_id"], debounce=_WEBHOOK_DEBOUNCE, schedule_verification=False),
                 f"sync_main_calendar_user_{channel['user_id']}"
             )
         elif channel["calendar_type"] == "personal":
@@ -119,7 +119,7 @@ async def receive_google_calendar_webhook(
         else:
             if channel["client_calendar_id"]:
                 create_background_task(
-                    trigger_sync_for_calendar(channel["client_calendar_id"], debounce=_WEBHOOK_DEBOUNCE),
+                    trigger_sync_for_calendar(channel["client_calendar_id"], debounce=_WEBHOOK_DEBOUNCE, schedule_verification=False),
                     f"sync_calendar_{channel['client_calendar_id']}"
                 )
 

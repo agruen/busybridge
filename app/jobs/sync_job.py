@@ -76,7 +76,7 @@ async def run_periodic_sync() -> None:
 
         for user in users:
             try:
-                await trigger_sync_for_main_calendar(user["id"])
+                await trigger_sync_for_main_calendar(user["id"], schedule_verification=False)
             except Exception as e:
                 logger.error(f"Error syncing main calendar for user {user['id']}: {e}")
 

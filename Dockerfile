@@ -15,7 +15,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # Create data directory
-RUN mkdir -p /data /secrets
+RUN mkdir -p /data /data/backups /data/logs /secrets
 
 # Run as non-root user
 RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app /data /secrets

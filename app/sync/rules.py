@@ -63,6 +63,15 @@ async def sync_client_event_to_main(
     )
     existing = await cursor.fetchone()
 
+    # If the mapping was soft-deleted (user intentionally removed the event
+    # from main), do NOT re-sync it — that would resurrect the event.
+    if existing and existing["deleted_at"]:
+        logger.debug(
+            f"Skipping client event {event_id} — mapping {existing['id']} "
+            f"was intentionally deleted at {existing['deleted_at']}"
+        )
+        return None, False
+
     # If this is a rescheduled recurring instance (_R prefix) and we don't
     # have a mapping for it, look for the original instance it replaced.
     # This prevents duplicate events when Google sends both the cancelled
@@ -1132,7 +1141,17 @@ async def handle_deleted_main_event(
             tuple(deleted_block_ids),
         )
 
-    if mapping["is_recurring"]:
+    # Always soft-delete client-origin mappings so `sync_client_event_to_main`
+    # knows the user intentionally removed this event and won't re-sync it.
+    # Recurring mappings were already soft-deleted; extend this to non-recurring
+    # client-origin events as well.  Main-origin and personal-origin mappings
+    # are safe to hard-delete (no risk of the client re-creating them).
+    if mapping["origin_type"] == "client":
+        await db.execute(
+            "UPDATE event_mappings SET deleted_at = ? WHERE id = ?",
+            (datetime.utcnow().isoformat(), mapping["id"])
+        )
+    elif mapping["is_recurring"]:
         await db.execute(
             "UPDATE event_mappings SET deleted_at = ? WHERE id = ?",
             (datetime.utcnow().isoformat(), mapping["id"])

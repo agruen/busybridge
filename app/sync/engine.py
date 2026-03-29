@@ -545,7 +545,11 @@ async def _sync_client_calendar(
     return []
 
 
-async def trigger_sync_for_main_calendar(user_id: int, debounce: float = 0) -> None:
+async def trigger_sync_for_main_calendar(
+    user_id: int,
+    debounce: float = 0,
+    schedule_verification: bool = True,
+) -> None:
     """Trigger sync for a user's main calendar."""
     if await is_sync_paused():
         logger.info("Sync is paused, skipping main calendar sync")
@@ -558,7 +562,7 @@ async def trigger_sync_for_main_calendar(user_id: int, debounce: float = 0) -> N
     async with lock:
         processed = await _sync_main_calendar(user_id)
 
-    if processed:
+    if processed and schedule_verification:
         _schedule_event_verification(
             f"main:{user_id}",
             _sync_main_calendar,
@@ -986,6 +990,23 @@ async def _sync_main_calendar(
                     # Client-origin events also have the sync tag but need RSVP/
                     # edit-guard processing, so they are NOT skipped here.
                     if not client_origin_mapping and main_client.is_our_event(event):
+                        # If this is a client_copy with no mapping, it's orphaned
+                        # (e.g. mapping was deleted when user removed the event,
+                        # but a concurrent sync kept the Google Calendar event alive).
+                        # Delete it to prevent zombie events on main.
+                        props = event.get("extendedProperties", {}).get("private", {})
+                        if props.get("bb_type") == "client_copy":
+                            delete_client = sa_main_client if sa_main_client is not None else main_client
+                            try:
+                                await delete_client.delete_event(main_calendar_id, event["id"])
+                                logger.info(
+                                    f"Deleted orphaned client_copy on main calendar: "
+                                    f"{event.get('id')} ({event.get('summary', '')[:40]})"
+                                )
+                            except Exception as e:
+                                logger.warning(f"Failed to delete orphaned client_copy {event.get('id')}: {e}")
+                            continue
+
                         # Still revert if someone moved a personal busy block.
                         await _revert_personal_block_on_main(
                             main_client, main_calendar_id, user_id, event,

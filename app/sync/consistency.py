@@ -799,12 +799,14 @@ async def _dedup_calendar(
 
         if len(events) == 1 and not db_known:
             if is_real_copy:
-                # Single client copy the DB lost track of — keep it,
-                # next sync will re-adopt it via the origin event.
-                logger.info(
-                    "Orphan scan: keeping orphaned client_copy for origin %s "
-                    "on %s (next sync will adopt)",
-                    origin_id, calendar_id[:25],
+                # Orphaned client_copy with no DB mapping — delete it.
+                # sync_client_event_to_main always creates a new main event
+                # (never re-links to an existing orphan), so keeping orphans
+                # just accumulates zombies.  The client sync will recreate
+                # a fresh copy with proper mapping if the client event still
+                # exists.
+                await _mark_orphan(
+                    summary, events[0], calendar_id, cal_label, dry_run, client,
                 )
             else:
                 # Single orphaned busy block — delete it.  Busy blocks are
@@ -816,11 +818,11 @@ async def _dedup_calendar(
             # Multiple events for same origin — duplicates!
             if db_known:
                 keep = db_known[0]
-            elif is_real_copy:
-                # Keep newest — next sync will adopt it
-                keep = max(events, key=lambda e: e.get("updated", ""))
             else:
-                # All are orphaned busy blocks — delete all of them
+                # All orphaned (no DB mapping) — delete all of them.
+                # For client_copy events: sync_client_event_to_main always
+                # creates a fresh copy, so there's no re-adoption path.
+                # For busy_blocks: no adoption path exists either.
                 keep = None
 
             for event in events:
@@ -846,13 +848,6 @@ async def _dedup_calendar(
                     "calendar": calendar_id, "event_id": event["id"],
                     "origin_id": origin_id, "action": "delete_duplicate",
                 })
-
-            if keep and not db_known and is_real_copy:
-                logger.info(
-                    "Orphan scan: kept newest of %d duplicates for origin %s "
-                    "on %s (DB doesn't know any — next sync will adopt)",
-                    len(events), origin_id, calendar_id[:25],
-                )
 
     # Handle events with no bb_origin_id (legacy or untagged)
     for event in no_origin:

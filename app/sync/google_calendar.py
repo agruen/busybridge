@@ -3,6 +3,7 @@
 import asyncio
 import functools
 import logging
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -15,10 +16,65 @@ from app.config import get_settings
 
 logger = logging.getLogger(__name__)
 
-# HTTP status codes that are transient and worth retrying.
-# 403 is included because Google Calendar returns 403 with reason
-# "rateLimitExceeded" for per-user rate limits (distinct from 429).
-_RETRYABLE_STATUSES = {403, 429, 500, 502, 503}
+# Server errors worth retrying (rate-limit errors are handled separately).
+_RETRYABLE_SERVER_STATUSES = {500, 502, 503}
+
+
+def _is_rate_limit_error(error: HttpError) -> bool:
+    """Check if an HttpError is a rate-limit (not a permission) error."""
+    if error.resp.status == 429:
+        return True
+    if error.resp.status == 403:
+        msg = str(error)
+        return "rateLimitExceeded" in msg or "Rate Limit Exceeded" in msg
+    return False
+
+
+class _RateLimiter:
+    """Thread-safe token-bucket rate limiter for Google API calls.
+
+    Limits sustained request rate and supports a global backoff window
+    that pauses all requests after a rate-limit response.
+    """
+
+    def __init__(self, rate: float = 5.0, burst: int = 5):
+        """
+        Args:
+            rate: Sustained requests per second.
+            burst: Maximum burst tokens (allows short bursts above rate).
+        """
+        self._rate = rate
+        self._burst = burst
+        self._tokens = float(burst)
+        self._last_refill = time.monotonic()
+        self._lock = threading.Lock()
+        self._backoff_until = 0.0
+
+    def acquire(self):
+        """Block until a request slot is available."""
+        while True:
+            with self._lock:
+                now = time.monotonic()
+                if now < self._backoff_until:
+                    wait = self._backoff_until - now
+                else:
+                    elapsed = now - self._last_refill
+                    self._tokens = min(
+                        self._burst, self._tokens + elapsed * self._rate,
+                    )
+                    self._last_refill = now
+                    if self._tokens >= 1.0:
+                        self._tokens -= 1.0
+                        return
+                    wait = (1.0 - self._tokens) / self._rate
+            time.sleep(wait)
+
+    def backoff(self, seconds: float):
+        """Impose a global pause (e.g. after a rate-limit response)."""
+        with self._lock:
+            target = time.monotonic() + seconds
+            if target > self._backoff_until:
+                self._backoff_until = target
 
 
 class GoogleCalendarClient:
@@ -42,23 +98,49 @@ class GoogleCalendarClient:
             raise ValueError("Either access_token or credentials must be provided")
         self.service = build("calendar", "v3", credentials=self.credentials)
         self.settings = settings or get_settings()
+        self._rate_limiter = _RateLimiter()
+
+    def _get_rate_limiter(self) -> _RateLimiter:
+        """Return the rate limiter, creating one if __init__ was bypassed."""
+        try:
+            return self._rate_limiter
+        except AttributeError:
+            self._rate_limiter = _RateLimiter()
+            return self._rate_limiter
 
     def _execute_with_retry(self, request, max_retries: int = 5, base_delay: float = 1.0):
-        """Execute a Google API request with exponential backoff on transient errors.
+        """Execute a Google API request with rate limiting and exponential backoff.
 
-        Retries on 429 (rate limit), 500, 502, 503 (server errors).
-        Fails immediately on 400, 401, 403, 404, 409, 410, etc.
+        Rate-limits all outgoing requests to stay within Google's per-user
+        quota (~10 req/s).  Retries on rate-limit errors (403 rateLimitExceeded,
+        429) and transient server errors (500, 502, 503) with exponential
+        backoff.  All other errors (400, 401, 403 permission-denied, 404, etc.)
+        fail immediately.
         """
+        limiter = self._get_rate_limiter()
         for attempt in range(max_retries + 1):
+            limiter.acquire()
             try:
                 return request.execute()
             except HttpError as e:
-                if e.resp.status not in _RETRYABLE_STATUSES or attempt == max_retries:
+                is_rate_limit = _is_rate_limit_error(e)
+                is_server_error = e.resp.status in _RETRYABLE_SERVER_STATUSES
+
+                if not (is_rate_limit or is_server_error) or attempt == max_retries:
                     raise
-                delay = min(base_delay * (2 ** attempt), 30)
+
+                if is_rate_limit:
+                    # Longer backoff for rate limits; also pause other requests
+                    delay = min(base_delay * (2 ** (attempt + 2)), 60)
+                    limiter.backoff(delay)
+                else:
+                    delay = min(base_delay * (2 ** attempt), 30)
+
                 logger.warning(
-                    "Google API %s (attempt %d/%d), retrying in %.1fs",
-                    e.resp.status, attempt + 1, max_retries, delay,
+                    "Google API %s%s (attempt %d/%d), retrying in %.1fs",
+                    e.resp.status,
+                    " rate-limited" if is_rate_limit else "",
+                    attempt + 1, max_retries, delay,
                 )
                 time.sleep(delay)
 
