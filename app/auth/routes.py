@@ -108,9 +108,13 @@ async def login(request: Request, next: Optional[str] = None):
             detail="OAuth credentials not configured"
         )
 
+    # Sanitize next URL — only allow relative paths to prevent open redirects.
+    if not next or not next.startswith("/") or next.startswith("//"):
+        next = "/app"
+
     # Generate state token
     state = secrets.token_urlsafe(32)
-    await store_oauth_state(state, "login", next_url=next or "/app")
+    await store_oauth_state(state, "login", next_url=next)
     await cleanup_expired_oauth_states()  # Clean up old states
 
     redirect_uri = get_redirect_uri(request, "/auth/callback")
@@ -245,8 +249,10 @@ async def oauth_callback(
             is_admin=user.is_admin
         )
 
-        # Set cookie and redirect
+        # Set cookie and redirect (re-validate in case DB was tampered with)
         next_url = state_data.get("next", "/app")
+        if not next_url or not next_url.startswith("/") or next_url.startswith("//"):
+            next_url = "/app"
         response = RedirectResponse(url=next_url, status_code=status.HTTP_302_FOUND)
         response.set_cookie(
             key=SESSION_COOKIE_NAME,
