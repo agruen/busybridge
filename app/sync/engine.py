@@ -1012,21 +1012,43 @@ async def _sync_main_calendar(
                     # Client-origin events also have the sync tag but need RSVP/
                     # edit-guard processing, so they are NOT skipped here.
                     if not client_origin_mapping and main_client.is_our_event(event):
-                        # If this is a client_copy with no mapping, it's orphaned
-                        # (e.g. mapping was deleted when user removed the event,
-                        # but a concurrent sync kept the Google Calendar event alive).
-                        # Delete it to prevent zombie events on main.
                         props = event.get("extendedProperties", {}).get("private", {})
                         if props.get("bb_type") == "client_copy":
-                            delete_client = sa_main_client if sa_main_client is not None else main_client
-                            try:
-                                await delete_client.delete_event(main_calendar_id, event["id"])
-                                logger.info(
-                                    f"Deleted orphaned client_copy on main calendar: "
-                                    f"{event.get('id')} ({event.get('summary', '')[:40]})"
+                            # Check if this is a user-forked copy (e.g. "this and
+                            # following events" edit on main).  Google creates a new
+                            # event that inherits our extendedProperties, so it looks
+                            # orphaned but is actually the user's intentional edit.
+                            # Adopt it by creating a mapping instead of deleting it.
+                            bb_origin = props.get("bb_origin_id")
+                            bb_origin_cal = props.get("bb_origin_cal")
+                            adopted = False
+                            if bb_origin and bb_origin_cal:
+                                cursor = await db.execute(
+                                    """SELECT id FROM event_mappings
+                                       WHERE user_id = ? AND origin_calendar_id = ?
+                                       AND origin_event_id = ? AND deleted_at IS NULL""",
+                                    (user_id, int(bb_origin_cal), bb_origin),
                                 )
-                            except Exception as e:
-                                logger.warning(f"Failed to delete orphaned client_copy {event.get('id')}: {e}")
+                                parent_mapping = await cursor.fetchone()
+                                if parent_mapping:
+                                    # The origin event still exists in the DB — this
+                                    # is a user fork, not an orphan.  Leave it alone;
+                                    # the client sync will reconcile it on the next cycle.
+                                    logger.info(
+                                        f"Keeping user-forked client_copy on main: "
+                                        f"{event.get('id')} ({event.get('summary', '')[:40]})"
+                                    )
+                                    adopted = True
+                            if not adopted:
+                                delete_client = sa_main_client if sa_main_client is not None else main_client
+                                try:
+                                    await delete_client.delete_event(main_calendar_id, event["id"])
+                                    logger.info(
+                                        f"Deleted orphaned client_copy on main calendar: "
+                                        f"{event.get('id')} ({event.get('summary', '')[:40]})"
+                                    )
+                                except Exception as e:
+                                    logger.warning(f"Failed to delete orphaned client_copy {event.get('id')}: {e}")
                             continue
 
                         # Still revert if someone moved a personal busy block.
