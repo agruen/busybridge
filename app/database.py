@@ -260,6 +260,7 @@ async def init_schema(db: aiosqlite.Connection) -> None:
         "ALTER TABLE client_calendars ADD COLUMN calendar_type TEXT NOT NULL DEFAULT 'client'",
         "ALTER TABLE event_mappings ADD COLUMN webcal_subscription_id INTEGER REFERENCES webcal_subscriptions(id)",
         "ALTER TABLE users ADD COLUMN sync_paused BOOLEAN DEFAULT FALSE",
+        "ALTER TABLE event_mappings ADD COLUMN recurrence_rule TEXT",
     ]
     for stmt in migrations:
         try:

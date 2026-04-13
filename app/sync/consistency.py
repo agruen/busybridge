@@ -4,6 +4,8 @@ import json
 import logging
 from datetime import datetime, timedelta, timezone
 
+from googleapiclient.errors import HttpError
+
 from app.database import get_database
 from app.sync.google_calendar import AsyncGoogleCalendarClient, GoogleCalendarClient
 
@@ -927,3 +929,257 @@ async def _scan_db_duplicates(
             "Orphan scan: duplicate busy_block_event_id %s appears in %d rows",
             row["busy_block_event_id"], row["cnt"],
         )
+
+
+# ── Recurring duplicate cleanup ────────────────────────────────────────
+
+
+async def cleanup_recurring_duplicates(dry_run: bool = True) -> dict:
+    """Find and remove duplicate events caused by recurring event rescheduling.
+
+    Part A: Finds _R parent mappings that have stale instance-level mappings
+    from an older series variant.  The instances point to standalone main
+    events that duplicate the recurring parent's own instances.
+
+    Part B: Finds duplicate personal busy blocks at the same time slot.
+
+    With dry_run=True (default) no changes are made; the returned summary
+    includes a "planned_actions" list.
+    """
+    db = await get_database()
+    summary = {
+        "stale_instances_removed": 0,
+        "duplicate_personal_removed": 0,
+        "errors": 0,
+    }
+    if dry_run:
+        summary["planned_actions"] = []
+
+    # Get all users
+    cursor = await db.execute(
+        "SELECT * FROM users WHERE main_calendar_id IS NOT NULL"
+    )
+    users = await cursor.fetchall()
+
+    for user in users:
+        user_id = user["id"]
+        try:
+            from app.auth.google import get_valid_access_token
+            main_token = await get_valid_access_token(user_id, user["email"])
+            main_client = AsyncGoogleCalendarClient(main_token)
+
+            # Use SA client when available
+            sa_main_client = None
+            sa_row_cur = await db.execute(
+                "SELECT sa_tier FROM users WHERE id = ?", (user_id,)
+            )
+            sa_row = await sa_row_cur.fetchone()
+            if sa_row and sa_row["sa_tier"] == 2:
+                from app.auth.service_account import get_sa_main_client
+                sa_main_client = get_sa_main_client(user["main_calendar_id"])
+            write_client = sa_main_client if sa_main_client is not None else main_client
+
+            # ── Part A: stale instance mappings from _R re-keying ──
+
+            # Find all active _R parent mappings (recurring parents that have
+            # been rescheduled at least once).
+            cursor2 = await db.execute(
+                """SELECT em.*, cc.google_calendar_id
+                   FROM event_mappings em
+                   JOIN client_calendars cc ON em.origin_calendar_id = cc.id
+                   WHERE em.user_id = ? AND em.origin_type = 'client'
+                     AND em.origin_event_id LIKE '%\\_R%' ESCAPE '\\'
+                     AND em.origin_recurring_event_id IS NULL
+                     AND em.is_recurring = 1
+                     AND em.deleted_at IS NULL""",
+                (user_id,),
+            )
+            r_parents = await cursor2.fetchall()
+
+            for parent in r_parents:
+                base_id = parent["origin_event_id"].split("_R")[0]
+                current_parent_id = parent["origin_event_id"]
+
+                # Find instance mappings whose origin_recurring_event_id is
+                # an OLD variant of this base (not the current _R parent).
+                cursor3 = await db.execute(
+                    """SELECT * FROM event_mappings
+                       WHERE user_id = ? AND origin_calendar_id = ?
+                         AND origin_recurring_event_id IS NOT NULL
+                         AND origin_recurring_event_id != ?
+                         AND (origin_recurring_event_id = ?
+                              OR origin_recurring_event_id LIKE ? ESCAPE '\\')
+                         AND deleted_at IS NULL""",
+                    (user_id, parent["origin_calendar_id"],
+                     current_parent_id, base_id, f"{base_id}\\_R%"),
+                )
+                stale_instances = await cursor3.fetchall()
+
+                for inst in stale_instances:
+                    if dry_run:
+                        summary["planned_actions"].append({
+                            "action": "delete_stale_instance",
+                            "mapping_id": inst["id"],
+                            "origin_event_id": inst["origin_event_id"],
+                            "main_event_id": inst["main_event_id"],
+                            "stale_parent": inst["origin_recurring_event_id"],
+                            "current_parent": current_parent_id,
+                        })
+                        summary["stale_instances_removed"] += 1
+                        continue
+
+                    # Delete standalone main event
+                    if inst["main_event_id"]:
+                        try:
+                            await write_client.delete_event(
+                                user["main_calendar_id"], inst["main_event_id"]
+                            )
+                        except HttpError as e:
+                            if e.resp.status not in (404, 410):
+                                logger.warning(
+                                    f"Cleanup: failed to delete main event "
+                                    f"{inst['main_event_id']}: {e}"
+                                )
+                        except Exception as e:
+                            logger.warning(
+                                f"Cleanup: failed to delete main event "
+                                f"{inst['main_event_id']}: {e}"
+                            )
+
+                    # Delete busy blocks
+                    bb_cur = await db.execute(
+                        """SELECT bb.*, cc.google_calendar_id, ot.google_account_email
+                           FROM busy_blocks bb
+                           JOIN client_calendars cc ON bb.client_calendar_id = cc.id
+                           JOIN oauth_tokens ot ON cc.oauth_token_id = ot.id
+                           WHERE bb.event_mapping_id = ?""",
+                        (inst["id"],),
+                    )
+                    for block in await bb_cur.fetchall():
+                        try:
+                            token = await get_valid_access_token(
+                                user_id, block["google_account_email"]
+                            )
+                            bb_client = AsyncGoogleCalendarClient(token)
+                            await bb_client.delete_event(
+                                block["google_calendar_id"],
+                                block["busy_block_event_id"],
+                            )
+                        except Exception as e:
+                            logger.warning(
+                                f"Cleanup: failed to delete busy block "
+                                f"{block['busy_block_event_id']}: {e}"
+                            )
+                    await db.execute(
+                        "DELETE FROM busy_blocks WHERE event_mapping_id = ?",
+                        (inst["id"],),
+                    )
+
+                    # Soft-delete the mapping
+                    await db.execute(
+                        "UPDATE event_mappings SET deleted_at = ? WHERE id = ?",
+                        (datetime.utcnow().isoformat(), inst["id"]),
+                    )
+                    summary["stale_instances_removed"] += 1
+
+                if stale_instances and not dry_run:
+                    await db.commit()
+                    logger.info(
+                        f"Cleaned {len(stale_instances)} stale instances for "
+                        f"parent {current_parent_id} (base: {base_id})"
+                    )
+
+            # ── Part B: duplicate personal busy blocks ──
+
+            cursor4 = await db.execute(
+                """SELECT em1.id as keep_id, em1.main_event_id as keep_main,
+                          em2.id as dup_id, em2.main_event_id as dup_main
+                   FROM event_mappings em1
+                   JOIN event_mappings em2
+                     ON em1.user_id = em2.user_id
+                    AND em1.event_start = em2.event_start
+                    AND em1.event_end = em2.event_end
+                    AND em1.id < em2.id
+                   WHERE em1.origin_type = 'personal'
+                     AND em2.origin_type = 'personal'
+                     AND em1.deleted_at IS NULL
+                     AND em2.deleted_at IS NULL
+                     AND em1.user_id = ?""",
+                (user_id,),
+            )
+            dup_personals = await cursor4.fetchall()
+
+            for dup in dup_personals:
+                if dry_run:
+                    summary["planned_actions"].append({
+                        "action": "delete_duplicate_personal",
+                        "keep_mapping_id": dup["keep_id"],
+                        "remove_mapping_id": dup["dup_id"],
+                        "remove_main_event_id": dup["dup_main"],
+                    })
+                    summary["duplicate_personal_removed"] += 1
+                    continue
+
+                # Delete the duplicate's main event
+                if dup["dup_main"]:
+                    try:
+                        await write_client.delete_event(
+                            user["main_calendar_id"], dup["dup_main"]
+                        )
+                    except HttpError as e:
+                        if e.resp.status not in (404, 410):
+                            logger.warning(
+                                f"Cleanup: failed to delete dup personal main "
+                                f"{dup['dup_main']}: {e}"
+                            )
+                    except Exception as e:
+                        logger.warning(
+                            f"Cleanup: failed to delete dup personal main "
+                            f"{dup['dup_main']}: {e}"
+                        )
+
+                # Delete busy blocks for the duplicate
+                bb_cur = await db.execute(
+                    """SELECT bb.*, cc.google_calendar_id, ot.google_account_email
+                       FROM busy_blocks bb
+                       JOIN client_calendars cc ON bb.client_calendar_id = cc.id
+                       JOIN oauth_tokens ot ON cc.oauth_token_id = ot.id
+                       WHERE bb.event_mapping_id = ?""",
+                    (dup["dup_id"],),
+                )
+                for block in await bb_cur.fetchall():
+                    try:
+                        token = await get_valid_access_token(
+                            user_id, block["google_account_email"]
+                        )
+                        bb_client = AsyncGoogleCalendarClient(token)
+                        await bb_client.delete_event(
+                            block["google_calendar_id"],
+                            block["busy_block_event_id"],
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            f"Cleanup: failed to delete dup personal busy block "
+                            f"{block['busy_block_event_id']}: {e}"
+                        )
+                await db.execute(
+                    "DELETE FROM busy_blocks WHERE event_mapping_id = ?",
+                    (dup["dup_id"],),
+                )
+
+                # Soft-delete the duplicate mapping
+                await db.execute(
+                    "UPDATE event_mappings SET deleted_at = ? WHERE id = ?",
+                    (datetime.utcnow().isoformat(), dup["dup_id"]),
+                )
+                summary["duplicate_personal_removed"] += 1
+
+            if dup_personals and not dry_run:
+                await db.commit()
+
+        except Exception as e:
+            logger.error(f"Cleanup failed for user {user_id}: {e}")
+            summary["errors"] += 1
+
+    logger.info(f"Recurring duplicate cleanup completed: {summary}")
+    return summary

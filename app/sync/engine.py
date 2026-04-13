@@ -18,6 +18,7 @@ from app.sync.rules import (
     handle_deleted_main_event,
     propagate_rsvp_to_client,
     propagate_time_to_client,
+    propagate_fork_to_client,
     sync_personal_event_to_all,
     handle_deleted_personal_event,
 )
@@ -1004,6 +1005,20 @@ async def _sync_main_calendar(
                         (user_id, event["id"]),
                     )
                     client_origin_mapping = await cursor.fetchone()
+                    is_recurring_instance_match = False
+
+                    # Fallback: recurring instances have IDs like "parentId_20260402T..."
+                    # but the mapping stores the parent's main_event_id.
+                    if not client_origin_mapping and event.get("recurringEventId"):
+                        cursor = await db.execute(
+                            """SELECT * FROM event_mappings
+                               WHERE user_id = ? AND main_event_id = ?
+                               AND origin_type = 'client' AND deleted_at IS NULL""",
+                            (user_id, event["recurringEventId"]),
+                        )
+                        client_origin_mapping = await cursor.fetchone()
+                        if client_origin_mapping:
+                            is_recurring_instance_match = True
 
                     # Skip events that BusyBridge created on the main calendar
                     # (personal busy blocks, etc.).  These are managed by their
@@ -1023,32 +1038,55 @@ async def _sync_main_calendar(
                             bb_origin_cal = props.get("bb_origin_cal")
                             adopted = False
                             if bb_origin and bb_origin_cal:
+                                # Look for the parent mapping.  The exact bb_origin_id
+                                # may be stale (re-keyed by instance edits or prior
+                                # reschedulings), so also search by base ID prefix.
+                                cal_id = int(bb_origin_cal)
+                                base_origin = bb_origin.split("_R")[0].split("_2")[0]
                                 cursor = await db.execute(
-                                    """SELECT id FROM event_mappings
+                                    """SELECT * FROM event_mappings
                                        WHERE user_id = ? AND origin_calendar_id = ?
-                                       AND origin_event_id = ? AND deleted_at IS NULL""",
-                                    (user_id, int(bb_origin_cal), bb_origin),
+                                       AND (origin_event_id = ? OR origin_event_id LIKE ?)
+                                       AND deleted_at IS NULL
+                                       AND origin_recurring_event_id IS NULL
+                                       ORDER BY updated_at DESC LIMIT 1""",
+                                    (user_id, cal_id, bb_origin, f"{base_origin}%"),
                                 )
                                 parent_mapping = await cursor.fetchone()
                                 if parent_mapping:
-                                    # The origin event still exists in the DB — this
-                                    # is a user fork, not an orphan.  Leave it alone;
-                                    # the client sync will reconcile it on the next cycle.
-                                    logger.info(
-                                        f"Keeping user-forked client_copy on main: "
-                                        f"{event.get('id')} ({event.get('summary', '')[:40]})"
-                                    )
+                                    if parent_mapping["user_can_edit"]:
+                                        # Propagate the fork to the client calendar.
+                                        new_client_id = await propagate_fork_to_client(
+                                            user_id=user_id,
+                                            main_event=event,
+                                            parent_mapping=dict(parent_mapping),
+                                        )
+                                        if new_client_id:
+                                            logger.info(
+                                                f"Propagated fork to client: {new_client_id} "
+                                                f"from main {event.get('id')} ({event.get('summary', '')[:40]})"
+                                            )
+                                        else:
+                                            logger.info(
+                                                f"Keeping user-forked client_copy on main: "
+                                                f"{event.get('id')} ({event.get('summary', '')[:40]})"
+                                            )
+                                    else:
+                                        logger.info(
+                                            f"Keeping user-forked client_copy on main (non-editable): "
+                                            f"{event.get('id')} ({event.get('summary', '')[:40]})"
+                                        )
                                     adopted = True
                             if not adopted:
-                                delete_client = sa_main_client if sa_main_client is not None else main_client
-                                try:
-                                    await delete_client.delete_event(main_calendar_id, event["id"])
-                                    logger.info(
-                                        f"Deleted orphaned client_copy on main calendar: "
-                                        f"{event.get('id')} ({event.get('summary', '')[:40]})"
-                                    )
-                                except Exception as e:
-                                    logger.warning(f"Failed to delete orphaned client_copy {event.get('id')}: {e}")
+                                # Never delete client_copy events during main sync.
+                                # Orphan cleanup belongs in the periodic orphan scan
+                                # which does a full cross-reference.  Deleting here
+                                # destroys user edits ("this and following", etc.)
+                                logger.info(
+                                    f"Skipping unrecognized client_copy on main "
+                                    f"(orphan scan will handle if needed): "
+                                    f"{event.get('id')} ({event.get('summary', '')[:40]})"
+                                )
                             continue
 
                         # Still revert if someone moved a personal busy block.
@@ -1060,8 +1098,10 @@ async def _sync_main_calendar(
                         continue
 
                     # Guard: revert time/location changes on non-editable events.
-                    # Use SA client for the revert patch when available.
-                    if client_origin_mapping and not client_origin_mapping["user_can_edit"]:
+                    # Only for direct parent matches — recurring instance times
+                    # naturally differ from the parent's stored times.
+                    if (client_origin_mapping and not client_origin_mapping["user_can_edit"]
+                            and not is_recurring_instance_match):
                         revert_client = sa_main_client if sa_main_client is not None else main_client
                         reverted = await _revert_if_moved(
                             revert_client, main_calendar_id, event, dict(client_origin_mapping)
@@ -1089,6 +1129,7 @@ async def _sync_main_calendar(
                             user_id=user_id,
                             main_event=event,
                             mapping=dict(client_origin_mapping),
+                            is_instance=is_recurring_instance_match,
                         )
 
                     # Check for RSVP changes on client-origin events.

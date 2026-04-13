@@ -580,6 +580,21 @@ async def trigger_consistency_check(
     return {"dry_run": dry_run, "summary": result}
 
 
+@router.post("/consistency/cleanup-duplicates")
+async def trigger_duplicate_cleanup(
+    dry_run: bool = True,
+    admin: User = Depends(require_admin),
+):
+    """Find and remove duplicate events from recurring event rescheduling.
+
+    With dry_run=True (default) no changes are made; returns planned actions.
+    """
+    from app.sync.consistency import cleanup_recurring_duplicates
+
+    result = await cleanup_recurring_duplicates(dry_run=dry_run)
+    return {"dry_run": dry_run, "summary": result}
+
+
 @router.get("/settings", response_model=SettingsResponse)
 async def get_admin_settings(admin: User = Depends(require_admin)):
     """Get system settings."""
